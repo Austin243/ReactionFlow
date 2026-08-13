@@ -1,0 +1,11 @@
+ReactionFlow is a new project intended to extract and generalize reaction-event and reaction-path
+automation that was initially developed in the private MatEnsemble repository.
+
+Extraction baseline:
+
+    Repository: Austin243/MatEnsemble-private
+    Commit: c1b212296a0b6a3b7dec3a927e81cb7bd6d0125e
+    License: BSD 3-Clause
+
+The initial scaffold does not yet contain copied scientific implementation. As implementation is
+moved or adapted, the MatEnsemble copyright and license notice must remain preserved.
