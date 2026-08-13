@@ -41,6 +41,14 @@ The top-level stable names are planned to be:
 
 Low-level implementation helpers remain module-level APIs unless deliberately promoted.
 
+RF-1 deliberately promotes the reusable detection surface at the top level:
+
+- `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`; and
+- `assign_atom_ids()` and `atom_ids()`.
+
+Detector checkpoints are small versioned dictionaries. The contract may grow when the durable run
+store has a concrete need for migrations or typed errors.
+
 ## Calculator provider
 
 A calculator provider returns a context-managed lease containing an ASE calculator. Acquisition is
@@ -60,7 +68,6 @@ MatEnsemble translates at its boundary and stores its own metadata under
 
 ## Compatibility
 
-Every public result and durable artifact carries an explicit schema version. Schema readers either
-migrate supported older data or fail with a typed compatibility error; they never silently reinterpret
-reaction identity. The package version in `pyproject.toml` is the source of truth, and release tags
-use the matching `v<version>` form.
+Durable run artifacts will carry explicit schema versions once the run store is implemented. The
+package version in `pyproject.toml` is the source of truth, and release tags use the matching
+`v<version>` form.

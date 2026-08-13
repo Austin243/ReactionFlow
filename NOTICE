@@ -7,5 +7,10 @@ Extraction baseline:
     Commit: c1b212296a0b6a3b7dec3a927e81cb7bd6d0125e
     License: BSD 3-Clause
 
-The initial scaffold does not yet contain copied scientific implementation. As implementation is
-moved or adapted, the MatEnsemble copyright and license notice must remain preserved.
+`src/reactionflow/detection.py` adapts the geometric detector from
+`src/matensemble/analysis/bonds.py` at the baseline commit. Its identity contract and public API
+have been generalized for ReactionFlow. Detailed extraction notes are maintained in
+`docs/provenance.md`.
+
+As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
+remain preserved and the provenance ledger must be updated.

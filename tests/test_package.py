@@ -20,7 +20,7 @@ def test_package_imports() -> None:
 
 
 def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
-    allowed_external_roots = {"ase", "networkx", "numpy", "reactionflow"}
+    allowed_external_roots = {"ase", "numpy", "reactionflow"}
     source_root = Path(__file__).parents[1] / "src" / "reactionflow"
     violations: list[str] = []
 
@@ -49,4 +49,4 @@ def test_base_dependencies_match_architecture_boundary() -> None:
         dependency.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0] for dependency in dependencies
     }
 
-    assert names == {"ase", "networkx", "numpy"}
+    assert names == {"ase", "numpy"}

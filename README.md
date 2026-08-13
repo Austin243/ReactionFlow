@@ -10,15 +10,16 @@ MatEnsemble. ReactionFlow will be usable in two modes:
 2. through a thin MatEnsemble adapter that supplies scheduling and resources without becoming a
    dependency of the ReactionFlow core.
 
-This repository currently contains the project scaffold and implementation roadmap. The first
-functional milestone is tracked in [docs/parity-plan.md](docs/parity-plan.md).
+The project is under active development. Persistent geometric bond-change detection is the first
+implemented layer; the remaining extraction is tracked in
+[docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
 
 - **General-purpose chemistry.** Detection and transition aggregation operate on generic atoms,
   bonds, and topology changes. ReactionFlow will not hard-code hydrogen handoffs or any other
   element-specific mechanism. Element and pair behavior may be supplied as data or configuration.
-- **ASE-first, scheduler-independent core.** The core depends on ASE, NumPy, NetworkX, and the
+- **ASE-first, scheduler-independent core.** The core depends on ASE, NumPy, and the
   Python standard library—not MatEnsemble, Flux, a particular ML potential, or an HPC system.
 - **Lean orchestration.** A small persistent state machine coordinates detection, checkpointing,
   refinement, and resume. ReactionFlow is not a general workflow engine.
@@ -30,7 +31,12 @@ functional milestone is tracked in [docs/parity-plan.md](docs/parity-plan.md).
 See [docs/architecture.md](docs/architecture.md) for the planned package boundary and artifact
 ownership and [docs/public-contract.md](docs/public-contract.md) for the provisional API.
 
-## Initial scope
+## Available now
+
+The first implemented layer is persistent geometric bond-change detection. See
+[Geometric bond-change detection](docs/bond-detection.md).
+
+## Initial extraction scope
 
 The first alpha will reproduce the useful capabilities of the private MatEnsemble implementation:
 
