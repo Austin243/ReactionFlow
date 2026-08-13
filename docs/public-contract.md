@@ -13,31 +13,32 @@ from reactionflow import ReactionRun, ReactionRunConfig
 run = ReactionRun.create(
     root="run-01",
     config=ReactionRunConfig(...),
-    pathway_calculator=calculator_provider,
 )
 
 summary = run.run_ase(
     atoms,
-    md_calculator=md_calculator_provider,
+    md_calculator_provider=md_calculator_provider,
+    pathway_calculator_provider=pathway_calculator_provider,
     dynamics_factory=make_dynamics,
     total_steps=1_000_000,
 )
 ```
 
-An interrupted run is reopened explicitly:
+Recovery after a completed structural checkpoint is explicit:
 
 ```python
 run = ReactionRun.open("run-01")
-summary = run.resume(...)
+run.refine_pending(pathway_calculator_provider)
+segment = run.resume_segment()
 ```
 
-The top-level stable names are planned to be:
+The provisional top-level facade includes:
 
 - `ReactionRun`, `ReactionRunConfig`, and `RunSummary`;
-- `BondDetectorConfig` and `PathwayConfig`;
-- `CalculatorProvider` and its stage context;
-- `ReactionCandidate` and `PathwayOutcome`; and
-- typed lifecycle, outcome, and error enums.
+- `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`;
+- `ReactionTracker` and `ReactionCandidate`;
+- `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()`; and
+- stable-ID helpers and `same_reaction()`.
 
 Low-level implementation helpers remain module-level APIs unless deliberately promoted.
 
@@ -59,28 +60,30 @@ RF-2b adds `same_reaction()` for exact forward/reverse topology identity. Networ
 class IDs, and graph serialization remain implementation details.
 
 RF-2c adds the provisional module-level `OccurrenceStore` and `OccurrenceRecord` APIs. They retain
-and reopen immutable candidate bundles; the future `ReactionRun` facade will own their normal use.
+and reopen immutable candidate bundles; `ReactionRun` owns their normal use.
 
 RF-3 promotes `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()` for one in-memory candidate.
-The context-managed `CalculatorProvider` type remains module-level while the standalone runner and
-MatEnsemble adapter establish its final context needs.
+The context-managed `CalculatorProvider` type remains module-level while a MatEnsemble adapter
+establishes any additional context it needs.
 
 RF-4 adds provisional module-level `SegmentStore`, `SegmentGeneration`, and `ResumeToken` APIs for
-structural checkpoint/resume. They remain outside the top-level facade until the standalone runner
-establishes how users normally reach them.
+structural checkpoint/resume. They remain low-level APIs normally reached through `ReactionRun`.
+
+RF-5 promotes `ReactionRun`, `ReactionRunConfig`, and `RunSummary`. Manual scheduler-neutral
+methods are `start`, `observe`, `checkpoint`, `refine_pending`, `resume_segment`, and `complete`;
+`run_ase()` is the synchronous convenience executor. Recovery is structural and begins from a
+completed checkpoint, not an arbitrary active MD frame.
 
 ## Calculator provider
 
 A calculator provider returns a context-managed lease containing an ASE calculator. Acquisition is
 stage-aware; release is explicit and occurs even after failure. The local serial-GPU executor never
-holds more than one lease. Serializable adapters use an importable factory plus JSON-compatible
-parameters rather than pickling a live calculator.
+holds more than one lease. Serializable provider specifications are deferred.
 
 ## Adapter interface
 
-Adapters consume scheduler-neutral coordinator facts and commands. Initial facts cover candidate
-observation, segment completion/failure, pathway completion/failure, and monitor failure. Initial
-commands request a safe stop, run a pathway, start a segment, or finish the run.
+Future adapters drive the scheduler-neutral `ReactionRun` methods directly. Any additional
+facts/commands layer waits for a concrete adapter need.
 
 Flux resources, MatEnsemble chore IDs, queues, and output references do not appear in core models.
 MatEnsemble translates at its boundary and stores its own metadata under
@@ -88,6 +91,5 @@ MatEnsemble translates at its boundary and stores its own metadata under
 
 ## Compatibility
 
-Durable run artifacts will carry explicit schema versions once the run store is implemented. The
-package version in `pyproject.toml` is the source of truth, and release tags use the matching
-`v<version>` form.
+Durable JSON and SQLite records carry explicit schema versions. The package version in
+`pyproject.toml` is the source of truth, and release tags use the matching `v<version>` form.

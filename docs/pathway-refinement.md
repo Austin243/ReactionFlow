@@ -1,8 +1,8 @@
 # Pathway refinement
 
 `refine_pathway()` relaxes one resolved candidate and runs a serial, fixed-cell climbing-image
-NEB. It is an in-memory scientific primitive; the caller owns artifact publication and retry
-policy.
+NEB. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
+callers retain ownership of artifacts and retry policy.
 
 ```python
 from contextlib import contextmanager

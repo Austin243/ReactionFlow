@@ -50,8 +50,7 @@ identity without silently reclassifying old records.
 - `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, and serial ASE
   CI-NEB with context-managed calculator leases.
 - `segments.py`: structural checkpoints, immutable generations, and resume tokens.
-- `coordinator.py`: a small scheduler-neutral state machine.
-- `local.py`: synchronous ASE execution, including sequential one-GPU operation.
+- `run.py`: the small scheduler-neutral state machine and synchronous ASE executor.
 - `trajectory.py`: optional append-only ASE trajectory monitoring and replay.
 
 This is intentionally not decomposed into plugin frameworks, an ORM, a general event bus, or a new
@@ -59,19 +58,17 @@ workflow scheduler.
 
 ## Coordination model
 
-The coordinator has normal and terminal/recovery phases:
+`ReactionRun` has normal and terminal/recovery phases:
 
 ```text
-running -> stopping -> refining -> running
-                                -> completed
-any phase ---------------------> failed
-any active phase --------------> interrupted -> recovered phase
+new -> running -> checkpoint_pending -> refining -> resume_ready -> running
+                                                      |             -> completed
+any phase --------------------------------------------> failed
 ```
 
-It consumes domain facts—candidate observed, segment stopped or failed, pathway completed or
-failed—and produces a small set of commands: request a safe stop, run a pathway, start the next
-segment, or finish. The local executor runs those commands synchronously. The MatEnsemble adapter
-translates the same commands into chores and service cohorts.
+Its `start`, `observe`, `checkpoint`, `refine_pending`, `resume_segment`, and `complete` methods are
+scheduler-neutral. `run_ase()` invokes them synchronously; a MatEnsemble adapter can invoke the
+same methods from chores later.
 
 All candidate occurrences, including unresolved terminal changes, are registered. One stop request
 may cover multiple new reaction classes from the same segment, and production resumes only after
@@ -84,27 +81,20 @@ The package owns a scheduler-independent run directory:
 
 ```text
 run/
-  manifest.json
   state.json
   reactions.sqlite3
-  events/bond-events.jsonl
   segments/0000/
     trajectory.traj
     checkpoint/
       atoms.traj
       resume.json
-    detector-checkpoint.json
   candidates/<occurrence-id>/
     candidate.json  # includes detector configuration
     reactant.traj
     product.traj
   pathways/<occurrence-id>/
     result.json
-    relaxed-reactant.traj
-    relaxed-product.traj
-    neb.traj
-  adapters/<adapter-name>/
-    jobs.json
+    images.traj
 ```
 
 Every durable JSON record has a schema version. SQLite uses `PRAGMA user_version`. Artifact paths in
@@ -112,31 +102,28 @@ records are relative to the run root. Scientific state is not stored only in pic
 files, checkpoints, and candidate directories are published atomically when partial visibility
 could corrupt a restart.
 
-`state.json` is authoritative for the coordinator phase and recovery cursor. SQLite is
-authoritative for occurrence and class assignment; refinement lifecycle is added with the
-coordinator. Candidate bundles and pathway results are immutable scientific facts once atomically
-published. Each adapter exclusively owns its subdirectory; the core neither interprets nor
-rewrites scheduler metadata.
+`state.json` is authoritative for the `ReactionRun` phase and recovery cursor. SQLite is
+authoritative for occurrence and class assignment. Candidate bundles and pathway results are
+immutable scientific facts once atomically published. A future adapter exclusively owns any
+scheduler metadata it adds; the core does not interpret it.
 
-SQLite has one coordinator writer. Workers communicate by publishing complete files. The first
-implementation targets ordinary POSIX filesystems; correctness and performance on a particular
-shared HPC filesystem must be validated before relying on its SQLite locking behavior. A run may
-keep its registry node-local and export immutable artifacts when shared locking is unsuitable.
+SQLite has one `ReactionRun` writer. The first implementation targets ordinary POSIX filesystems;
+correctness and performance on a particular shared HPC filesystem must be validated before relying
+on its SQLite locking behavior. A run may keep its registry node-local and export immutable
+artifacts when shared locking is unsuitable.
 
 ## Calculator lifecycle
 
-Public APIs accept context-managed calculator providers or serializable import-path specifications,
-not persistent calculator instances. A provider receives a context identifying MD, endpoint
-relaxation, or a NEB image and must explicitly release its calculator lease. The standalone
-one-GPU executor asserts that at most one lease is live, releases one phase before constructing the
-next, and does not run NEB images concurrently by default. A subprocess-based provider remains an
-option for model stacks whose GPU allocator cannot release memory reliably in-process.
+Public execution APIs accept context-managed calculator providers, not persistent calculator
+instances. A provider receives a stage identifying MD, endpoint relaxation, or NEB and must release
+its calculator lease. The standalone executor sequences leases one at a time and does not run NEB
+images concurrently.
 
 GPU and electronic-structure packages remain user-selected dependencies.
 
-The first pathway primitive uses only a stage string (`relax_reactant`, `relax_product`, or `neb`)
-and performs no I/O. The later runner owns stage directories, durable outcome publication, and any
-serializable provider specification.
+The pathway primitive uses `relax_reactant`, `relax_product`, or `neb`; `ReactionRun` additionally
+uses `md` and owns durable outcome publication. Serializable provider specifications remain
+deferred until an adapter has a concrete need.
 
 ## Resume fidelity
 

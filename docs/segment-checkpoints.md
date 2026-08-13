@@ -32,8 +32,9 @@ assert segment.trajectory_path.name == "trajectory.traj"
 ```
 
 The first generation writes under `segments/0000/`; a resumed generation writes under
-`segments/0001/`, then `0002/`, and so on. Existing generation and checkpoint directories are
-never reopened or overwritten.
+`segments/0001/`, then `0002/`, and so on. Completed checkpoints and nonempty generations are never
+reopened or overwritten. `ReactionRun` may reclaim only an empty generation directory left by an
+interrupted resume handoff before its trajectory began.
 
 ## Publication and fidelity
 
