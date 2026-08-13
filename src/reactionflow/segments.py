@@ -105,9 +105,15 @@ class SegmentStore:
         atoms: Atoms,
         global_step: int,
         global_frame: int,
+        *,
+        recover_empty: bool = False,
     ) -> SegmentGeneration:
         directory = self.segments / f"{generation:04d}"
-        directory.mkdir()
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            if not recover_empty or any(directory.iterdir()):
+                raise
         return SegmentGeneration(
             generation=generation,
             directory=directory,
@@ -177,7 +183,12 @@ class SegmentStore:
             raise
         return ResumeToken(final / "resume.json", segment.generation, step, frame)
 
-    def resume(self, token: ResumeToken) -> SegmentGeneration:
+    def resume(
+        self,
+        token: ResumeToken,
+        *,
+        recover_empty: bool = False,
+    ) -> SegmentGeneration:
         """Restore a checkpoint into a new immutable trajectory generation."""
 
         expected = self.segments / f"{token.source_generation:04d}" / "checkpoint" / "resume.json"
@@ -196,6 +207,7 @@ class SegmentStore:
             atoms,
             token.global_step,
             token.global_frame,
+            recover_empty=recover_empty,
         )
 
 

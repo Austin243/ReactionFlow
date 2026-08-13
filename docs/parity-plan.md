@@ -99,20 +99,20 @@ real driver requires one.
 
 ### RF-5: standalone ASE engine
 
-Add the small persistent coordinator, cooperative safe-boundary stop policy, an in-process frame
-observer, and a synchronous ASE segment runner. The one-GPU policy runs MD and pathway phases
-sequentially and releases calculators between them.
+Add one persistent `ReactionRun`, an in-process observer, and a synchronous ASE segment runner.
+The same manual methods remain usable by a later scheduler adapter. MD and pathway phases run
+sequentially and release calculators between them.
 
 Acceptance:
 
-- a deterministic CPU/EMT workflow performs MD, detects a new reaction, checkpoints, refines a real
-  pathway, and resumes;
-- a later graph-equivalent occurrence is retained without a second refinement;
-- interruption and `ReactionRun.open(...).resume(...)` recover from durable state; and
-- a fake one-GPU provider proves at most one calculator lease is live across every phase;
-- runnable CPU and serial-GPU-oriented examples document calculator setup, resume, artifacts, and
-  a generic batch launch; and
-- producer, detector, pathway, and resume failures have distinct statuses.
+- one deterministic analytic ASE run performs detect, stop, checkpoint, real CI-NEB refinement,
+  and resume to its requested total step;
+- a manually driven run reopens after a complete checkpoint and retains a reverse-equivalent
+  occurrence without a second refinement;
+- one atomic `state.json` carries phase, generation, counters, detector continuity, pending pathway
+  IDs, and failures;
+- pathway `result.json` and `images.traj` become visible together; and
+- a counting provider proves at most one calculator lease is live across MD and pathway phases.
 
 ### RF-6: external trajectory monitor
 

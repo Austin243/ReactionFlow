@@ -12,7 +12,8 @@ MatEnsemble. ReactionFlow will be usable in two modes:
 
 The project is under active development. Geometric bond detection, reaction-candidate tracking,
 exact topology identity, durable occurrence storage, standalone CI-NEB refinement, and structural
-segment checkpoints are the first implemented layers; the remaining extraction is tracked in
+segment checkpoints now form a synchronous standalone ASE workflow; the remaining extraction is
+tracked in
 [docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
@@ -42,6 +43,7 @@ Available layers:
 - [Occurrence storage](docs/occurrence-store.md)
 - [Pathway refinement](docs/pathway-refinement.md)
 - [Segment checkpoints](docs/segment-checkpoints.md)
+- [Standalone ASE runs](docs/standalone-ase.md)
 
 ## Initial extraction scope
 

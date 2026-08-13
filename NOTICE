@@ -17,6 +17,9 @@ candidate publication from those baseline sources without MatEnsemble controller
 upstream calculator registry or scheduler coupling. Detailed extraction notes are maintained in
 `docs/provenance.md`. `src/reactionflow/segments.py` adapts structural checkpoint and generation
 handling without the upstream driver reflection, stop-file policy, or exact-restart claims.
+`src/reactionflow/run.py` is a scheduler-independent rewrite informed by the upstream controller's
+high-level stop/refine/resume sequence; MatEnsemble pipeline, chore, manager, and Flux integration
+were not copied.
 
 As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
 remain preserved and the provenance ledger must be updated.

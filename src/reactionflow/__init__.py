@@ -11,6 +11,7 @@ from .detection import (
     atom_ids,
 )
 from .pathway import PathwayConfig, PathwayOutcome, refine_pathway
+from .run import ReactionRun, ReactionRunConfig, RunSummary
 
 try:
     __version__ = version("reactionflow")
@@ -24,7 +25,10 @@ __all__ = [
     "PathwayConfig",
     "PathwayOutcome",
     "ReactionCandidate",
+    "ReactionRun",
+    "ReactionRunConfig",
     "ReactionTracker",
+    "RunSummary",
     "__version__",
     "assign_atom_ids",
     "atom_ids",
