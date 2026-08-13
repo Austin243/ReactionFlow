@@ -176,6 +176,20 @@ class BondChangeDetector:
         return frozenset(self._stable)
 
     @property
+    def pending_bonds(self) -> frozenset[Bond] | None:
+        """Provisional topology while threshold crossings await persistence."""
+
+        if not self._pending:
+            return None
+        bonds = set(self._stable)
+        for bond, event_type in self._pending:
+            if event_type == "formed":
+                bonds.add(bond)
+            else:
+                bonds.discard(bond)
+        return frozenset(bonds)
+
+    @property
     def last_frame(self) -> int | None:
         return self._last_frame
 

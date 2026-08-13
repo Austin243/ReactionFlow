@@ -49,6 +49,15 @@ RF-1 deliberately promotes the reusable detection surface at the top level:
 Detector checkpoints are small versioned dictionaries. The contract may grow when the durable run
 store has a concrete need for migrations or typed errors.
 
+RF-2a promotes the in-memory candidate surface:
+
+- `ReactionTracker` aggregates stable topologies; and
+- `ReactionCandidate` carries independent reactant/product snapshots and one connected changed
+  region.
+
+Reaction identity, class IDs, and durable candidate serialization are deliberately not part of
+this surface yet.
+
 ## Calculator provider
 
 A calculator provider returns a context-managed lease containing an ASE calculator. Acquisition is

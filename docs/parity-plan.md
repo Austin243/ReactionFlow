@@ -27,24 +27,33 @@ Acceptance:
 - detector state round-trips through versioned JSON; and
 - the implementation has no scheduler or model-stack imports.
 
-### RF-2: generic candidate tracking, identity, and registry
+### RF-2a: generic candidate tracking
 
-Add topology-transition tracking, connected changed regions, reaction graph construction,
-forward/reverse equivalence, exact graph isomorphism, the SQLite registry, and atomic candidate
-bundles.
+Add topology-transition tracking, stable product windows, connected changed regions, endpoint
+snapshots, and generic unresolved output at stream termination.
 
 Transition aggregation is generic. It must not special-case hydrogen handoffs or any other
-element. Temporal coalescing, if needed, applies uniformly according to configuration.
+element. Product stability applies uniformly according to configuration.
 
 Acceptance:
 
 - disconnected changes produce distinct candidates;
-- atom renumbering and direction reversal preserve class identity;
-- every occurrence is retained after reopening SQLite;
-- multiple candidates from one frame or segment are all registered; and
-- aggregation tests parameterized over hydrogen and non-hydrogen element assignments produce the
-  same candidate boundaries and control behavior for the same topology-event stream; and
-- an unfinished topology change at segment termination becomes an auditable unresolved occurrence.
+- the retained reactant precedes a detector persistence crossing;
+- product-topology changes restart stability without replacing that reactant;
+- hydrogen and non-hydrogen streams produce the same candidate boundaries and control behavior;
+  and
+- unfinished product topologies become unresolved candidates at stream termination.
+
+### RF-2b: exact reaction identity
+
+Add element-labeled reaction graphs, unchanged/formed/broken edge labels, atom-renumbering
+invariance, forward/reverse equivalence, and exact graph isomorphism. This increment contains no
+registry or file I/O.
+
+### RF-2c: occurrence registry and candidate artifacts
+
+Add the single-writer SQLite registry and atomic candidate bundles. Every occurrence is retained,
+graph-equivalent duplicates share a class, and all candidates from one frame are registered.
 
 ### RF-3: standalone pathway refinement
 
