@@ -31,8 +31,8 @@ chemistry policies may be added later as optional user-provided policies, never 
 Stable atom IDs are required from the initial frame onward and are validated at every boundary.
 The canonical ASE representation is the integer array `atoms.arrays["atom_id"]`. A standalone run
 assigns IDs once if they are absent; an external producer must provide them. Compatibility readers
-may accept `atoms.info["atom_ids"]`, but normalize it before writing and reject conflicting
-representations. Array reordering must not change reaction identity.
+may accept `atoms.info["atom_ids"]`. Trajectory publication and ID transport are added with the
+segment layer. Array reordering must not change reaction identity.
 
 The first-alpha reaction graph labels nodes by element and edges as unchanged, formed, or broken
 within the connected region touched by a change. Geometry, bond order, charge, spin,
