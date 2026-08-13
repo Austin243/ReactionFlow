@@ -15,7 +15,8 @@ policy was not copied. `src/reactionflow/store.py` adapts the occurrence registr
 candidate publication from those baseline sources without MatEnsemble controller coupling.
 `src/reactionflow/pathway.py` adapts fixed-cell endpoint relaxation and serial CI-NEB without the
 upstream calculator registry or scheduler coupling. Detailed extraction notes are maintained in
-`docs/provenance.md`.
+`docs/provenance.md`. `src/reactionflow/segments.py` adapts structural checkpoint and generation
+handling without the upstream driver reflection, stop-file policy, or exact-restart claims.
 
 As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
 remain preserved and the provenance ledger must be updated.

@@ -65,6 +65,10 @@ RF-3 promotes `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()` for one 
 The context-managed `CalculatorProvider` type remains module-level while the standalone runner and
 MatEnsemble adapter establish its final context needs.
 
+RF-4 adds provisional module-level `SegmentStore`, `SegmentGeneration`, and `ResumeToken` APIs for
+structural checkpoint/resume. They remain outside the top-level facade until the standalone runner
+establishes how users normally reach them.
+
 ## Calculator provider
 
 A calculator provider returns a context-managed lease containing an ASE calculator. Acquisition is
