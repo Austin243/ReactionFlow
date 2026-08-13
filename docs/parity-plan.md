@@ -84,21 +84,24 @@ Acceptance:
 
 ### RF-4: segment, checkpoint, and resume protocol
 
-Add immutable segment generations, stop requests, callback-boundary checkpoints, resume tokens,
-and optional driver-state codecs.
+Add immutable segment generations and atomically published structural checkpoints with resume
+tokens. The caller chooses a safe checkpoint boundary.
 
 Acceptance:
 
 - structural restart preserves positions, momenta, cell, periodicity, stable IDs, and counters;
 - checkpoint data is atomically complete before its token becomes visible;
-- exact resume fails clearly without both saved driver state and restoration support; and
-- every generation writes a distinct trajectory.
+- every generation has a distinct trajectory path; and
+- completed checkpoint and generation directories are never overwritten.
+
+This increment does not claim exact restart. Driver-specific state codecs remain deferred until a
+real driver requires one.
 
 ### RF-5: standalone ASE engine
 
-Add the small persistent coordinator, an in-process frame observer, and a synchronous ASE segment
-runner. The one-GPU policy runs MD and pathway phases sequentially and releases calculators between
-them.
+Add the small persistent coordinator, cooperative safe-boundary stop policy, an in-process frame
+observer, and a synchronous ASE segment runner. The one-GPU policy runs MD and pathway phases
+sequentially and releases calculators between them.
 
 Acceptance:
 

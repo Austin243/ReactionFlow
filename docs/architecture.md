@@ -49,7 +49,7 @@ identity without silently reclassifying old records.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
 - `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, and serial ASE
   CI-NEB with context-managed calculator leases.
-- `segments.py`: stop, checkpoint, immutable generation, and resume contracts.
+- `segments.py`: structural checkpoints, immutable generations, and resume tokens.
 - `coordinator.py`: a small scheduler-neutral state machine.
 - `local.py`: synchronous ASE execution, including sequential one-GPU operation.
 - `trajectory.py`: optional append-only ASE trajectory monitoring and replay.
@@ -90,8 +90,9 @@ run/
   events/bond-events.jsonl
   segments/0000/
     trajectory.traj
-    checkpoint.traj
-    resume.json
+    checkpoint/
+      atoms.traj
+      resume.json
     detector-checkpoint.json
   candidates/<occurrence-id>/
     candidate.json  # includes detector configuration
@@ -142,8 +143,8 @@ serializable provider specification.
 ReactionFlow distinguishes:
 
 - **structural resume**: atoms, momenta, cell, periodicity, stable IDs, and counters are restored;
-- **exact resume**: structural state plus integrator, thermostat, random-number, and calculator
-  state are restored by an explicitly supported driver codec; and
+- **exact resume**: a future driver integration may restore structural state plus integrator,
+  thermostat, random-number, and calculator state through an explicitly supported codec; and
 - **unsupported resume**: required state cannot be reconstructed safely.
 
 The package must never silently describe a structural resume as bitwise exact.
