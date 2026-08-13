@@ -31,8 +31,9 @@ chemistry policies may be added later as optional user-provided policies, never 
 Stable atom IDs are required from the initial frame onward and are validated at every boundary.
 The canonical ASE representation is the integer array `atoms.arrays["atom_id"]`. A standalone run
 assigns IDs once if they are absent; an external producer must provide them. Compatibility readers
-may accept `atoms.info["atom_ids"]`. Trajectory publication and ID transport are added with the
-segment layer. Array reordering must not change reaction identity.
+may accept `atoms.info["atom_ids"]`. Candidate bundles mirror IDs for ASE trajectory transport;
+segment-wide publication is added with the segment layer. Array reordering must not change
+reaction identity.
 
 The first-alpha reaction graph labels nodes by element and edges as unchanged, formed, or broken
 within the connected region touched by a change. Geometry, bond order, charge, spin,
@@ -71,9 +72,10 @@ failed—and produces a small set of commands: request a safe stop, run a pathwa
 segment, or finish. The local executor runs those commands synchronously. The MatEnsemble adapter
 translates the same commands into chores and service cohorts.
 
-All complete candidate occurrences are registered. One stop request may cover multiple new
-reaction classes from the same segment, and production resumes only after the selected refinements
-are complete. Duplicate occurrences are retained but do not automatically launch another pathway.
+All candidate occurrences, including unresolved terminal changes, are registered. One stop request
+may cover multiple new reaction classes from the same segment, and production resumes only after
+the selected refinements are complete. Duplicate occurrences are retained but do not automatically
+launch another pathway; only a resolved occurrence may represent a class for refinement.
 
 ## Artifact ownership
 
@@ -90,13 +92,11 @@ run/
     checkpoint.traj
     resume.json
     detector-checkpoint.json
-  candidates/<candidate-id>/
-    candidate.json
-    candidate-status.json
+  candidates/<occurrence-id>/
+    candidate.json  # includes detector configuration
     reactant.traj
     product.traj
-    detector-config.json
-  pathways/<candidate-id>/
+  pathways/<occurrence-id>/
     result.json
     relaxed-reactant.traj
     relaxed-product.traj
@@ -111,9 +111,10 @@ files, checkpoints, and candidate directories are published atomically when part
 could corrupt a restart.
 
 `state.json` is authoritative for the coordinator phase and recovery cursor. SQLite is
-authoritative for occurrence, class, and refinement lifecycle. Candidate bundles and pathway
-results are immutable scientific facts once atomically published. Each adapter exclusively owns
-its subdirectory; the core neither interprets nor rewrites scheduler metadata.
+authoritative for occurrence and class assignment; refinement lifecycle is added with the
+coordinator. Candidate bundles and pathway results are immutable scientific facts once atomically
+published. Each adapter exclusively owns its subdirectory; the core neither interprets nor
+rewrites scheduler metadata.
 
 SQLite has one coordinator writer. Workers communicate by publishing complete files. The first
 implementation targets ordinary POSIX filesystems; correctness and performance on a particular

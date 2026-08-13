@@ -11,8 +11,9 @@ Extraction baseline:
 `src/matensemble/analysis/bonds.py` at the baseline commit. Its identity contract and public API
 have been generalized for ReactionFlow. `src/reactionflow/candidates.py` adapts generic tracking
 and exact graph identity from `src/matensemble/reactions/core.py`; its element-specific handoff
-policy and registry were not copied. Detailed extraction notes are maintained in
-`docs/provenance.md`.
+policy was not copied. `src/reactionflow/store.py` adapts the occurrence registry and atomic
+candidate publication from those baseline sources without MatEnsemble controller coupling.
+Detailed extraction notes are maintained in `docs/provenance.md`.
 
 As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
 remain preserved and the provenance ledger must be updated.

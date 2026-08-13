@@ -49,5 +49,6 @@ elements: hydrogen, metals, solvents, and other atoms receive no special transit
 ## Current limits
 
 This layer identifies geometric topology-change occurrences. The separate
-[reaction topology identity](reaction-identity.md) layer compares candidates. Neither layer writes
-a registry, publishes files, locates a transition state, or establishes kinetics.
+[reaction topology identity](reaction-identity.md) layer compares candidates, and the
+[occurrence store](occurrence-store.md) retains them. These layers do not locate a transition state
+or establish kinetics.
