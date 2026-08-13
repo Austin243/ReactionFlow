@@ -10,8 +10,8 @@ MatEnsemble. ReactionFlow will be usable in two modes:
 2. through a thin MatEnsemble adapter that supplies scheduling and resources without becoming a
    dependency of the ReactionFlow core.
 
-The project is under active development. Persistent geometric bond-change detection is the first
-implemented layer; the remaining extraction is tracked in
+The project is under active development. Geometric bond detection and in-memory reaction-candidate
+tracking are the first implemented layers; the remaining extraction is tracked in
 [docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
@@ -33,8 +33,10 @@ ownership and [docs/public-contract.md](docs/public-contract.md) for the provisi
 
 ## Available now
 
-The first implemented layer is persistent geometric bond-change detection. See
-[Geometric bond-change detection](docs/bond-detection.md).
+Available layers:
+
+- [Geometric bond-change detection](docs/bond-detection.md)
+- [Reaction candidate tracking](docs/candidate-tracking.md)
 
 ## Initial extraction scope
 

@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .candidates import ReactionCandidate, ReactionTracker
 from .detection import (
     BondChangeDetector,
     BondDetectorConfig,
@@ -19,6 +20,8 @@ __all__ = [
     "BondChangeDetector",
     "BondDetectorConfig",
     "BondEvent",
+    "ReactionCandidate",
+    "ReactionTracker",
     "__version__",
     "assign_atom_ids",
     "atom_ids",

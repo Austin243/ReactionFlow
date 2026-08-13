@@ -38,7 +38,9 @@ def test_persistence_hysteresis_formation_and_breakage() -> None:
     assert detector.process(pair_frame("CO", 2.0), frame=0) == []
 
     assert detector.process(pair_frame("CO", 1.5), frame=1) == []
+    assert detector.pending_bonds == frozenset({(10, 20)})
     assert detector.process(pair_frame("CO", 1.6), frame=2) == []  # reset
+    assert detector.pending_bonds is None
     assert detector.process(pair_frame("CO", 1.4), frame=3) == []
     formed = detector.process(pair_frame("CO", 1.3), frame=4)[0]
     assert (formed.event_type, formed.atom_ids, formed.symbols) == (

@@ -42,8 +42,9 @@ identity without silently reclassifying old records.
 
 ## Planned modules
 
-- `models.py`: versioned configuration, candidate, outcome, and status records.
-- `detection.py`: bond-change detection and generic topology-transition tracking.
+- `models.py`: future versioned configuration, outcome, and status records.
+- `detection.py`: persistent geometric bond-change detection.
+- `candidates.py`: generic topology-transition tracking and candidate records.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
 - `pathway.py`: endpoint preparation, relaxation, interpolation, and ASE CI-NEB.
 - `segments.py`: stop, checkpoint, immutable generation, and resume contracts.
