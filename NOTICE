@@ -9,9 +9,10 @@ Extraction baseline:
 
 `src/reactionflow/detection.py` adapts the geometric detector from
 `src/matensemble/analysis/bonds.py` at the baseline commit. Its identity contract and public API
-have been generalized for ReactionFlow. `src/reactionflow/candidates.py` adapts the generic
-topology-tracking portions of `src/matensemble/reactions/core.py`; its element-specific handoff
-policy was not copied. Detailed extraction notes are maintained in `docs/provenance.md`.
+have been generalized for ReactionFlow. `src/reactionflow/candidates.py` adapts generic tracking
+and exact graph identity from `src/matensemble/reactions/core.py`; its element-specific handoff
+policy and registry were not copied. Detailed extraction notes are maintained in
+`docs/provenance.md`.
 
 As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
 remain preserved and the provenance ledger must be updated.

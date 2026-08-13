@@ -13,6 +13,7 @@ authors = [{ name = "Austin Ellis" }]
 maintainers = [{ name = "Austin Ellis" }]
 dependencies = [
   "ase>=3.22",
+  "networkx>=3.4",
   "numpy>=1.26",
 ]
 

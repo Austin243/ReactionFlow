@@ -10,16 +10,16 @@ MatEnsemble. ReactionFlow will be usable in two modes:
 2. through a thin MatEnsemble adapter that supplies scheduling and resources without becoming a
    dependency of the ReactionFlow core.
 
-The project is under active development. Geometric bond detection and in-memory reaction-candidate
-tracking are the first implemented layers; the remaining extraction is tracked in
-[docs/parity-plan.md](docs/parity-plan.md).
+The project is under active development. Geometric bond detection, reaction-candidate tracking,
+and exact topology identity are the first implemented layers; the remaining extraction is tracked
+in [docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
 
 - **General-purpose chemistry.** Detection and transition aggregation operate on generic atoms,
   bonds, and topology changes. ReactionFlow will not hard-code hydrogen handoffs or any other
   element-specific mechanism. Element and pair behavior may be supplied as data or configuration.
-- **ASE-first, scheduler-independent core.** The core depends on ASE, NumPy, and the
+- **ASE-first, scheduler-independent core.** The core depends on ASE, NetworkX, NumPy, and the
   Python standard library—not MatEnsemble, Flux, a particular ML potential, or an HPC system.
 - **Lean orchestration.** A small persistent state machine coordinates detection, checkpointing,
   refinement, and resume. ReactionFlow is not a general workflow engine.
@@ -37,6 +37,7 @@ Available layers:
 
 - [Geometric bond-change detection](docs/bond-detection.md)
 - [Reaction candidate tracking](docs/candidate-tracking.md)
+- [Reaction topology identity](docs/reaction-identity.md)
 
 ## Initial extraction scope
 
