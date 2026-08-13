@@ -44,7 +44,7 @@ identity without silently reclassifying old records.
 
 - `models.py`: future versioned configuration, outcome, and status records.
 - `detection.py`: persistent geometric bond-change detection.
-- `candidates.py`: generic topology-transition tracking and candidate records.
+- `candidates.py`: generic topology-transition tracking, candidate records, and exact identity.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
 - `pathway.py`: endpoint preparation, relaxation, interpolation, and ASE CI-NEB.
 - `segments.py`: stop, checkpoint, immutable generation, and resume contracts.

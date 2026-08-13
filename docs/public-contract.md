@@ -55,8 +55,8 @@ RF-2a promotes the in-memory candidate surface:
 - `ReactionCandidate` carries independent reactant/product snapshots and one connected changed
   region.
 
-Reaction identity, class IDs, and durable candidate serialization are deliberately not part of
-this surface yet.
+RF-2b adds `same_reaction()` for exact forward/reverse topology identity. NetworkX graph objects,
+class IDs, and durable candidate serialization remain implementation details or future work.
 
 ## Calculator provider
 

@@ -50,6 +50,11 @@ Add element-labeled reaction graphs, unchanged/formed/broken edge labels, atom-r
 invariance, forward/reverse equivalence, and exact graph isomorphism. This increment contains no
 registry or file I/O.
 
+Acceptance:
+
+- atom renumbering, array order, geometry, and direction do not change topology identity; and
+- element labels, connectivity, and non-reversed change labels must match exactly.
+
 ### RF-2c: occurrence registry and candidate artifacts
 
 Add the single-writer SQLite registry and atomic candidate bundles. Every occurrence is retained,

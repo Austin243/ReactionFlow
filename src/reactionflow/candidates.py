@@ -6,6 +6,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from numbers import Integral
 
+import networkx as nx
 from ase import Atoms
 
 from .detection import Bond, atom_ids
@@ -67,6 +68,67 @@ def _changed_regions(
         unseen -= region
         regions.append(tuple(sorted(region)))
     return tuple(sorted(regions))
+
+
+def _reaction_graph(candidate: ReactionCandidate, *, reverse: bool = False) -> nx.Graph:
+    reactant_symbols = dict(
+        zip(
+            atom_ids(candidate.reactant),
+            candidate.reactant.get_chemical_symbols(),
+            strict=True,
+        )
+    )
+    product_symbols = dict(
+        zip(
+            atom_ids(candidate.product),
+            candidate.product.get_chemical_symbols(),
+            strict=True,
+        )
+    )
+    region = set(candidate.atom_ids)
+    if (
+        not region <= reactant_symbols.keys()
+        or not region <= product_symbols.keys()
+        or any(reactant_symbols[atom_id] != product_symbols[atom_id] for atom_id in region)
+    ):
+        raise ValueError("candidate endpoint identities do not match")
+
+    reactant = set(_bonds(candidate.reactant_bonds, region))
+    product = set(_bonds(candidate.product_bonds, region))
+    graph = nx.Graph()
+    graph.add_nodes_from(
+        (atom_id, {"element": reactant_symbols[atom_id]}) for atom_id in candidate.atom_ids
+    )
+    for first, second in reactant | product:
+        if (first, second) in reactant and (first, second) in product:
+            change = "unchanged"
+        elif (first, second) in product:
+            change = "formed"
+        else:
+            change = "broken"
+        if reverse:
+            change = {"formed": "broken", "broken": "formed"}.get(change, change)
+        graph.add_edge(first, second, change=change)
+    return graph
+
+
+def same_reaction(first: ReactionCandidate, second: ReactionCandidate) -> bool:
+    """Return whether candidates are exact forward/reverse graph equivalents."""
+
+    node_match = nx.algorithms.isomorphism.categorical_node_match("element", None)
+    edge_match = nx.algorithms.isomorphism.categorical_edge_match("change", None)
+    first_graph = _reaction_graph(first)
+    return nx.is_isomorphic(
+        first_graph,
+        _reaction_graph(second),
+        node_match=node_match,
+        edge_match=edge_match,
+    ) or nx.is_isomorphic(
+        first_graph,
+        _reaction_graph(second, reverse=True),
+        node_match=node_match,
+        edge_match=edge_match,
+    )
 
 
 class ReactionTracker:
@@ -199,4 +261,4 @@ class ReactionTracker:
         return result
 
 
-__all__ = ["ReactionCandidate", "ReactionTracker"]
+__all__ = ["ReactionCandidate", "ReactionTracker", "same_reaction"]

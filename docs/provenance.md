@@ -10,7 +10,7 @@ Extraction baseline: `Austin243/MatEnsemble-private` at
 | ReactionFlow destination | MatEnsemble source | Adaptation status |
 | --- | --- | --- |
 | `detection.py` | `src/matensemble/analysis/bonds.py` at baseline commit; tests adapted from `tests/test_bond_detector.py` | RF-1 implemented; preserved hysteresis, persistence, MIC distances, stable topology, and checkpoint recovery. Uses explicit stable integer IDs, a fresh ASE neighbor list per frame, and no element-specific control flow. |
-| `candidates.py` | Generic tracking and changed-region portions of `src/matensemble/reactions/core.py` at baseline commit; tests adapted from `tests/test_reaction_identity.py` | RF-2a implemented; retains stable-product confirmation, connected-region splitting, endpoint snapshots, and unresolved draining. Hydrogen handoff/coordination policy, reaction identity/graph matching, and registry/file persistence were not copied. |
+| `candidates.py` | Tracking, changed-region, and exact graph-matching portions of `src/matensemble/reactions/core.py` at baseline commit; tests adapted from `tests/test_reaction_identity.py` | RF-2a/b implemented; retains candidate tracking and element/change-labeled forward/reverse identity. Hydrogen handoff/coordination policy and registry/file persistence were not copied. |
 | `store.py` | Registry portions of `src/matensemble/reactions/core.py`; publication portions of `src/matensemble/analysis/live_bonds.py` | Planned; version schemas and drain every occurrence. |
 | `pathway.py` | `src/matensemble/reactions/pathway.py` | Planned; preserve scientific gates and rename convergence claims. |
 | `segments.py` | `src/matensemble/reactions/segments.py` | Planned; make checkpoint publication atomic and clarify fidelity. |

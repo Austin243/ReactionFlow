@@ -48,6 +48,6 @@ elements: hydrogen, metals, solvents, and other atoms receive no special transit
 
 ## Current limits
 
-This layer identifies geometric topology-change occurrences. It does not decide whether two
-candidates are the same reaction class, write a registry, publish files, locate a transition state,
-or establish kinetics. Those capabilities are separate roadmap increments.
+This layer identifies geometric topology-change occurrences. The separate
+[reaction topology identity](reaction-identity.md) layer compares candidates. Neither layer writes
+a registry, publishes files, locates a transition state, or establishes kinetics.
