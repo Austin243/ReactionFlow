@@ -69,15 +69,17 @@ Acceptance:
 
 ### RF-3: standalone pathway refinement
 
-Add calculator specifications, endpoint alignment, active-region selection, variable-cell mapping,
-fixed-cell endpoint relaxation, relaxed-topology gates, IDPP interpolation, and ASE CI-NEB.
+Add a context-managed calculator-provider seam, endpoint alignment, active-region selection,
+bounded variable-cell mapping, fixed-cell endpoint relaxation, relaxed-topology gates, IDPP
+interpolation, and serial ASE CI-NEB. Artifact publication remains with the later runner.
 
 Acceptance:
 
-- the existing analytic double-well test reproduces its approximately 1 eV barrier;
-- endpoint and NEB artifacts are always bounded and inspectable;
-- collapsed, unresolved, optimizer-failed, and `neb_converged` outcomes are distinct;
-- stable IDs are handled identically regardless of their ASE storage location; and
+- the analytic double-well test reproduces its approximately 1 eV barrier with one calculator lease
+  live at a time;
+- calculator-free endpoint or NEB snapshots remain inspectable for every bounded outcome;
+- collapsed, unresolved, relaxation-failed, NEB-failed, and `neb_converged` outcomes are distinct;
+- stable IDs, product reordering, periodic cell mapping, and frozen spectators are exercised; and
 - documentation does not call CI-NEB convergence transition-state validation.
 
 ### RF-4: segment, checkpoint, and resume protocol

@@ -47,7 +47,8 @@ identity without silently reclassifying old records.
 - `detection.py`: persistent geometric bond-change detection.
 - `candidates.py`: generic topology-transition tracking, candidate records, and exact identity.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
-- `pathway.py`: endpoint preparation, relaxation, interpolation, and ASE CI-NEB.
+- `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, and serial ASE
+  CI-NEB with context-managed calculator leases.
 - `segments.py`: stop, checkpoint, immutable generation, and resume contracts.
 - `coordinator.py`: a small scheduler-neutral state machine.
 - `local.py`: synchronous ASE execution, including sequential one-GPU operation.
@@ -131,6 +132,10 @@ next, and does not run NEB images concurrently by default. A subprocess-based pr
 option for model stacks whose GPU allocator cannot release memory reliably in-process.
 
 GPU and electronic-structure packages remain user-selected dependencies.
+
+The first pathway primitive uses only a stage string (`relax_reactant`, `relax_product`, or `neb`)
+and performs no I/O. The later runner owns stage directories, durable outcome publication, and any
+serializable provider specification.
 
 ## Resume fidelity
 

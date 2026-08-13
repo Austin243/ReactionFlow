@@ -277,6 +277,22 @@ class OccurrenceStore:
             raise KeyError(occurrence_id)
         return _read_bundle(self.root / row["bundle"])[1]
 
+    def load_detector_config(self, occurrence_id: str) -> BondDetectorConfig:
+        """Load the detector settings recorded with an occurrence."""
+
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(occurrence_id)
+        metadata = json.loads(
+            (self.root / row["bundle"] / "candidate.json").read_text(encoding="utf-8")
+        )
+        if metadata.get("schema_version") != 1:
+            raise ValueError(f"unsupported candidate bundle for {occurrence_id!r}")
+        return BondDetectorConfig.from_dict(metadata["detector_config"])
+
     def records(self) -> tuple[OccurrenceRecord, ...]:
         """Return every occurrence in registration order."""
 

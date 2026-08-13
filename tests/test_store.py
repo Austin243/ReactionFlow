@@ -97,6 +97,7 @@ def test_store_retains_classes_representatives_and_endpoint_bundles(tmp_path) ->
     }
     metadata = json.loads((representative.directory / "candidate.json").read_text())
     assert metadata["detector_config"] == config.to_dict()
+    assert reopened.load_detector_config("segment-1-forward") == config
 
 
 def test_store_is_idempotent_and_recovers_atomic_publication(tmp_path, monkeypatch) -> None:

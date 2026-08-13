@@ -40,6 +40,9 @@ endpoint integrity digests, and detector configuration. ASE trajectory files car
 endpoint structures and transport stable atom IDs through `atoms.info["atom_ids"]`; loading
 restores the canonical `atoms.arrays["atom_id"]` representation.
 
+`load_detector_config()` returns the thresholds stored beside a candidate for later endpoint
+validation during [pathway refinement](pathway-refinement.md).
+
 Equivalent occurrences use [`same_reaction()`](reaction-identity.md) and share an opaque class ID.
 Every occurrence still has its own row and bundle. An unresolved terminal candidate is retained
 but is not a representative; the first later resolved match becomes the class representative.

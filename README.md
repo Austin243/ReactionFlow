@@ -11,8 +11,9 @@ MatEnsemble. ReactionFlow will be usable in two modes:
    dependency of the ReactionFlow core.
 
 The project is under active development. Geometric bond detection, reaction-candidate tracking,
-exact topology identity, and durable occurrence storage are the first implemented layers; the
-remaining extraction is tracked in [docs/parity-plan.md](docs/parity-plan.md).
+exact topology identity, durable occurrence storage, and standalone CI-NEB refinement are the
+first implemented layers; the remaining extraction is tracked in
+[docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
 
@@ -39,6 +40,7 @@ Available layers:
 - [Reaction candidate tracking](docs/candidate-tracking.md)
 - [Reaction topology identity](docs/reaction-identity.md)
 - [Occurrence storage](docs/occurrence-store.md)
+- [Pathway refinement](docs/pathway-refinement.md)
 
 ## Initial extraction scope
 
@@ -57,7 +59,7 @@ NEB, and reaction-network exploration are intentionally deferred.
 
 ## Development
 
-ReactionFlow currently requires Python 3.12 or newer.
+ReactionFlow currently requires Python 3.12 or newer and ASE 3.23 or newer.
 
 ```bash
 python -m pip install -e '.[dev]'

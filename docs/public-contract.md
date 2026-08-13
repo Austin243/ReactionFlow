@@ -61,6 +61,10 @@ class IDs, and graph serialization remain implementation details.
 RF-2c adds the provisional module-level `OccurrenceStore` and `OccurrenceRecord` APIs. They retain
 and reopen immutable candidate bundles; the future `ReactionRun` facade will own their normal use.
 
+RF-3 promotes `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()` for one in-memory candidate.
+The context-managed `CalculatorProvider` type remains module-level while the standalone runner and
+MatEnsemble adapter establish its final context needs.
+
 ## Calculator provider
 
 A calculator provider returns a context-managed lease containing an ASE calculator. Acquisition is

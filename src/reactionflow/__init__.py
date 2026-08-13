@@ -10,6 +10,7 @@ from .detection import (
     assign_atom_ids,
     atom_ids,
 )
+from .pathway import PathwayConfig, PathwayOutcome, refine_pathway
 
 try:
     __version__ = version("reactionflow")
@@ -20,10 +21,13 @@ __all__ = [
     "BondChangeDetector",
     "BondDetectorConfig",
     "BondEvent",
+    "PathwayConfig",
+    "PathwayOutcome",
     "ReactionCandidate",
     "ReactionTracker",
     "__version__",
     "assign_atom_ids",
     "atom_ids",
+    "refine_pathway",
     "same_reaction",
 ]
