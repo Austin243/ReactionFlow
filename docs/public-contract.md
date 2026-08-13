@@ -56,7 +56,10 @@ RF-2a promotes the in-memory candidate surface:
   region.
 
 RF-2b adds `same_reaction()` for exact forward/reverse topology identity. NetworkX graph objects,
-class IDs, and durable candidate serialization remain implementation details or future work.
+class IDs, and graph serialization remain implementation details.
+
+RF-2c adds the provisional module-level `OccurrenceStore` and `OccurrenceRecord` APIs. They retain
+and reopen immutable candidate bundles; the future `ReactionRun` facade will own their normal use.
 
 ## Calculator provider
 

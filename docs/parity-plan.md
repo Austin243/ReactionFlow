@@ -60,6 +60,13 @@ Acceptance:
 Add the single-writer SQLite registry and atomic candidate bundles. Every occurrence is retained,
 graph-equivalent duplicates share a class, and all candidates from one frame are registered.
 
+Acceptance:
+
+- every resolved or unresolved occurrence has its own immutable endpoint bundle and registry row;
+- exact topology matches share a class, while only the first resolved occurrence represents it;
+- stable IDs and detector settings survive bundle publication and reopening; and
+- same-ID retries are idempotent and complete bundles left before a database commit are recovered.
+
 ### RF-3: standalone pathway refinement
 
 Add calculator specifications, endpoint alignment, active-region selection, variable-cell mapping,
