@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import contextmanager
 from typing import ClassVar
 
@@ -76,11 +77,12 @@ def pair(distance: float) -> Atoms:
     return Atoms("H2", positions=[[0, 0, 0], [distance, 0, 0]])
 
 
-def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path) -> None:
+def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> None:
     atoms = pair(0.6)
     atoms.set_momenta([[-0.5, 0, 0], [0.5, 0, 0]])
     leases = LeaseCounter()
     run = ReactionRun.create(tmp_path, config=run_config())
+    caplog.set_level(logging.WARNING, logger="reactionflow.run")
 
     summary = run.run_ase(
         atoms,
@@ -105,11 +107,16 @@ def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path) -> None:
     assert (tmp_path / "segments/0001/trajectory.traj").is_file()
     assert leases.stages == ["md", "relax_reactant", "relax_product", "neb", "md"]
     assert leases.live == 0 and leases.max_live == 1
+    assert any(
+        "continuing generation 1 from a structural checkpoint" in message
+        for message in caplog.messages
+    )
 
 
-def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_path) -> None:
+def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_path, caplog) -> None:
     leases = LeaseCounter()
     run = ReactionRun.create(tmp_path, config=run_config(observation_interval=1))
+    caplog.set_level(logging.WARNING, logger="reactionflow.run")
     first = run.start(pair(0.65))
     broken = first.atoms.copy()
     broken.positions[1, 0] = 1.55
@@ -127,7 +134,12 @@ def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_pa
     assert outcome.converged
     (tmp_path / "segments/0001").mkdir()  # interrupted generation handoff
     second = reopened.resume_segment()
+    caplog.clear()
     reopened = ReactionRun.open(tmp_path)  # running state, before resumed MD starts
+    assert any(
+        "continuing generation 1 from a structural checkpoint" in message
+        for message in caplog.messages
+    )
     assert reopened.current_segment is not None
     second = reopened.current_segment
     reverse = second.atoms.copy()
