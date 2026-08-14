@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from collections.abc import Callable, Mapping
@@ -23,6 +24,13 @@ from .segments import ResumeToken, SegmentGeneration, SegmentStore
 from .store import OccurrenceRecord, OccurrenceStore
 
 DynamicsFactory = Callable[[Atoms], Any]
+
+_LOGGER = logging.getLogger(__name__)
+_STRUCTURAL_RESTART_NOTICE = (
+    "Exact ASE dynamics state was not restored; continuing generation %d from a structural "
+    "checkpoint. The caller will provide fresh RNG, thermostat, barostat, integrator, and "
+    "calculator runtime state."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +164,7 @@ class ReactionRun:
                 )
                 run._segment = run.segments.resume(token, recover_empty=True)
                 run._restore_observers(run._segment.atoms)
+                _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, run._generation)
         return run
 
     @property
@@ -451,6 +460,7 @@ class ReactionRun:
             self._restore_observers(self._segment.atoms)
             self._phase = "running"
             self._write_state()
+            _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, self._generation)
             return self._segment
         except Exception as error:
             self._record_failure("resume", error)

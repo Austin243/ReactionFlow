@@ -82,4 +82,7 @@ handoff; a generation whose trajectory has begun remains immutable.
 
 Recovery is structural: positions, momenta, cell, periodicity, stable IDs, and counters survive a
 checkpoint. Integrator, thermostat, random-number, and calculator state do not. An active segment
-interrupted before a checkpoint cannot be resumed by this version.
+interrupted before a checkpoint cannot be resumed by this version. On every completed-checkpoint
+resume, `ReactionRun` logs that exact ASE dynamics state was not restored and that it is continuing
+from a structural checkpoint. This notice does not block the restart; the caller supplies the
+runtime state used for the new segment.
