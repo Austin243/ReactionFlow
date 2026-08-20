@@ -43,6 +43,7 @@ Available layers:
 - [Occurrence storage](docs/occurrence-store.md)
 - [Pathway refinement](docs/pathway-refinement.md)
 - [Segment checkpoints](docs/segment-checkpoints.md)
+- [Exact runtime restart state](docs/exact-restart.md)
 - [Standalone ASE runs](docs/standalone-ase.md)
 
 ## Initial extraction scope
@@ -62,7 +63,7 @@ NEB, and reaction-network exploration are intentionally deferred.
 
 ## Development
 
-ReactionFlow currently requires Python 3.12 or newer and ASE 3.23 or newer.
+ReactionFlow currently requires Python 3.12 or newer and ASE 3.28 or newer.
 
 ```bash
 python -m pip install -e '.[dev]'
