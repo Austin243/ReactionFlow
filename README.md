@@ -3,18 +3,14 @@
 ReactionFlow is an early-stage Python package for detecting reaction events in atomistic
 trajectories and automating reaction-path refinement around those events.
 
-The project is being extracted from transition-path automation originally developed inside
-MatEnsemble. ReactionFlow will be usable in two modes:
-
-1. directly from an ASE molecular-dynamics process, including a serial one-GPU workflow; and
-2. through a thin MatEnsemble adapter that supplies scheduling and resources without becoming a
-   dependency of the ReactionFlow core.
+The project was extracted from transition-path automation originally developed inside
+MatEnsemble, but it now runs independently. Its core is a normal ASE process and has no
+MatEnsemble, Flux, scheduler, container, or MLIP dependency.
 
 The project is under active development. Geometric bond detection, reaction-candidate tracking,
 exact topology identity, durable occurrence storage, serial NEB/CI-NEB refinement, exact rolling
-checkpoints, and pause/refine/resume now form a synchronous standalone ASE workflow; remaining work is
-tracked in
-[docs/parity-plan.md](docs/parity-plan.md).
+checkpoints, and pause/refine/resume now form a synchronous standalone ASE workflow; remaining work
+is tracked in [docs/parity-plan.md](docs/parity-plan.md).
 
 ## Design principles
 
@@ -45,6 +41,7 @@ Available layers:
 - [Segment checkpoints](docs/segment-checkpoints.md)
 - [Exact runtime restart state](docs/exact-restart.md)
 - [Standalone ASE runs](docs/standalone-ase.md)
+- [Independent multi-GPU campaigns](docs/campaigns.md)
 
 ## Initial extraction scope
 
@@ -56,7 +53,7 @@ The first alpha will reproduce the useful capabilities of the private MatEnsembl
 - ASE IDPP interpolation and climbing-image NEB;
 - cooperative MD stop, checkpoint, and resume;
 - synchronous standalone execution and a live trajectory-watching mode; and
-- optional MatEnsemble integration through a narrow adapter.
+- arbitrary-size one-worker-per-GPU campaigns through a narrow user-selected MLIP adapter.
 
 Frequency calculations, imaginary-mode validation, IRC calculations, free energies, distributed
 NEB, and reaction-network exploration are intentionally deferred.
