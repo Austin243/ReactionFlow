@@ -4,6 +4,10 @@
 segment checkpoints in one scheduler-independent run directory. `run_ase()` executes those same
 operations synchronously.
 
+For production trajectories that require exact restart, use `run_exact()` with an
+`ExactRuntimeProvider`; see [Exact runtime restart state](exact-restart.md). `run_ase()` remains the
+small structural-restart path for simple calculators and dynamics.
+
 ```python
 from contextlib import contextmanager
 
@@ -80,9 +84,8 @@ contains versioned `result.json` and calculator-free `images.traj`. If interrupt
 completed checkpoint is claiming its still-empty next generation, reopening safely completes that
 handoff; a generation whose trajectory has begun remains immutable.
 
-Recovery is structural: positions, momenta, cell, periodicity, stable IDs, and counters survive a
-checkpoint. Integrator, thermostat, random-number, and calculator state do not. An active segment
-interrupted before a checkpoint cannot be resumed by this version. On every completed-checkpoint
-resume, `ReactionRun` logs that exact ASE dynamics state was not restored and that it is continuing
-from a structural checkpoint. This notice does not block the restart; the caller supplies the
-runtime state used for the new segment.
+For `run_ase()`, recovery is structural: positions, momenta, cell, periodicity, stable IDs, and
+counters survive a reaction checkpoint, but integrator, thermostat, random-number, and calculator
+state do not. On every such resume, `ReactionRun` logs that exact ASE dynamics state was not
+restored. `run_exact()` instead checkpoints those components and the full live monitor at every
+observation boundary and rejects any inexact provider.

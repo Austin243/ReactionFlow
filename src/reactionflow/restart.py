@@ -142,6 +142,14 @@ class ExactRestartSnapshot:
             write(atoms_path, self.atoms, format="traj")
 
             archive: dict[str, np.ndarray] = {}
+            atom_arrays: dict[str, str] = {}
+            for index, (name, array) in enumerate(sorted(self.atoms.arrays.items())):
+                array = np.asarray(array)
+                if array.dtype.hasobject:
+                    raise TypeError("atom arrays cannot use object dtype")
+                archive_name = f"atoms_{index:04d}"
+                archive[archive_name] = array
+                atom_arrays[name] = archive_name
             components: dict[str, dict[str, Any]] = {}
             for label, component in (
                 ("dynamics", self.dynamics),
@@ -162,6 +170,7 @@ class ExactRestartSnapshot:
             np.savez_compressed(arrays_path, **archive)
             manifest = {
                 "schema_version": 1,
+                "atom_arrays": atom_arrays,
                 "components": components,
                 "files": {
                     "atoms.traj": _digest(atoms_path),
@@ -200,7 +209,20 @@ class ExactRestartSnapshot:
             raise ValueError("exact-restart manifest has an invalid component set")
         with np.load(root / "arrays.npz", allow_pickle=False) as archive:
             restored: dict[str, ComponentState] = {}
-            referenced_arrays: set[str] = set()
+            atom_arrays = manifest.get("atom_arrays", {})
+            if not isinstance(atom_arrays, dict):
+                raise ValueError("exact-restart manifest has invalid atom arrays")
+            if any(
+                not isinstance(name, str)
+                or not name
+                or not isinstance(archive_name, str)
+                or not archive_name
+                for name, archive_name in atom_arrays.items()
+            ):
+                raise ValueError("exact-restart manifest has an invalid atom array")
+            referenced_arrays: set[str] = set(atom_arrays.values())
+            for name, archive_name in atom_arrays.items():
+                atoms.set_array(name, np.asarray(archive[archive_name]).copy())
             for label in ("dynamics", "calculator"):
                 value = components[label]
                 referenced_arrays.update(value.get("arrays", {}).values())

@@ -34,6 +34,7 @@ def _atoms() -> Atoms:
     )
     atoms.set_momenta([[0.03, -0.01, 0.02], [-0.02, 0.04, -0.03]])
     atoms.set_array("atom_id", np.asarray([10, 20]))
+    atoms.set_array("calculator_memory", np.asarray([[1.0, 2.0], [3.0, 4.0]]))
     return atoms
 
 
@@ -71,6 +72,11 @@ def test_restart_artifact_round_trips_and_checks_integrity(tmp_path) -> None:
 
     np.testing.assert_array_equal(restored.atoms.positions, snapshot.atoms.positions)
     np.testing.assert_array_equal(restored.atoms.get_momenta(), snapshot.atoms.get_momenta())
+    np.testing.assert_array_equal(restored.atoms.arrays["atom_id"], np.asarray([10, 20]))
+    np.testing.assert_array_equal(
+        restored.atoms.arrays["calculator_memory"],
+        snapshot.atoms.arrays["calculator_memory"],
+    )
     assert restored.calculator.kind == "test.harmonic-solid"
     assert restored.calculator.metadata["parameters"][0] == 1
     np.testing.assert_array_equal(

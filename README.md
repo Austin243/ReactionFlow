@@ -11,8 +11,8 @@ MatEnsemble. ReactionFlow will be usable in two modes:
    dependency of the ReactionFlow core.
 
 The project is under active development. Geometric bond detection, reaction-candidate tracking,
-exact topology identity, durable occurrence storage, standalone CI-NEB refinement, and structural
-segment checkpoints now form a synchronous standalone ASE workflow; the remaining extraction is
+exact topology identity, durable occurrence storage, serial NEB/CI-NEB refinement, exact rolling
+checkpoints, and pause/refine/resume now form a synchronous standalone ASE workflow; remaining work is
 tracked in
 [docs/parity-plan.md](docs/parity-plan.md).
 

@@ -1,8 +1,8 @@
 # Pathway refinement
 
-`refine_pathway()` relaxes one resolved candidate and runs a serial, fixed-cell climbing-image
-NEB. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
-callers retain ownership of artifacts and retry policy.
+`refine_pathway()` relaxes one resolved candidate and runs a serial, fixed-cell NEB followed by a
+separate climbing-image NEB stage. It is an in-memory scientific primitive; `ReactionRun`
+publishes its outcome while direct callers retain ownership of artifacts and retry policy.
 
 ```python
 from contextlib import contextmanager
@@ -46,12 +46,13 @@ calculator lease is live at a time, and the NEB images share one calculator in s
   to the reactant position.
 - Both endpoints are relaxed and checked against the exact bond thresholds used for detection.
   Collapsed, ambiguous, and unexpectedly changed endpoints do not proceed to NEB.
-- Intermediate images use ASE IDPP interpolation with minimum-image distances, followed by serial
-  improved-tangent climbing-image NEB.
+- Intermediate images use ASE IDPP interpolation with minimum-image distances. A serial
+  improved-tangent NEB converges first; only then is climbing enabled for the CI-NEB stage.
 
 `PathwayOutcome.status` is one of `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
-`neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB snapshots as far as
-the attempt progressed. Only `neb_converged` includes image energies and a forward barrier in eV.
+`ci_neb_failed`, `ci_neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB
+snapshots as far as the attempt progressed. Only `ci_neb_converged` includes image energies and a
+forward barrier in eV.
 
 ## Current limits
 

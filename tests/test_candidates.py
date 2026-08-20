@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from ase import Atoms
 
 from reactionflow import ReactionTracker, atom_ids
@@ -131,3 +132,49 @@ def test_finish_drains_pending_regions_as_unresolved() -> None:
         for candidate in candidates
     )
     assert tracker.finish() == ()
+
+
+def test_tracker_checkpoint_preserves_an_in_progress_topology_change(tmp_path) -> None:
+    ids = (10, 20)
+    tracker = ReactionTracker(stability_frames=2)
+    tracker.process(
+        tracked_frame("H2", 0, ids),
+        frame=0,
+        stable_bonds={(10, 20)},
+        pending_bonds=None,
+    )
+    tracker.process(
+        tracked_frame("H2", 1, ids),
+        frame=1,
+        stable_bonds={(10, 20)},
+        pending_bonds=set(),
+    )
+
+    checkpoint = tracker.write_checkpoint(tmp_path / "tracker")
+    restored = ReactionTracker.read_checkpoint(checkpoint, stability_frames=2)
+    assert restored.last_frame == 1
+    assert (
+        restored.process(
+            tracked_frame("H2", 2, ids),
+            frame=2,
+            stable_bonds=set(),
+            pending_bonds=None,
+        )
+        == ()
+    )
+    (candidate,) = restored.process(
+        tracked_frame("H2", 3, ids),
+        frame=3,
+        stable_bonds=set(),
+        pending_bonds=None,
+    )
+    assert (candidate.reactant_frame, candidate.product_frame) == (0, 1)
+    assert candidate.reactant_bonds == frozenset({(10, 20)})
+    assert candidate.product_bonds == frozenset()
+
+    with pytest.raises(FileExistsError):
+        tracker.write_checkpoint(checkpoint)
+    accepted = checkpoint / "accepted.traj"
+    accepted.write_bytes(accepted.read_bytes() + b"corrupt")
+    with pytest.raises(ValueError, match="integrity check"):
+        ReactionTracker.read_checkpoint(checkpoint)

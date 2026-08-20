@@ -15,7 +15,7 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
-from reactionflow.pathway import NEB
+from reactionflow.pathway import FIRE, NEB
 
 
 class DoubleWell(Calculator):
@@ -82,16 +82,25 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
 ) -> None:
     stages: list[str] = []
     interpolation: dict[str, object] = {}
+    climbing_stages: list[bool] = []
     live = 0
     max_live = 0
 
     original_interpolate = NEB.interpolate
+    original_run = FIRE.run
 
     def record_interpolation(self, *args, **kwargs):
         interpolation.update(kwargs)
         return original_interpolate(self, *args, **kwargs)
 
     monkeypatch.setattr(NEB, "interpolate", record_interpolation)
+
+    def record_run(self, *args, **kwargs):
+        if isinstance(self.atoms, NEB):
+            climbing_stages.append(bool(self.atoms.climb))
+        return original_run(self, *args, **kwargs)
+
+    monkeypatch.setattr(FIRE, "run", record_run)
 
     @contextmanager
     def provider(stage: str):
@@ -114,6 +123,7 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
             images=5,
             neb_fmax=0.03,
             neb_steps=250,
+            ci_neb_steps=250,
         ),
         detector_config=BondDetectorConfig(pair_thresholds={"He-He": (5.07, 5.13)}),
     )
@@ -123,6 +133,7 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
     assert len(outcome.energies) == len(outcome.images) == 5
     assert stages == ["relax_reactant", "relax_product", "neb"]
     assert interpolation == {"method": "idpp", "mic": True}
+    assert climbing_stages == [False, True]
     assert live == 0 and max_live == 1
     assert all(atom_ids(image) == (0, 1, 2) and image.calc is None for image in outcome.images)
     assert all(np.array_equal(image.cell, outcome.images[0].cell) for image in outcome.images)

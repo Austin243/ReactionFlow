@@ -6,7 +6,7 @@ from ase import Atoms
 from ase.calculators.emt import EMT
 
 import reactionflow.segments as segment_module
-from reactionflow import atom_ids
+from reactionflow import ComponentState, ExactRestartSnapshot, atom_ids
 from reactionflow.segments import ResumeToken, SegmentStore
 
 
@@ -78,3 +78,30 @@ def test_checkpoint_publication_is_atomic_and_generations_are_immutable(
     store.resume(token)
     with pytest.raises(FileExistsError):
         store.resume(token)
+
+
+def test_exact_checkpoint_binds_runtime_state_to_the_resume_token(tmp_path) -> None:
+    atoms = Atoms("He", positions=[[0.1, 0.2, 0.3]])
+    atoms.set_array("atom_id", np.asarray([42]))
+    store = SegmentStore(tmp_path)
+    segment = store.start(atoms)
+    exact = ExactRestartSnapshot(
+        atoms=segment.atoms,
+        dynamics=ComponentState(kind="test.driver", metadata={"nsteps": 3}),
+        calculator=ComponentState(kind="test.calculator"),
+    )
+
+    token = store.checkpoint(
+        segment,
+        segment.atoms,
+        global_step=3,
+        global_frame=1,
+        exact_restart=exact,
+    )
+    persisted = ResumeToken.read(token.path)
+    restored = store.read_exact(persisted)
+
+    assert persisted.fidelity == "exact"
+    assert persisted.exact_restart_path == token.path.parent / "exact-restart"
+    assert restored.dynamics.metadata["nsteps"] == 3
+    np.testing.assert_array_equal(restored.atoms.positions, segment.atoms.positions)
