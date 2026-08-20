@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 authors = [{ name = "Austin Ellis" }]
 maintainers = [{ name = "Austin Ellis" }]
 dependencies = [
-  "ase>=3.23",
+  "ase>=3.28",
   "networkx>=3.4",
   "numpy>=1.26",
 ]

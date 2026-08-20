@@ -11,6 +11,7 @@ from .detection import (
     atom_ids,
 )
 from .pathway import PathwayConfig, PathwayOutcome, refine_pathway
+from .restart import ComponentState, ExactRestartSnapshot
 from .run import ReactionRun, ReactionRunConfig, RunSummary
 
 try:
@@ -22,6 +23,8 @@ __all__ = [
     "BondChangeDetector",
     "BondDetectorConfig",
     "BondEvent",
+    "ComponentState",
+    "ExactRestartSnapshot",
     "PathwayConfig",
     "PathwayOutcome",
     "ReactionCandidate",
