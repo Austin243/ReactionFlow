@@ -13,6 +13,7 @@ from .detection import (
 from .pathway import PathwayConfig, PathwayOutcome, refine_pathway
 from .restart import ComponentState, ExactRestartSnapshot
 from .run import ReactionRun, ReactionRunConfig, RunSummary
+from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
 
 try:
     __version__ = version("reactionflow")
@@ -24,7 +25,9 @@ __all__ = [
     "BondDetectorConfig",
     "BondEvent",
     "ComponentState",
+    "ExactDynamicsRuntime",
     "ExactRestartSnapshot",
+    "ExactRuntimeProvider",
     "PathwayConfig",
     "PathwayOutcome",
     "ReactionCandidate",

@@ -14,10 +14,14 @@ from ase.md.verlet import VelocityVerlet
 
 from reactionflow import (
     BondDetectorConfig,
+    ComponentState,
+    ExactRestartSnapshot,
     PathwayConfig,
     ReactionRun,
     ReactionRunConfig,
+    assign_atom_ids,
 )
+from reactionflow.segments import ResumeToken
 
 
 class PairDoubleWell(Calculator):
@@ -54,11 +58,15 @@ class LeaseCounter:
             self.live -= 1
 
 
-def run_config(*, observation_interval: int = 9) -> ReactionRunConfig:
+def run_config(
+    *,
+    observation_interval: int = 9,
+    persistence_frames: int = 1,
+) -> ReactionRunConfig:
     return ReactionRunConfig(
         observation_interval=observation_interval,
         detector=BondDetectorConfig(
-            persistence_frames=1,
+            persistence_frames=persistence_frames,
             pair_thresholds={"H-H": (0.8, 1.2)},
         ),
         candidate_stability_frames=1,
@@ -69,6 +77,7 @@ def run_config(*, observation_interval: int = 9) -> ReactionRunConfig:
             images=3,
             neb_fmax=0.005,
             neb_steps=200,
+            ci_neb_steps=200,
         ),
     )
 
@@ -99,7 +108,7 @@ def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> No
     result_dir = tmp_path / "pathways" / record.occurrence_id
     assert {path.name for path in result_dir.iterdir()} == {"result.json", "images.traj"}
     result = json.loads((result_dir / "result.json").read_text())
-    assert result["status"] == "neb_converged"
+    assert result["status"] == "ci_neb_converged"
     assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
     assert len(read(result_dir / "images.traj", ":")) == 3
     assert (tmp_path / "segments/0000/checkpoint/resume.json").is_file()
@@ -157,3 +166,135 @@ def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_pa
     assert leases.stages == ["md", "relax_reactant", "relax_product", "neb"]
     assert leases.live == 0 and leases.max_live == 1
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+class ScriptedExactRuntime:
+    def __init__(
+        self,
+        atoms: Atoms,
+        *,
+        nsteps: int = 0,
+        rng_state=None,
+        before_run=None,
+    ) -> None:
+        self._atoms = atoms
+        self._nsteps = nsteps
+        self._rng = np.random.default_rng(1234)
+        if rng_state is not None:
+            self._rng.bit_generator.state = rng_state
+        self._before_run = before_run
+
+    @property
+    def atoms(self) -> Atoms:
+        return self._atoms
+
+    @property
+    def nsteps(self) -> int:
+        return self._nsteps
+
+    def run(self, steps: int) -> None:
+        if self._before_run is not None:
+            self._before_run()
+        for _ in range(steps):
+            self._rng.random()
+            self._nsteps += 1
+            if self._nsteps >= 1:
+                self._atoms.positions[1, 0] = 1.55
+
+    def snapshot(self) -> ExactRestartSnapshot:
+        return ExactRestartSnapshot(
+            atoms=self._atoms,
+            dynamics=ComponentState(
+                kind="test.scripted-dynamics",
+                metadata={
+                    "nsteps": self._nsteps,
+                    "rng_state": self._rng.bit_generator.state,
+                },
+            ),
+            calculator=ComponentState(kind="test.stateless-calculator"),
+        )
+
+
+class ScriptedRuntimeProvider:
+    def __init__(self, leases: LeaseCounter, *, interrupt_after_calls: int | None = None):
+        self.leases = leases
+        self.interrupt_after_calls = interrupt_after_calls
+        self.calls = 0
+
+    def _before_run(self) -> None:
+        self.calls += 1
+        if self.interrupt_after_calls is not None and self.calls > self.interrupt_after_calls:
+            raise KeyboardInterrupt("simulated scheduler interruption")
+
+    @contextmanager
+    def start(self, atoms: Atoms):
+        with self.leases("md"):
+            yield ScriptedExactRuntime(atoms, before_run=self._before_run)
+
+    @contextmanager
+    def restore(self, snapshot: ExactRestartSnapshot):
+        metadata = snapshot.dynamics.metadata
+        with self.leases("md"):
+            yield ScriptedExactRuntime(
+                snapshot.atoms,
+                nsteps=int(metadata["nsteps"]),
+                rng_state=metadata["rng_state"],
+                before_run=self._before_run,
+            )
+
+
+def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path) -> None:
+    initial = pair(0.6)
+    leases = LeaseCounter()
+    interrupted = ReactionRun.create(
+        tmp_path,
+        config=run_config(observation_interval=1, persistence_frames=2),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="scheduler interruption"):
+        interrupted.run_exact(
+            initial,
+            runtime_provider=ScriptedRuntimeProvider(leases, interrupt_after_calls=1),
+            pathway_calculator_provider=leases,
+            total_steps=4,
+        )
+
+    interrupted_state = json.loads((tmp_path / "state.json").read_text())
+    assert (interrupted_state["phase"], interrupted_state["global_step"]) == ("running", 1)
+    assert interrupted_state["detector_state"]["pending"]
+    assert interrupted_state["active_checkpoint"] is not None
+
+    reopened = ReactionRun.open(tmp_path)
+    summary = reopened.run_exact(
+        runtime_provider=ScriptedRuntimeProvider(leases),
+        pathway_calculator_provider=leases,
+        total_steps=4,
+    )
+
+    assert (summary.phase, summary.generation, summary.global_step) == ("completed", 1, 4)
+    assert (summary.occurrences, summary.pathways) == (1, 1)
+    final_state = json.loads((tmp_path / "state.json").read_text())
+    final_snapshot = ExactRestartSnapshot.read(
+        tmp_path / final_state["active_checkpoint"] / "exact-restart"
+    )
+    control_atoms = assign_atom_ids(initial.copy())
+    control = ScriptedExactRuntime(control_atoms)
+    control.run(4)
+    control_snapshot = control.snapshot()
+
+    np.testing.assert_array_equal(final_snapshot.atoms.positions, control_snapshot.atoms.positions)
+    assert final_snapshot.dynamics.metadata == control_snapshot.dynamics.metadata
+    assert final_snapshot.calculator == control_snapshot.calculator
+    token = ResumeToken.read(tmp_path / "segments/0000/checkpoint/resume.json")
+    assert token.fidelity == "exact"
+    result = json.loads(next((tmp_path / "pathways").glob("*/result.json")).read_text())
+    assert result["status"] == "ci_neb_converged"
+    assert leases.live == 0 and leases.max_live == 1
+    assert leases.stages == [
+        "md",
+        "md",
+        "relax_reactant",
+        "relax_product",
+        "neb",
+        "md",
+    ]

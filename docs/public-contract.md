@@ -24,6 +24,18 @@ summary = run.run_ase(
 )
 ```
 
+Strict runtime continuation uses the same facade with a provider that explicitly snapshots and
+restores its dynamics and calculator:
+
+```python
+summary = run.run_exact(
+    atoms,
+    runtime_provider=exact_runtime_provider,
+    pathway_calculator_provider=pathway_calculator_provider,
+    total_steps=1_000_000,
+)
+```
+
 Recovery after a completed structural checkpoint is explicit:
 
 ```python
@@ -35,6 +47,7 @@ segment = run.resume_segment()
 The provisional top-level facade includes:
 
 - `ReactionRun`, `ReactionRunConfig`, and `RunSummary`;
+- `ExactDynamicsRuntime`, `ExactRuntimeProvider`, `ExactRestartSnapshot`, and `ComponentState`;
 - `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`;
 - `ReactionTracker` and `ReactionCandidate`;
 - `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()`; and
@@ -67,12 +80,15 @@ The context-managed `CalculatorProvider` type remains module-level while a MatEn
 establishes any additional context it needs.
 
 RF-4 adds provisional module-level `SegmentStore`, `SegmentGeneration`, and `ResumeToken` APIs for
-structural checkpoint/resume. They remain low-level APIs normally reached through `ReactionRun`.
+structural or exact checkpoint/resume. They remain low-level APIs normally reached through
+`ReactionRun`.
 
 RF-5 promotes `ReactionRun`, `ReactionRunConfig`, and `RunSummary`. Manual scheduler-neutral
 methods are `start`, `observe`, `checkpoint`, `refine_pending`, `resume_segment`, and `complete`;
-`run_ase()` is the synchronous convenience executor. Recovery is structural and begins from a
-completed checkpoint, not an arbitrary active MD frame.
+`run_ase()` is the structural synchronous executor. `run_exact()` uses an `ExactRuntimeProvider`
+and publishes a complete runtime plus monitor checkpoint at every observation boundary. It can
+reopen an active MD segment without silently resetting detector persistence, tracker state,
+integrator, thermostat, RNG, or calculator state.
 
 ## Calculator provider
 

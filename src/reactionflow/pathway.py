@@ -33,14 +33,15 @@ class PathwayConfig:
     relax_steps: int = 500
     images: int = 7
     neb_fmax: float = 0.05
-    neb_steps: int = 1000
+    neb_steps: int = 500
+    ci_neb_steps: int = 500
     max_volume_change_fraction: float = 0.05
     max_cell_strain: float = 0.05
 
     def __post_init__(self) -> None:
         if self.active_radius <= 0 or self.relax_fmax <= 0 or self.neb_fmax <= 0:
             raise ValueError("radii and force tolerances must be positive")
-        if self.relax_steps < 1 or self.images < 3 or self.neb_steps < 1:
+        if self.relax_steps < 1 or self.images < 3 or self.neb_steps < 1 or self.ci_neb_steps < 1:
             raise ValueError("step counts must be positive and NEB needs at least three images")
         if self.max_volume_change_fraction < 0 or self.max_cell_strain < 0:
             raise ValueError("cell-change limits must be non-negative")
@@ -58,7 +59,7 @@ class PathwayOutcome:
 
     @property
     def converged(self) -> bool:
-        return self.status == "neb_converged"
+        return self.status in {"neb_converged", "ci_neb_converged"}
 
 
 def _prepare_endpoints(
@@ -252,26 +253,38 @@ def refine_pathway(
             method="improvedtangent",
         )
         band.interpolate(method="idpp", mic=True)
-        band.climb = True
         with calculator_provider("neb") as calculator:
             for image in images:
                 image.calc = calculator
             try:
-                converged = bool(
+                neb_converged = bool(
                     FIRE(band, logfile=None).run(
                         fmax=options.neb_fmax,
                         steps=options.neb_steps,
                     )
                 )
-                if not converged:
+                if not neb_converged:
                     return PathwayOutcome(
                         "neb_failed",
                         images=_snapshots(images),
-                        message="CI-NEB did not converge",
+                        message="initial NEB did not converge",
+                    )
+                band.climb = True
+                ci_neb_converged = bool(
+                    FIRE(band, logfile=None).run(
+                        fmax=options.neb_fmax,
+                        steps=options.ci_neb_steps,
+                    )
+                )
+                if not ci_neb_converged:
+                    return PathwayOutcome(
+                        "ci_neb_failed",
+                        images=_snapshots(images),
+                        message="climbing-image NEB did not converge",
                     )
                 energies = tuple(float(image.get_potential_energy()) for image in images)
                 return PathwayOutcome(
-                    "neb_converged",
+                    "ci_neb_converged",
                     barrier=max(energies) - energies[0],
                     energies=energies,
                     images=_snapshots(images),

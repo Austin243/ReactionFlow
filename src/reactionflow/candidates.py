@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 from collections.abc import Collection
 from dataclasses import dataclass
+from hashlib import sha256
 from numbers import Integral
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import networkx as nx
 from ase import Atoms
+from ase.io import read, write
 
-from .detection import Bond, atom_ids
+from .detection import Bond, assign_atom_ids, atom_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +159,10 @@ class ReactionTracker:
         self._pending: _PendingTopology | None = None
         self._last_frame: int | None = None
 
+    @property
+    def last_frame(self) -> int | None:
+        return self._last_frame
+
     def _clear_transition(self) -> None:
         self._reactant = None
         self._reactant_frame = None
@@ -259,6 +271,191 @@ class ReactionTracker:
         self._accepted_frame = self._pending.product_frame
         self._clear_transition()
         return result
+
+    def write_checkpoint(self, path: str | Path) -> Path:
+        """Atomically persist every state needed for exact monitor continuation."""
+
+        final = Path(path).resolve()
+        if final.exists():
+            raise FileExistsError(final)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
+        temporary.mkdir()
+        try:
+            snapshots = {
+                "accepted": self._accepted,
+                "reactant": self._reactant,
+                "pending_product": (None if self._pending is None else self._pending.product),
+            }
+            files: dict[str, str] = {}
+            for label, atoms in snapshots.items():
+                if atoms is None:
+                    continue
+                snapshot = atoms.copy()
+                snapshot.calc = None
+                snapshot.info["atom_ids"] = list(atom_ids(snapshot))
+                filename = f"{label}.traj"
+                destination = temporary / filename
+                write(destination, snapshot, format="traj")
+                files[filename] = _file_digest(destination)
+
+            value: dict[str, Any] = {
+                "schema_version": 1,
+                "stability_frames": self.stability_frames,
+                "symbols": (
+                    None
+                    if self._symbols is None
+                    else [[atom_id, symbol] for atom_id, symbol in self._symbols.items()]
+                ),
+                "accepted_bonds": _checkpoint_bonds(self._accepted_bonds),
+                "accepted_frame": self._accepted_frame,
+                "reactant_frame": self._reactant_frame,
+                "pending": (
+                    None
+                    if self._pending is None
+                    else {
+                        "bonds": _checkpoint_bonds(self._pending.bonds),
+                        "product_frame": self._pending.product_frame,
+                        "count": self._pending.count,
+                    }
+                ),
+                "last_frame": self._last_frame,
+                "files": files,
+            }
+            (temporary / "tracker.json").write_text(
+                json.dumps(value, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, final)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return final
+
+    @classmethod
+    def read_checkpoint(
+        cls,
+        path: str | Path,
+        *,
+        stability_frames: int | None = None,
+    ) -> ReactionTracker:
+        """Restore and integrity-check a version-1 tracker checkpoint."""
+
+        root = Path(path).resolve()
+        value = json.loads((root / "tracker.json").read_text(encoding="utf-8"))
+        if value.get("schema_version") != 1:
+            raise ValueError("unsupported reaction-tracker checkpoint")
+        stored_stability = int(value["stability_frames"])
+        if stability_frames is not None and stored_stability != stability_frames:
+            raise ValueError("reaction-tracker checkpoint configuration does not match")
+        files = value.get("files")
+        if not isinstance(files, dict):
+            raise ValueError("reaction-tracker checkpoint has an invalid file manifest")
+        expected_files = {
+            name
+            for name, present in (
+                ("accepted.traj", value.get("accepted_bonds") is not None),
+                ("reactant.traj", value.get("reactant_frame") is not None),
+                ("pending_product.traj", value.get("pending") is not None),
+            )
+            if present
+        }
+        if set(files) != expected_files:
+            raise ValueError("reaction-tracker checkpoint has an invalid snapshot set")
+        for name, expected_digest in files.items():
+            snapshot_path = root / name
+            if not snapshot_path.is_file() or _file_digest(snapshot_path) != expected_digest:
+                raise ValueError(f"reaction-tracker checkpoint failed integrity check: {name}")
+
+        tracker = cls(stability_frames=stored_stability)
+        symbols = value.get("symbols")
+        tracker._symbols = (
+            None if symbols is None else {int(atom_id): str(symbol) for atom_id, symbol in symbols}
+        )
+        accepted_bonds = value.get("accepted_bonds")
+        tracker._accepted_bonds = _restore_bonds(accepted_bonds)
+        tracker._accepted = (
+            None if accepted_bonds is None else _read_tracker_atoms(root / "accepted.traj")
+        )
+        tracker._accepted_frame = _optional_frame(value.get("accepted_frame"))
+        tracker._reactant_frame = _optional_frame(value.get("reactant_frame"))
+        tracker._reactant = (
+            None if tracker._reactant_frame is None else _read_tracker_atoms(root / "reactant.traj")
+        )
+        pending = value.get("pending")
+        if pending is not None:
+            pending_bonds = _restore_bonds(pending["bonds"])
+            assert pending_bonds is not None
+            tracker._pending = _PendingTopology(
+                bonds=pending_bonds,
+                product=_read_tracker_atoms(root / "pending_product.traj"),
+                product_frame=int(pending["product_frame"]),
+                count=int(pending["count"]),
+            )
+        tracker._last_frame = _optional_frame(value.get("last_frame"))
+        tracker._validate_checkpoint()
+        return tracker
+
+    def _validate_checkpoint(self) -> None:
+        if (self._accepted_bonds is None) != (self._accepted is None):
+            raise ValueError("reaction-tracker checkpoint has an incomplete accepted state")
+        if (self._accepted is None) != (self._accepted_frame is None):
+            raise ValueError("reaction-tracker checkpoint has an invalid accepted frame")
+        if (self._reactant is None) != (self._reactant_frame is None):
+            raise ValueError("reaction-tracker checkpoint has an invalid reactant state")
+        if self._pending is not None and self._reactant is None:
+            raise ValueError("reaction-tracker checkpoint has an incomplete transition")
+        for atoms in (self._accepted, self._reactant):
+            if atoms is not None:
+                atom_ids(atoms)
+                atoms.calc = None
+        if self._pending is not None:
+            atom_ids(self._pending.product)
+            self._pending.product.calc = None
+            if self._pending.count < 0:
+                raise ValueError("reaction-tracker checkpoint has a negative stability count")
+
+
+def _file_digest(path: Path) -> str:
+    checksum = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def _read_tracker_atoms(path: Path) -> Atoms:
+    atoms = read(path)
+    atom_ids(atoms)
+    assign_atom_ids(atoms)
+    atoms.info.pop("atom_ids", None)
+    atoms.calc = None
+    return atoms
+
+
+def _checkpoint_bonds(values: Collection[Bond] | None) -> list[list[int]] | None:
+    if values is None:
+        return None
+    return [list(bond) for bond in sorted(values)]
+
+
+def _restore_bonds(
+    values: Collection[Collection[int]] | None,
+) -> frozenset[Bond] | None:
+    if values is None:
+        return None
+    return frozenset(
+        (first, second) if first < second else (second, first)
+        for first, second in (tuple(map(int, bond)) for bond in values)
+    )
+
+
+def _optional_frame(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError("reaction-tracker checkpoint frame must be a non-negative integer")
+    return value
 
 
 __all__ = ["ReactionCandidate", "ReactionTracker", "same_reaction"]
