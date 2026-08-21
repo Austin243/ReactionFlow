@@ -59,6 +59,53 @@ found, only that trajectory pauses for endpoint relaxation, NEB, and CI-NEB befo
 exact checkpoint. Submit the same command again after an interruption to resume incomplete
 trajectories; completed trajectories are left unchanged.
 
+## Refinement outcomes and recorded data
+
+After a detected reaction is confirmed, ReactionFlow checkpoints the original MD state and refines
+every queued pathway serially. A successful CI-NEB or a handled scientific failure is recorded as a
+durable outcome. ReactionFlow then restores the checkpoint and continues the original MD
+trajectory; it never substitutes a relaxed endpoint or NEB image for the MD state.
+
+| Situation | Recorded status | Behavior |
+| --- | --- | --- |
+| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, and barrier; resume MD. |
+| Either endpoint does not relax within the configured limits | `relaxation_failed` | Save the attempted relaxed endpoints, skip NEB, and resume MD. |
+| Both relaxed endpoints occupy the same bond-topology basin, including a product that relaxes back to the reactant | `collapsed` | Save the relaxed endpoints, skip NEB, and resume MD. |
+| The candidate or relaxed endpoint topology remains ambiguous or no longer matches the detected event | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
+| Initial NEB does not converge | `neb_failed` | Save the current band, skip CI-NEB, and resume MD. |
+| Climbing-image NEB does not converge | `ci_neb_failed` | Save the current band and resume MD. |
+| Pathway preparation or calculator evaluation raises an unexpected error | `failed` | Save the available images and error message, then resume MD. |
+
+Failures to persist an outcome, restore the exact checkpoint, or otherwise maintain durable run
+state are different: ReactionFlow marks the trajectory itself as failed and stops instead of
+continuing from uncertain state. Scientific refinement failures are not retried automatically.
+
+Each detected occurrence and its pathway result share an `occurrence-id`:
+
+```text
+outputs/acn_20gpa_ani1xnr/<trajectory-id>/
+├── candidates/<occurrence-id>/
+│   ├── candidate.json
+│   ├── reactant.traj
+│   └── product.traj
+└── pathways/<occurrence-id>/
+    ├── result.json
+    └── images.traj
+```
+
+`candidate.json` records the stable atom IDs in the connected reacting region, reactant and product
+bond lists, detector settings, endpoint hashes, and three source-frame fields:
+
+- `reactant_frame`: the last accepted stable observation before the topology change.
+- `product_frame`: the first observation containing the proposed product topology.
+- `observed_frame`: the observation at which the persistence checks confirmed the event.
+
+These are bond-monitor observation frames, not raw MD step numbers. The complete endpoint
+structures and pathway images retain stable IDs for every atom, and segment trajectory boundaries
+record both their global MD step and observation-frame counters. `result.json` records the outcome
+status, reaction class and occurrence IDs, barrier and image energies when available, and a message
+describing any failure.
+
 The setup above installs TorchANI as the default. To use another deterministic ASE-compatible MLIP,
 install its calculator package into the same `.perlmutter-python/` environment and set its factory,
 arguments, and checkpoint files as shown in the
