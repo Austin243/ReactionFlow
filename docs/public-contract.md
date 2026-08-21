@@ -48,6 +48,7 @@ The provisional top-level facade includes:
 
 - `ReactionRun`, `ReactionRunConfig`, and `RunSummary`;
 - `ExactDynamicsRuntime`, `ExactRuntimeProvider`, `ExactRestartSnapshot`, and `ComponentState`;
+- `CampaignConfig`, `TrajectorySpec`, `AdapterSpec`, and `MLIPAdapter`;
 - `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`;
 - `ReactionTracker` and `ReactionCandidate`;
 - `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()`; and
@@ -76,8 +77,8 @@ RF-2c adds the provisional module-level `OccurrenceStore` and `OccurrenceRecord`
 and reopen immutable candidate bundles; `ReactionRun` owns their normal use.
 
 RF-3 promotes `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()` for one in-memory candidate.
-The context-managed `CalculatorProvider` type remains module-level while a MatEnsemble adapter
-establishes any additional context it needs.
+The context-managed `CalculatorProvider` type remains module-level; an `MLIPAdapter` supplies it
+without changing the pathway primitive.
 
 RF-4 adds provisional module-level `SegmentStore`, `SegmentGeneration`, and `ResumeToken` APIs for
 structural or exact checkpoint/resume. They remain low-level APIs normally reached through
@@ -98,12 +99,10 @@ holds more than one lease. Serializable provider specifications are deferred.
 
 ## Adapter interface
 
-Future adapters drive the scheduler-neutral `ReactionRun` methods directly. Any additional
-facts/commands layer waits for a concrete adapter need.
-
-Flux resources, MatEnsemble chore IDs, queues, and output references do not appear in core models.
-MatEnsemble translates at its boundary and stores its own metadata under
-`adapters/matensemble/`.
+An MLIP factory receives one `TrajectorySpec` and a JSON options mapping. Its `MLIPAdapter`
+provides exact start/restore contexts plus sequential pathway calculator contexts. Campaign
+processes map directly from a zero-based task index to one trajectory; no scheduler identifiers,
+queues, or output references enter the chemistry or restart models.
 
 ## Compatibility
 
