@@ -55,6 +55,53 @@ reactionflow plan campaign.json --gpus-per-node 4
 
 ## MLIP adapter
 
+### Use an ASE calculator directly
+
+For a deterministic, stateless MLIP that already exposes an ASE `Calculator`, use the built-in
+generic adapter. No ReactionFlow-specific Python class is required:
+
+```json
+{
+  "adapter": {
+    "factory": "reactionflow.adapters.ase:create_adapter",
+    "options": {
+      "calculator_factory": "my_mlip.calculator:create_calculator",
+      "calculator_kwargs": {
+        "checkpoint": "/absolute/path/to/model.ckpt",
+        "device": "cuda"
+      },
+      "model_files": ["/absolute/path/to/model.ckpt"],
+      "packages": ["my-mlip-package", "torch"]
+    }
+  }
+}
+```
+
+`calculator_factory` can name a calculator class or a function; ReactionFlow calls it with
+`calculator_kwargs` and requires it to return an ASE `Calculator`. Install that MLIP in the same
+Python environment used to run ReactionFlow. On Perlmutter, create the model-neutral checkout
+environment and then add the calculator package:
+
+```bash
+./scripts/setup-perlmutter.sh
+module load pytorch/2.11.0
+export PYTHONUSERBASE="$PWD/.perlmutter-python"
+python -m pip install --user my-mlip-package
+```
+
+Use absolute model paths in portable batch configurations. Every path in `model_files` is required
+at runtime and SHA-256 hashed into each exact checkpoint. ReactionFlow also records the configured
+kwargs, Python/ASE/NumPy versions, calculator source hash, its installed distribution version, and
+the versions named in `packages`. Changing any of those inputs makes exact resume fail clearly.
+
+This adapter supplies the same exactly restartable Langevin BAOAB NVT/NPT runtime used by the
+built-in ANI example. It is intentionally limited to deterministic calculators whose inference
+state is fully described by their constructor arguments, files, and package versions. A model with
+mutable calculator state or its own RNG should use the small custom adapter interface below so that
+state can be captured explicitly.
+
+### Write a custom adapter
+
 `adapter.factory` is an explicit `module:callable` reference. ReactionFlow calls it once in each
 worker:
 

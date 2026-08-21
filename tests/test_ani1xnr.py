@@ -74,7 +74,7 @@ def test_adapter_validates_configuration_without_importing_optional_backend() ->
 
     with pytest.raises(ValueError, match="unknown ANI-1xnr adapter options"):
         ANI1xnrAdapter(trajectory=_trajectory(), options={"mystery": True})
-    with pytest.raises(ValueError, match="unknown ANI-1xnr trajectory conditions"):
+    with pytest.raises(ValueError, match="unknown ASE trajectory conditions"):
         ANI1xnrAdapter(
             trajectory=_trajectory(conditions={"unknown": True}),
             options={},

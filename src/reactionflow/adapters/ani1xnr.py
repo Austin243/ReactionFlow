@@ -11,15 +11,11 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from ase import Atoms, units
 from ase.calculators.calculator import Calculator
-from ase.md.langevinbaoab import LangevinBAOAB
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 
-from ..ase_npt import restore_langevin_baoab, snapshot_langevin_baoab
 from ..campaign import TrajectorySpec
-from ..restart import ComponentState, ExactRestartSnapshot
+from ..restart import ComponentState
+from .ase import ASELangevinBAOABAdapter
 
 TORCH_VERSION = "2.11.0"
 TORCHANI_VERSION = "2.8.4"
@@ -30,14 +26,6 @@ MODEL_SHA256 = "beef541802e4cb3d23b6cfdfdf9df1e42ddd3805399fb15f01e275aba4f099b3
 
 _CALCULATOR_KIND = "reactionflow.ani1xnr"
 _ALLOWED_OPTIONS = {"device", "dtype", "model_index", "strategy"}
-_ALLOWED_CONDITIONS = {
-    "barostat_mass",
-    "barostat_tau_fs",
-    "disable_cell_langevin",
-    "hydrostatic",
-    "thermostat_tau_fs",
-    "zero_total_momentum",
-}
 
 
 def _sha256(path: Path) -> str:
@@ -66,60 +54,14 @@ def _base_version(value: object) -> str:
     return str(value).split("+", 1)[0]
 
 
-def _positive_float(value: object, name: str) -> float:
-    if isinstance(value, bool):
-        raise TypeError(f"{name} must be a positive number")
-    result = float(value)
-    if not np.isfinite(result) or result <= 0:
-        raise ValueError(f"{name} must be a positive finite number")
-    return result
-
-
-def _optional_positive_float(value: object, name: str) -> float | None:
-    return None if value is None else _positive_float(value, name)
-
-
-class _ANI1xnrRuntime:
-    def __init__(
-        self,
-        dynamics: LangevinBAOAB,
-        calculator_state: ComponentState,
-    ) -> None:
-        self._dynamics = dynamics
-        self._calculator_state = calculator_state
-
-    @property
-    def atoms(self) -> Atoms:
-        return self._dynamics.atoms
-
-    @property
-    def nsteps(self) -> int:
-        return int(self._dynamics.nsteps)
-
-    def run(self, steps: int) -> None:
-        self._dynamics.run(steps)
-
-    def snapshot(self) -> ExactRestartSnapshot:
-        return ExactRestartSnapshot(
-            atoms=self.atoms,
-            dynamics=snapshot_langevin_baoab(self._dynamics),
-            calculator=self._calculator_state,
-        )
-
-
-class ANI1xnrAdapter:
+class ANI1xnrAdapter(ASELangevinBAOABAdapter):
     """One pinned ANI-1xnr model with Langevin BAOAB NVT/NPT dynamics."""
 
     def __init__(self, *, trajectory: TrajectorySpec, options: Mapping[str, Any]) -> None:
         unknown_options = set(options) - _ALLOWED_OPTIONS
         if unknown_options:
             raise ValueError(f"unknown ANI-1xnr adapter options: {sorted(unknown_options)}")
-        unknown_conditions = set(trajectory.conditions) - _ALLOWED_CONDITIONS
-        if unknown_conditions:
-            raise ValueError(
-                f"unknown ANI-1xnr trajectory conditions: {sorted(unknown_conditions)}"
-            )
-        self.trajectory = trajectory
+        super().__init__(trajectory=trajectory)
         self.device = str(options.get("device", "cuda"))
         if self.device not in {"cpu", "cuda"}:
             raise ValueError("ANI-1xnr device must be 'cpu' or 'cuda'")
@@ -243,73 +185,6 @@ class ANI1xnrAdapter:
             del calculator
             if self.device == "cuda":
                 torch.cuda.empty_cache()
-
-    def _dynamics(self, atoms: Atoms, calculator: Calculator) -> LangevinBAOAB:
-        conditions = self.trajectory.conditions
-        rng = np.random.default_rng(self.trajectory.seed)
-        atoms.calc = calculator
-        if "momenta" not in atoms.arrays:
-            MaxwellBoltzmannDistribution(
-                atoms,
-                temperature_K=self.trajectory.temperature_K,
-                rng=rng,
-            )
-            if bool(conditions.get("zero_total_momentum", True)):
-                Stationary(atoms, preserve_temperature=True)
-        pressure = self.trajectory.pressure_GPa
-        return LangevinBAOAB(
-            atoms,
-            timestep=self.trajectory.timestep_fs * units.fs,
-            temperature_K=self.trajectory.temperature_K,
-            externalstress=None if pressure is None else -pressure * units.GPa,
-            hydrostatic=bool(conditions.get("hydrostatic", True)),
-            T_tau=_positive_float(
-                conditions.get("thermostat_tau_fs", 100.0),
-                "thermostat_tau_fs",
-            )
-            * units.fs,
-            P_tau=(
-                None
-                if pressure is None
-                else _positive_float(
-                    conditions.get("barostat_tau_fs", 1000.0),
-                    "barostat_tau_fs",
-                )
-                * units.fs
-            ),
-            P_mass=_optional_positive_float(
-                conditions.get("barostat_mass"),
-                "barostat_mass",
-            ),
-            disable_cell_langevin=bool(conditions.get("disable_cell_langevin", False)),
-            rng=rng,
-            logfile=None,
-        )
-
-    @contextmanager
-    def start(self, atoms: Atoms) -> Iterator[_ANI1xnrRuntime]:
-        with self._lease() as (calculator, state):
-            dynamics = self._dynamics(atoms, calculator)
-            try:
-                yield _ANI1xnrRuntime(dynamics, state)
-            finally:
-                atoms.calc = None
-
-    @contextmanager
-    def restore(self, snapshot: ExactRestartSnapshot) -> Iterator[_ANI1xnrRuntime]:
-        with self._lease() as (calculator, state):
-            if snapshot.calculator != state:
-                raise ValueError("exact ANI-1xnr restart environment differs from the checkpoint")
-            dynamics = restore_langevin_baoab(snapshot.atoms, calculator, snapshot.dynamics)
-            try:
-                yield _ANI1xnrRuntime(dynamics, state)
-            finally:
-                snapshot.atoms.calc = None
-
-    @contextmanager
-    def calculator(self, _stage: str) -> Iterator[Calculator]:
-        with self._lease() as (calculator, _state):
-            yield calculator
 
 
 def create_adapter(*, trajectory: TrajectorySpec, options: Mapping[str, Any]) -> ANI1xnrAdapter:

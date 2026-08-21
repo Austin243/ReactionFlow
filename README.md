@@ -58,3 +58,7 @@ Results are written to `outputs/acn_20gpa_ani1xnr/<trajectory-id>/`. If a confir
 found, only that trajectory pauses for endpoint relaxation, NEB, and CI-NEB before resuming from its
 exact checkpoint. Submit the same command again after an interruption to resume incomplete
 trajectories; completed trajectories are left unchanged.
+
+To use another deterministic ASE-compatible MLIP, run `./scripts/setup-perlmutter.sh` and set its
+calculator factory, arguments, and checkpoint files in the campaign as shown in the
+[campaign guide](docs/campaigns.md#use-an-ase-calculator-directly).
