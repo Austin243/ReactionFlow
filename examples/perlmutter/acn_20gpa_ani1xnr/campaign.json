@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "structure": "beta_acn_20gpa_relaxed.extxyz",
+  "output_root": "../../../outputs/acn_20gpa_ani1xnr",
+  "require_gpu": true,
+  "adapter": {
+    "factory": "reactionflow.adapters.ani1xnr:create_adapter",
+    "options": {
+      "device": "cuda",
+      "dtype": "float32",
+      "model_index": 0,
+      "strategy": "pyaev"
+    }
+  },
+  "reaction_run": {
+    "observation_interval": 10,
+    "candidate_stability_frames": 3,
+    "detector": {
+      "form_scale": 1.15,
+      "break_scale": 1.30,
+      "persistence_frames": 3
+    },
+    "pathway": {
+      "active_radius": 4.0,
+      "relax_fmax": 0.05,
+      "relax_steps": 500,
+      "images": 7,
+      "neb_fmax": 0.05,
+      "neb_steps": 500,
+      "ci_neb_steps": 500,
+      "max_volume_change_fraction": 0.05,
+      "max_cell_strain": 0.05
+    }
+  },
+  "trajectories": [
+    {
+      "id": "acn-0100K-20GPa-seed11",
+      "total_steps": 1000,
+      "timestep_fs": 1.0,
+      "temperature_K": 100.0,
+      "pressure_GPa": 20.0,
+      "seed": 11,
+      "conditions": {
+        "hydrostatic": true,
+        "thermostat_tau_fs": 100.0,
+        "barostat_tau_fs": 1000.0,
+        "zero_total_momentum": true
+      }
+    },
+    {
+      "id": "acn-0300K-20GPa-seed22",
+      "total_steps": 1000,
+      "timestep_fs": 1.0,
+      "temperature_K": 300.0,
+      "pressure_GPa": 20.0,
+      "seed": 22,
+      "conditions": {
+        "hydrostatic": true,
+        "thermostat_tau_fs": 100.0,
+        "barostat_tau_fs": 1000.0,
+        "zero_total_momentum": true
+      }
+    },
+    {
+      "id": "acn-0500K-20GPa-seed33",
+      "total_steps": 1000,
+      "timestep_fs": 1.0,
+      "temperature_K": 500.0,
+      "pressure_GPa": 20.0,
+      "seed": 33,
+      "conditions": {
+        "hydrostatic": true,
+        "thermostat_tau_fs": 100.0,
+        "barostat_tau_fs": 1000.0,
+        "zero_total_momentum": true
+      }
+    },
+    {
+      "id": "acn-0700K-20GPa-seed44",
+      "total_steps": 1000,
+      "timestep_fs": 1.0,
+      "temperature_K": 700.0,
+      "pressure_GPa": 20.0,
+      "seed": 44,
+      "conditions": {
+        "hydrostatic": true,
+        "thermostat_tau_fs": 100.0,
+        "barostat_tau_fs": 1000.0,
+        "zero_total_momentum": true
+      }
+    }
+  ]
+}

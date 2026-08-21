@@ -43,6 +43,13 @@ Calculator state is not guessed. A future MLIP adapter must either serialize all
 declare that deterministic reconstruction from pinned model/configuration data is exact. An
 adapter that cannot satisfy that contract cannot be used in strict exact-restart mode.
 
+The built-in ANI-1xnr adapter uses deterministic PyTorch execution, disables TF32, fixes the
+cuBLAS workspace configuration, verifies the model file SHA-256, and records the Torch, TorchANI,
+CUDA, GPU-architecture, model, adapter-source, and Langevin-codec identities. Restore refuses any
+change to that calculator contract; it also binds the complete installed ReactionFlow Python
+source tree. The ASE/NumPy codec checks above protect the remaining
+integrator, thermostat, barostat, and RNG state.
+
 ## Exact ReactionRun execution
 
 `ReactionRun.run_exact()` accepts an `ExactRuntimeProvider`. The provider has two context-managed
@@ -76,4 +83,5 @@ summary = run.run_exact(
 
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
 boundary. It never silently falls back from exact to structural recovery. The ANI-1xnr provider is
-delivered separately so its model identity and calculator-state contract can be tested directly.
+optional and lazy-loaded so its model identity and calculator-state contract can be tested without
+making Torch part of the core installation.

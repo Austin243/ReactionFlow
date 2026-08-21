@@ -75,6 +75,11 @@ lets a user package an ANI, MACE, NequIP, Allegro, CHGNet, or other ASE-compatib
 adding that stack to ReactionFlow. Strict execution rejects an adapter that cannot supply exact
 dynamics and calculator state.
 
+ReactionFlow includes one optional reference implementation:
+`reactionflow.adapters.ani1xnr:create_adapter`. It lazily imports the pinned ANI-1xnr stack, so
+normal ReactionFlow installation and import remain independent of Torch. The complete four-GPU
+example is in [`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
+
 ## Perlmutter mapping
 
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) requests
@@ -102,7 +107,8 @@ For any other size, request the campaign's task count and enough four-GPU nodes.
 nodes are valid, for example `--nodes=33 --ntasks=130`. The CLI deliberately fails before MD if
 `SLURM_NTASKS` differs from the number of trajectories, preventing duplicated or omitted work.
 NERSC users eligible for scavenger scheduling can add `-q overrun`; queue eligibility and maximum
-job size remain site policy rather than ReactionFlow settings.
+job size remain site policy rather than ReactionFlow settings. Current NERSC policy also requires
+`--time-min` for overrun jobs.
 
 Every trajectory writes to `output_root/<trajectory-id>`. Resubmitting the same campaign exactly
 resumes incomplete workers from their last complete observation checkpoint and treats completed
