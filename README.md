@@ -133,3 +133,33 @@ so change `checkpoint` and the other keys to the arguments that calculator expec
 absolute, compute-node-visible checkpoint path in both the appropriate calculator argument and
 `model_files`. Install the calculator package in `.perlmutter-python` before running the campaign.
 See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for the full interface.
+
+## Change temperatures and pressures
+
+Edit each entry in the `trajectories` array of the campaign JSON. Every trajectory can use its own
+temperature, pressure, and random seed:
+
+```json
+"temperature_K": 300.0,
+"pressure_GPa": 20.0,
+"seed": 11
+```
+
+A numeric `pressure_GPa` runs NPT at that target pressure. Set `"pressure_GPa": null` for NVT.
+Thermostat and barostat coupling times can be changed in that trajectory's `conditions` object.
+
+## Change the number of GPU nodes
+
+For a customized campaign, set the resource lines near the top of
+`examples/perlmutter/run-campaign.sbatch`. For example, 10 Perlmutter GPU nodes and 40 trajectories
+use:
+
+```bash
+#SBATCH --nodes=10
+#SBATCH --ntasks=40
+#SBATCH --ntasks-per-node=4
+```
+
+The script assigns one Slurm task to each GPU, so the campaign must contain exactly one trajectory
+entry per task: four entries per Perlmutter GPU node. Leave the included ANI-1xnr `submit.sbatch`
+unchanged when running the bundled four-trajectory example.
