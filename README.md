@@ -163,3 +163,10 @@ use:
 The script assigns one Slurm task to each GPU, so the campaign must contain exactly one trajectory
 entry per task: four entries per Perlmutter GPU node. Leave the included ANI-1xnr `submit.sbatch`
 unchanged when running the bundled four-trajectory example.
+
+## Benchmark presentation
+
+[Download or view the PowerPoint presentation](docs/MLIP_Benchmark_Overview.pptx). It covers
+out-of-the-box MLIP benchmarking on Transition1X transition-state data and high-pressure
+acetonitrile, including ANI-1xnr oligomerization trajectories and CI-NEB pathways, comparisons of
+condensed-phase MD behavior, and vibrational and Hessian fidelity.
