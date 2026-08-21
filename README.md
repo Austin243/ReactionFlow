@@ -58,3 +58,8 @@ Results are written to `outputs/acn_20gpa_ani1xnr/<trajectory-id>/`. If a confir
 found, only that trajectory pauses for endpoint relaxation, NEB, and CI-NEB before resuming from its
 exact checkpoint. Submit the same command again after an interruption to resume incomplete
 trajectories; completed trajectories are left unchanged.
+
+The setup above installs TorchANI as the default. To use another deterministic ASE-compatible MLIP,
+install its calculator package into the same `.perlmutter-python/` environment and set its factory,
+arguments, and checkpoint files as shown in the
+[campaign guide](docs/campaigns.md#use-an-ase-calculator-directly).

@@ -39,9 +39,14 @@ Exact continuation requires the same ASE and NumPy versions, so the codec record
 both. Observer callbacks and output handles are intentionally recreated by the runner because they
 do not influence the propagated state.
 
-Calculator state is not guessed. A future MLIP adapter must either serialize all mutable state or
+Calculator state is not guessed. An MLIP adapter must either serialize all mutable state or
 declare that deterministic reconstruction from pinned model/configuration data is exact. An
 adapter that cannot satisfy that contract cannot be used in strict exact-restart mode.
+
+The generic ASE calculator adapter is for deterministic, stateless inference. It binds the
+calculator factory and kwargs, model-file SHA-256 values, calculator source, and selected installed
+package versions to the checkpoint. Calculators with mutable inference state or their own RNG must
+use a custom adapter that snapshots that state explicitly.
 
 The built-in ANI-1xnr adapter uses deterministic PyTorch execution, disables TF32, fixes the
 cuBLAS workspace configuration, verifies the model file SHA-256, and records the Torch, TorchANI,
@@ -84,4 +89,5 @@ summary = run.run_exact(
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
 boundary. It never silently falls back from exact to structural recovery. The ANI-1xnr provider is
 optional and lazy-loaded so its model identity and calculator-state contract can be tested without
-making Torch part of the core installation.
+making Torch part of the core installation. The generic ASE calculator provider likewise imports a
+user-selected MLIP only when a worker starts.

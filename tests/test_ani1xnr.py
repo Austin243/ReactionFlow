@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -74,7 +77,7 @@ def test_adapter_validates_configuration_without_importing_optional_backend() ->
 
     with pytest.raises(ValueError, match="unknown ANI-1xnr adapter options"):
         ANI1xnrAdapter(trajectory=_trajectory(), options={"mystery": True})
-    with pytest.raises(ValueError, match="unknown ANI-1xnr trajectory conditions"):
+    with pytest.raises(ValueError, match="unknown ASE trajectory conditions"):
         ANI1xnrAdapter(
             trajectory=_trajectory(conditions={"unknown": True}),
             options={},
@@ -160,6 +163,11 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
         assert directive in script
     assert "module load pytorch/2.11.0" in script
     assert "srun --kill-on-bad-exit=1 --cpu-bind=cores" in script
+    assert (
+        'repo_root="${REACTIONFLOW_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is unset}}"' in script
+    )
+    assert 'repo_root="$(cd "$repo_root" && pwd -P)"' in script
+    assert "BASH_SOURCE[0]" not in script
 
     raw = json.loads((example / "campaign.json").read_text(encoding="utf-8"))
     assert raw["adapter"]["options"]["model_index"] == 0
@@ -174,3 +182,59 @@ def test_setup_uses_nersc_pytorch_module_and_pinned_weights() -> None:
     assert "PYTHONUSERBASE" in setup
     assert "MODEL_REVISION" in cache
     assert "MODEL_SHA256" in cache
+
+
+def test_submitted_copy_resolves_checkout_from_slurm_submit_dir(tmp_path) -> None:
+    root = Path(__file__).parents[1]
+    repository = tmp_path / "ReactionFlow"
+    spool = tmp_path / "spool"
+    fake_bin = tmp_path / "bin"
+    capture = tmp_path / "capture.txt"
+    executable = repository / ".perlmutter-python/bin/reactionflow"
+    campaign = repository / "examples/perlmutter/acn_20gpa_ani1xnr/campaign.json"
+    for directory in (spool, fake_bin, executable.parent, campaign.parent):
+        directory.mkdir(parents=True, exist_ok=True)
+    executable.write_text("#!/bin/bash\n", encoding="utf-8")
+    executable.chmod(0o755)
+    campaign.write_text("{}\n", encoding="utf-8")
+
+    module = fake_bin / "module"
+    module.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    module.chmod(0o755)
+    srun = fake_bin / "srun"
+    srun.write_text(
+        '#!/bin/bash\nprintf \'%s\\n\' "$PYTHONUSERBASE" "$TORCHANI_DATA_DIR" "$*" > "$CAPTURE"\n',
+        encoding="utf-8",
+    )
+    srun.chmod(0o755)
+
+    copied_script = spool / "slurm_script"
+    shutil.copy2(root / "examples/perlmutter/acn_20gpa_ani1xnr/submit.sbatch", copied_script)
+    environment = dict(os.environ)
+    environment.update(
+        PATH=f"{fake_bin}:{environment['PATH']}",
+        SLURM_SUBMIT_DIR=str(repository),
+        CAPTURE=str(capture),
+    )
+    for name in (
+        "REACTIONFLOW_ROOT",
+        "REACTIONFLOW_PYTHONUSERBASE",
+        "REACTIONFLOW_TORCHANI_DATA_DIR",
+    ):
+        environment.pop(name, None)
+
+    completed = subprocess.run(
+        ["bash", str(copied_script)],
+        cwd=spool,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    python_base, model_cache, command = capture.read_text(encoding="utf-8").splitlines()
+    assert python_base == str(repository / ".perlmutter-python")
+    assert model_cache == str(repository / ".cache/torchani")
+    assert str(executable) in command
+    assert str(campaign) in command
