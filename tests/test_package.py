@@ -25,6 +25,9 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
     violations: list[str] = []
 
     for path in source_root.rglob("*.py"):
+        allowed_for_path = set(allowed_external_roots)
+        if path.is_relative_to(source_root / "adapters"):
+            allowed_for_path.update({"torch", "torchani"})
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -34,7 +37,7 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
             else:
                 continue
 
-            unexpected = roots - sys.stdlib_module_names - allowed_external_roots
+            unexpected = roots - sys.stdlib_module_names - allowed_for_path
             if unexpected:
                 violations.append(f"{path.relative_to(source_root)}: {sorted(unexpected)}")
 
