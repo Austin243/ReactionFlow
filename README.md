@@ -106,7 +106,30 @@ record both their global MD step and observation-frame counters. `result.json` r
 status, reaction class and occurrence IDs, barrier and image energies when available, and a message
 describing any failure.
 
-The setup above installs TorchANI as the default. To use another deterministic ASE-compatible MLIP,
-install its calculator package into the same `.perlmutter-python/` environment and set its factory,
-arguments, and checkpoint files as shown in the
-[campaign guide](docs/campaigns.md#use-an-ase-calculator-directly).
+## Use another ASE-compatible MLIP
+
+TorchANI and ANI-1xnr remain the ready-to-run default. To select another installed,
+ASE-compatible MLIP, replace the `adapter` block in the campaign JSON:
+
+```json
+"adapter": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "your_mlip.calculators:create_calculator",
+    "calculator_kwargs": {
+      "checkpoint": "/global/cfs/cdirs/your_project/models/model.ckpt",
+      "device": "cuda"
+    },
+    "model_files": [
+      "/global/cfs/cdirs/your_project/models/model.ckpt"
+    ]
+  }
+}
+```
+
+`calculator_factory` is the importable `module:callable` for a calculator class or function; it
+must return an ASE `Calculator`. ReactionFlow passes `calculator_kwargs` directly to that callable,
+so change `checkpoint` and the other keys to the arguments that calculator expects. Put the model's
+absolute, compute-node-visible checkpoint path in both the appropriate calculator argument and
+`model_files`. Install the calculator package in `.perlmutter-python` before running the campaign.
+See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for the full interface.
