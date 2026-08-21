@@ -189,16 +189,16 @@ def test_generic_adapter_requires_each_declared_model_file(tmp_path) -> None:
         pass
 
 
-def test_model_neutral_perlmutter_setup_is_separate_from_ani() -> None:
+def test_perlmutter_setup_keeps_torchani_as_the_default() -> None:
     root = Path(__file__).parents[1]
-    setup = (root / "scripts/setup-perlmutter.sh").read_text(encoding="utf-8")
-    core = (root / "requirements/perlmutter-core.txt").read_text(encoding="utf-8")
-    ani = (root / "requirements/perlmutter-ani1xnr.txt").read_text(encoding="utf-8")
+    setup = (root / "scripts/setup-perlmutter-ani1xnr.sh").read_text(encoding="utf-8")
+    requirements = (root / "requirements/perlmutter-ani1xnr.txt").read_text(encoding="utf-8")
+    guide = (root / "docs/campaigns.md").read_text(encoding="utf-8")
 
     assert "module load pytorch/2.11.0" in setup
     assert "PYTHONUSERBASE" in setup
-    assert "perlmutter-core.txt" in setup
-    assert "torchani" not in setup.lower()
-    assert "cache_ani1xnr" not in setup
-    assert "torchani" not in core.lower()
-    assert "-r perlmutter-core.txt" in ani
+    assert "perlmutter-ani1xnr.txt" in setup
+    assert "cache_ani1xnr.py" in setup
+    assert "torchani==2.8.4" in requirements
+    assert "setup-perlmutter-ani1xnr.sh" in guide
+    assert "setup-perlmutter.sh" not in guide

@@ -78,12 +78,12 @@ generic adapter. No ReactionFlow-specific Python class is required:
 ```
 
 `calculator_factory` can name a calculator class or a function; ReactionFlow calls it with
-`calculator_kwargs` and requires it to return an ASE `Calculator`. Install that MLIP in the same
-Python environment used to run ReactionFlow. On Perlmutter, create the model-neutral checkout
-environment and then add the calculator package:
+`calculator_kwargs` and requires it to return an ASE `Calculator`. The normal Perlmutter setup
+continues to install TorchANI and the pinned ANI-1xnr model as the ready-to-run default. To add
+another calculator to that same checkout environment:
 
 ```bash
-./scripts/setup-perlmutter.sh
+./scripts/setup-perlmutter-ani1xnr.sh
 module load pytorch/2.11.0
 export PYTHONUSERBASE="$PWD/.perlmutter-python"
 python -m pip install --user my-mlip-package

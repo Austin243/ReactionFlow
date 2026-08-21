@@ -59,6 +59,7 @@ found, only that trajectory pauses for endpoint relaxation, NEB, and CI-NEB befo
 exact checkpoint. Submit the same command again after an interruption to resume incomplete
 trajectories; completed trajectories are left unchanged.
 
-To use another deterministic ASE-compatible MLIP, run `./scripts/setup-perlmutter.sh` and set its
-calculator factory, arguments, and checkpoint files in the campaign as shown in the
+The setup above installs TorchANI as the default. To use another deterministic ASE-compatible MLIP,
+install its calculator package into the same `.perlmutter-python/` environment and set its factory,
+arguments, and checkpoint files as shown in the
 [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly).
