@@ -12,7 +12,8 @@
 
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
+repo_root="${REACTIONFLOW_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is unset}}"
+repo_root="$(cd "$repo_root" && pwd -P)"
 module load pytorch/2.11.0
 
 export PYTHONUSERBASE=${REACTIONFLOW_PYTHONUSERBASE:-"$repo_root/.perlmutter-python"}
