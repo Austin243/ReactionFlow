@@ -20,7 +20,13 @@ from ase.io.trajectory import Trajectory
 
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
-from .pathway import CalculatorProvider, PathwayConfig, PathwayOutcome, refine_pathway
+from .pathway import (
+    CalculatorProvider,
+    FrequencyValidation,
+    PathwayConfig,
+    PathwayOutcome,
+    refine_pathway,
+)
 from .restart import ExactRestartSnapshot
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
 from .segments import ResumeToken, SegmentGeneration, SegmentStore
@@ -90,6 +96,53 @@ def _transport(atoms: Atoms) -> Atoms:
     return snapshot
 
 
+def _frequency_validation_to_dict(
+    validation: FrequencyValidation | None,
+) -> dict[str, object] | None:
+    if validation is None:
+        return None
+    return {
+        "status": validation.status,
+        "transition_state_index": validation.transition_state_index,
+        "active_atom_ids": list(validation.active_atom_ids),
+        "displacement_A": validation.displacement_A,
+        "imaginary_cutoff_cm1": validation.imaginary_cutoff_cm1,
+        "scope": validation.scope,
+        "active_max_force_eV_A": validation.active_max_force_eV_A,
+        "frequencies_cm1": list(validation.frequencies_cm1),
+        "imaginary_mode_indices": list(validation.imaginary_mode_indices),
+        "primary_mode_index": validation.primary_mode_index,
+        "primary_mode": [list(vector) for vector in validation.primary_mode],
+        "message": validation.message,
+    }
+
+
+def _frequency_validation_from_dict(
+    value: Mapping[str, Any] | None,
+) -> FrequencyValidation | None:
+    if value is None:
+        return None
+    active_max_force = value.get("active_max_force_eV_A")
+    primary_mode_index = value.get("primary_mode_index")
+    transition_state_index = value.get("transition_state_index")
+    return FrequencyValidation(
+        status=str(value["status"]),
+        transition_state_index=(
+            None if transition_state_index is None else int(transition_state_index)
+        ),
+        active_atom_ids=tuple(map(int, value["active_atom_ids"])),
+        displacement_A=float(value["displacement_A"]),
+        imaginary_cutoff_cm1=float(value["imaginary_cutoff_cm1"]),
+        scope=str(value.get("scope", "active_atoms_fixed_environment")),
+        active_max_force_eV_A=(None if active_max_force is None else float(active_max_force)),
+        frequencies_cm1=tuple(map(float, value.get("frequencies_cm1", []))),
+        imaginary_mode_indices=tuple(map(int, value.get("imaginary_mode_indices", []))),
+        primary_mode_index=(None if primary_mode_index is None else int(primary_mode_index)),
+        primary_mode=tuple(tuple(map(float, vector)) for vector in value.get("primary_mode", [])),
+        message=str(value.get("message", "")),
+    )
+
+
 def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
     return (
         set(first.arrays) == set(second.arrays)
@@ -147,7 +200,7 @@ class ReactionRun:
 
         path = Path(root).resolve()
         value = json.loads((path / "state.json").read_text(encoding="utf-8"))
-        if value.get("schema_version") != 1:
+        if value.get("schema_version") not in {1, 2}:
             raise ValueError("unsupported ReactionRun state")
         run = cls(path, ReactionRunConfig.from_dict(value["config"]))
         run._phase = str(value["phase"])
@@ -227,7 +280,7 @@ class ReactionRun:
 
     def _state(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "phase": self._phase,
             "generation": self._generation,
             "global_step": self._global_step,
@@ -513,6 +566,7 @@ class ReactionRun:
                 "barrier_eV": outcome.barrier,
                 "energies_eV": list(outcome.energies),
                 "message": outcome.message,
+                "frequency_validation": _frequency_validation_to_dict(outcome.frequency_validation),
             }
             (temporary / "result.json").write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
@@ -541,6 +595,9 @@ class ReactionRun:
             energies=tuple(map(float, result.get("energies_eV", []))),
             images=tuple(images),
             message=str(result.get("message", "")),
+            frequency_validation=_frequency_validation_from_dict(
+                result.get("frequency_validation")
+            ),
         )
 
     def refine_pending(

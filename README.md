@@ -3,14 +3,16 @@
 ReactionFlow turns reactive events observed during atomistic molecular dynamics into candidate
 transition paths. It monitors bond changes while each trajectory runs. When a persistent bond
 formation or breaking event is detected, ReactionFlow checkpoints and pauses that trajectory,
-relaxes the structures on both sides of the event, runs NEB followed by climbing-image NEB, then
-restores the exact molecular-dynamics state and continues the trajectory.
+relaxes the structures on both sides of the event, runs NEB followed by climbing-image NEB,
+classifies the climbing image with a constrained active-region frequency calculation, then restores
+the exact molecular-dynamics state and continues the trajectory.
 
 The goal is to remove the manual step between seeing chemistry happen in an MD trajectory and
 calculating the corresponding minimum-energy path. ReactionFlow preserves the integrator,
 thermostat/barostat, random-number state, atomic state, and calculator contract needed for an exact
-restart. A CI-NEB saddle is a candidate transition state; frequency analysis or another appropriate
-validation is still required before calling it a confirmed transition state.
+restart. One significant imaginary mode is consistent with a constrained first-order saddle, but
+its displacement still needs to match the intended chemistry before calling it a confirmed
+transition state.
 
 ## Perlmutter quick start
 
@@ -55,9 +57,9 @@ sbatch -A "$GPU_PROJECT" -q overrun --time-min=00:10:00 \
 ```
 
 Results are written to `outputs/acn_20gpa_ani1xnr/<trajectory-id>/`. If a confirmed bond change is
-found, only that trajectory pauses for endpoint relaxation, NEB, and CI-NEB before resuming from its
-exact checkpoint. Submit the same command again after an interruption to resume incomplete
-trajectories; completed trajectories are left unchanged.
+found, only that trajectory pauses for endpoint relaxation, NEB, CI-NEB, and constrained frequency
+validation before resuming from its exact checkpoint. Submit the same command again after an
+interruption to resume incomplete trajectories; completed trajectories are left unchanged.
 
 ## Refinement outcomes and recorded data
 
@@ -68,7 +70,7 @@ trajectory; it never substitutes a relaxed endpoint or NEB image for the MD stat
 
 | Situation | Recorded status | Behavior |
 | --- | --- | --- |
-| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, and barrier; resume MD. |
+| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, barrier, and nested frequency diagnostic; resume MD even when that diagnostic reports zero, multiple, or failed modes. |
 | Either endpoint does not relax within the configured limits | `relaxation_failed` | Save the attempted relaxed endpoints, skip NEB, and resume MD. |
 | Both relaxed endpoints occupy the same bond-topology basin, including a product that relaxes back to the reactant | `collapsed` | Save the relaxed endpoints, skip NEB, and resume MD. |
 | The candidate or relaxed endpoint topology remains ambiguous or no longer matches the detected event | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
@@ -103,8 +105,8 @@ bond lists, detector settings, endpoint hashes, and three source-frame fields:
 These are bond-monitor observation frames, not raw MD step numbers. The complete endpoint
 structures and pathway images retain stable IDs for every atom, and segment trajectory boundaries
 record both their global MD step and observation-frame counters. `result.json` records the outcome
-status, reaction class and occurrence IDs, barrier and image energies when available, and a message
-describing any failure.
+status, reaction class and occurrence IDs, barrier and image energies when available, a constrained
+frequency diagnostic for converged CI-NEB results, and a message describing any failure.
 
 ## Use another ASE-compatible MLIP
 

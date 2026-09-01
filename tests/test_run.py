@@ -21,6 +21,7 @@ from reactionflow import (
     ReactionRunConfig,
     assign_atom_ids,
 )
+from reactionflow.pathway import Vibrations
 from reactionflow.segments import ResumeToken
 
 
@@ -86,6 +87,22 @@ def pair(distance: float) -> Atoms:
     return Atoms("H2", positions=[[0, 0, 0], [distance, 0, 0]])
 
 
+def test_open_accepts_legacy_run_state_without_frequency_controls(tmp_path) -> None:
+    ReactionRun.create(tmp_path, config=run_config())
+    state_path = tmp_path / "state.json"
+    state = json.loads(state_path.read_text())
+    assert state["schema_version"] == 2
+    state["schema_version"] = 1
+    state["config"]["pathway"].pop("frequency_delta")
+    state["config"]["pathway"].pop("imaginary_frequency_cutoff_cm1")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    reopened = ReactionRun.open(tmp_path)
+
+    assert reopened.config.pathway.frequency_delta == 0.01
+    assert reopened.config.pathway.imaginary_frequency_cutoff_cm1 == 50.0
+
+
 def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> None:
     atoms = pair(0.6)
     atoms.set_momenta([[-0.5, 0, 0], [0.5, 0, 0]])
@@ -107,9 +124,31 @@ def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> No
     assert record.is_representative
     result_dir = tmp_path / "pathways" / record.occurrence_id
     assert {path.name for path in result_dir.iterdir()} == {"result.json", "images.traj"}
-    result = json.loads((result_dir / "result.json").read_text())
+    result_path = result_dir / "result.json"
+    result = json.loads(result_path.read_text())
+    assert result["schema_version"] == 1
     assert result["status"] == "ci_neb_converged"
     assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
+    frequency = result["frequency_validation"]
+    assert frequency["status"] == "one_imaginary_mode"
+    assert frequency["scope"] == "active_atoms_fixed_environment"
+    assert frequency["transition_state_index"] == 1
+    assert frequency["active_atom_ids"] == [0, 1]
+    assert frequency["imaginary_mode_indices"] == [0]
+    assert frequency["frequencies_cm1"][0] < -frequency["imaginary_cutoff_cm1"]
+    assert frequency["primary_mode_index"] == 0
+    assert np.linalg.norm(frequency["primary_mode"]) == pytest.approx(1)
+
+    loaded = run._load_outcome(record.occurrence_id)
+    assert loaded.frequency_validation is not None
+    assert loaded.frequency_validation.frequencies_cm1 == tuple(frequency["frequencies_cm1"])
+    assert loaded.frequency_validation.primary_mode == tuple(
+        tuple(vector) for vector in frequency["primary_mode"]
+    )
+
+    result.pop("frequency_validation")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    assert run._load_outcome(record.occurrence_id).frequency_validation is None
     assert len(read(result_dir / "images.traj", ":")) == 3
     assert (tmp_path / "segments/0000/checkpoint/resume.json").is_file()
     assert (tmp_path / "segments/0000/trajectory.traj").is_file()
@@ -120,6 +159,37 @@ def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> No
         "continuing generation 1 from a structural checkpoint" in message
         for message in caplog.messages
     )
+
+
+def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -> None:
+    def fail_frequencies(_vibrations) -> None:
+        raise RuntimeError("synthetic frequency failure")
+
+    monkeypatch.setattr(Vibrations, "run", fail_frequencies)
+    atoms = pair(0.6)
+    atoms.set_momenta([[-0.5, 0, 0], [0.5, 0, 0]])
+    leases = LeaseCounter()
+    run = ReactionRun.create(tmp_path, config=run_config())
+
+    summary = run.run_ase(
+        atoms,
+        md_calculator_provider=leases,
+        pathway_calculator_provider=leases,
+        dynamics_factory=lambda frame: VelocityVerlet(frame, timestep=0.1, logfile=None),
+        total_steps=18,
+    )
+
+    assert (summary.phase, summary.generation, summary.global_step) == ("completed", 1, 18)
+    assert run.failure is None
+    result_path = next((tmp_path / "pathways").glob("*/result.json"))
+    result = json.loads(result_path.read_text())
+    assert result["status"] == "ci_neb_converged"
+    assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
+    assert result["frequency_validation"]["status"] == "failed"
+    assert result["frequency_validation"]["message"] == "synthetic frequency failure"
+    assert result["frequency_validation"]["frequencies_cm1"] == []
+    assert (tmp_path / "segments/0001/trajectory.traj").is_file()
+    assert leases.live == 0 and leases.max_live == 1
 
 
 def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_path, caplog) -> None:

@@ -1,10 +1,12 @@
-"""Fixed-cell endpoint relaxation and serial climbing-image NEB."""
+"""Fixed-cell endpoint relaxation, serial climbing-image NEB, and frequencies."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 from ase import Atoms
@@ -13,6 +15,7 @@ from ase.constraints import FixAtoms
 from ase.geometry import find_mic
 from ase.mep import NEB
 from ase.optimize import FIRE
+from ase.vibrations import Vibrations
 
 from .candidates import ReactionCandidate
 from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
@@ -26,7 +29,7 @@ class _EndpointUnresolved(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PathwayConfig:
-    """Small set of controls for endpoint relaxation and CI-NEB."""
+    """Small set of controls for endpoint relaxation, CI-NEB, and frequencies."""
 
     active_radius: float = 4.0
     relax_fmax: float = 0.05
@@ -37,14 +40,45 @@ class PathwayConfig:
     ci_neb_steps: int = 500
     max_volume_change_fraction: float = 0.05
     max_cell_strain: float = 0.05
+    frequency_delta: float = 0.01
+    imaginary_frequency_cutoff_cm1: float = 50.0
 
     def __post_init__(self) -> None:
-        if self.active_radius <= 0 or self.relax_fmax <= 0 or self.neb_fmax <= 0:
-            raise ValueError("radii and force tolerances must be positive")
+        if (
+            self.active_radius <= 0
+            or self.relax_fmax <= 0
+            or self.neb_fmax <= 0
+            or not np.isfinite(self.frequency_delta)
+            or self.frequency_delta <= 0
+        ):
+            raise ValueError("radii, force tolerances, and frequency delta must be positive")
         if self.relax_steps < 1 or self.images < 3 or self.neb_steps < 1 or self.ci_neb_steps < 1:
             raise ValueError("step counts must be positive and NEB needs at least three images")
-        if self.max_volume_change_fraction < 0 or self.max_cell_strain < 0:
-            raise ValueError("cell-change limits must be non-negative")
+        if (
+            self.max_volume_change_fraction < 0
+            or self.max_cell_strain < 0
+            or not np.isfinite(self.imaginary_frequency_cutoff_cm1)
+            or self.imaginary_frequency_cutoff_cm1 < 0
+        ):
+            raise ValueError("cell-change limits and the imaginary cutoff must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class FrequencyValidation:
+    """Constrained active-region frequency result for one climbing image."""
+
+    status: str
+    transition_state_index: int | None
+    active_atom_ids: tuple[int, ...]
+    displacement_A: float
+    imaginary_cutoff_cm1: float
+    scope: str = "active_atoms_fixed_environment"
+    active_max_force_eV_A: float | None = None
+    frequencies_cm1: tuple[float, ...] = ()
+    imaginary_mode_indices: tuple[int, ...] = ()
+    primary_mode_index: int | None = None
+    primary_mode: tuple[tuple[float, float, float], ...] = ()
+    message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +90,7 @@ class PathwayOutcome:
     energies: tuple[float, ...] = ()
     images: tuple[Atoms, ...] = ()
     message: str = ""
+    frequency_validation: FrequencyValidation | None = None
 
     @property
     def converged(self) -> bool:
@@ -65,7 +100,7 @@ class PathwayOutcome:
 def _prepare_endpoints(
     candidate: ReactionCandidate,
     config: PathwayConfig,
-) -> tuple[Atoms, Atoms]:
+) -> tuple[Atoms, Atoms, tuple[int, ...]]:
     reactant = assign_atom_ids(candidate.reactant.copy())
     product = assign_atom_ids(candidate.product.copy())
     reactant.calc = product.calc = None
@@ -128,7 +163,7 @@ def _prepare_endpoints(
         constraint = FixAtoms(indices=frozen)
         reactant.set_constraint(constraint)
         product.set_constraint(constraint.copy())
-    return reactant, product
+    return reactant, product, tuple(sorted(active))
 
 
 def _endpoint_status(
@@ -181,6 +216,115 @@ def _snapshots(images: list[Atoms]) -> tuple[Atoms, ...]:
     return tuple(image.copy() for image in images)
 
 
+def _classify_frequencies(
+    frequencies: np.ndarray,
+    cutoff_cm1: float,
+) -> tuple[tuple[float, ...], tuple[int, ...], str]:
+    values = np.asarray(frequencies, dtype=complex).reshape(-1)
+    if not np.isfinite(values.real).all() or not np.isfinite(values.imag).all():
+        raise ValueError("frequency calculation produced non-finite values")
+
+    signed = tuple(
+        -float(abs(value.imag)) if value.imag != 0 else float(value.real) for value in values
+    )
+    imaginary = tuple(
+        index
+        for index, value in enumerate(values)
+        if abs(value.imag) > 0 and abs(value.imag) >= cutoff_cm1
+    )
+    status = (
+        "zero_imaginary_modes"
+        if not imaginary
+        else "one_imaginary_mode"
+        if len(imaginary) == 1
+        else "multiple_imaginary_modes"
+    )
+    return signed, imaginary, status
+
+
+def _validate_frequencies(
+    images: list[Atoms],
+    energies: tuple[float, ...],
+    active_indices: tuple[int, ...],
+    calculator: Calculator,
+    config: PathwayConfig,
+) -> FrequencyValidation:
+    transition_state_index: int | None = None
+    transition_state: Atoms | None = None
+    active_atom_ids: tuple[int, ...] = ()
+    active_max_force: float | None = None
+    try:
+        transition_state_index = 1 + int(np.argmax(energies[1:-1]))
+        transition_state = images[transition_state_index].copy()
+        transition_state.calc = calculator
+        active_atom_ids = tuple(atom_ids(transition_state)[index] for index in active_indices)
+        forces = transition_state.get_forces(apply_constraint=False)[list(active_indices)]
+        active_max_force = float(np.linalg.norm(forces, axis=1).max())
+        if not np.isfinite(active_max_force):
+            raise ValueError("transition-state forces are non-finite")
+
+        with TemporaryDirectory(prefix="reactionflow-frequencies-") as temporary:
+            vibrations = Vibrations(
+                transition_state,
+                indices=active_indices,
+                name=str(Path(temporary) / "vibrations"),
+                delta=config.frequency_delta,
+                nfree=2,
+            )
+            vibrations.run()
+            vibration_data = vibrations.get_vibrations(
+                method="standard",
+                direction="central",
+            )
+            raw_frequencies = vibration_data.get_frequencies()
+            frequencies, imaginary_indices, status = _classify_frequencies(
+                raw_frequencies,
+                config.imaginary_frequency_cutoff_cm1,
+            )
+
+            primary_index: int | None = None
+            primary_mode: tuple[tuple[float, float, float], ...] = ()
+            if imaginary_indices:
+                primary_index = min(imaginary_indices, key=frequencies.__getitem__)
+                vector = np.asarray(
+                    vibration_data.get_modes(all_atoms=False)[primary_index],
+                    dtype=float,
+                )
+                norm = float(np.linalg.norm(vector))
+                if not np.isfinite(vector).all() or not np.isfinite(norm) or norm == 0:
+                    raise ValueError("primary imaginary mode is not finite and non-zero")
+                vector /= norm
+                primary_mode = tuple(
+                    tuple(float(component) for component in displacement) for displacement in vector
+                )
+
+        return FrequencyValidation(
+            status=status,
+            transition_state_index=transition_state_index,
+            active_atom_ids=active_atom_ids,
+            displacement_A=config.frequency_delta,
+            imaginary_cutoff_cm1=config.imaginary_frequency_cutoff_cm1,
+            active_max_force_eV_A=active_max_force,
+            frequencies_cm1=frequencies,
+            imaginary_mode_indices=imaginary_indices,
+            primary_mode_index=primary_index,
+            primary_mode=primary_mode,
+        )
+    except Exception as exc:
+        return FrequencyValidation(
+            status="failed",
+            transition_state_index=transition_state_index,
+            active_atom_ids=active_atom_ids,
+            displacement_A=config.frequency_delta,
+            imaginary_cutoff_cm1=config.imaginary_frequency_cutoff_cm1,
+            active_max_force_eV_A=active_max_force,
+            message=str(exc),
+        )
+    finally:
+        if transition_state is not None:
+            transition_state.calc = None
+
+
 def _relax(
     atoms: Atoms,
     *,
@@ -217,7 +361,7 @@ def refine_pathway(
     options = config or PathwayConfig()
     images: list[Atoms] = []
     try:
-        reactant, product = _prepare_endpoints(candidate, options)
+        reactant, product, active_indices = _prepare_endpoints(candidate, options)
         images = [reactant, product]
         reactant_converged = _relax(
             reactant,
@@ -283,11 +427,19 @@ def refine_pathway(
                         message="climbing-image NEB did not converge",
                     )
                 energies = tuple(float(image.get_potential_energy()) for image in images)
+                frequency_validation = _validate_frequencies(
+                    images,
+                    energies,
+                    active_indices,
+                    calculator,
+                    options,
+                )
                 return PathwayOutcome(
                     "ci_neb_converged",
                     barrier=max(energies) - energies[0],
                     energies=energies,
                     images=_snapshots(images),
+                    frequency_validation=frequency_validation,
                 )
             finally:
                 for image in images:
@@ -298,4 +450,10 @@ def refine_pathway(
         return PathwayOutcome("failed", images=_snapshots(images), message=str(exc))
 
 
-__all__ = ["CalculatorProvider", "PathwayConfig", "PathwayOutcome", "refine_pathway"]
+__all__ = [
+    "CalculatorProvider",
+    "FrequencyValidation",
+    "PathwayConfig",
+    "PathwayOutcome",
+    "refine_pathway",
+]

@@ -15,7 +15,7 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
-from reactionflow.pathway import FIRE, NEB
+from reactionflow.pathway import FIRE, NEB, _classify_frequencies
 
 
 class DoubleWell(Calculator):
@@ -131,6 +131,19 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
     assert outcome.converged, outcome.message
     assert outcome.barrier == pytest.approx(1.0, abs=0.02)
     assert len(outcome.energies) == len(outcome.images) == 5
+    validation = outcome.frequency_validation
+    assert validation is not None
+    assert validation.status == "one_imaginary_mode"
+    assert validation.transition_state_index == 1 + int(np.argmax(outcome.energies[1:-1]))
+    assert validation.active_atom_ids == (0, 1)
+    assert validation.active_max_force_eV_A is not None
+    assert validation.active_max_force_eV_A < 0.03
+    assert len(validation.frequencies_cm1) == 3 * len(validation.active_atom_ids)
+    assert validation.imaginary_mode_indices == (0,)
+    assert validation.frequencies_cm1[0] == pytest.approx(-521.3, abs=2)
+    assert validation.primary_mode_index == 0
+    np.testing.assert_allclose(validation.primary_mode[0], 0, atol=1e-10)
+    np.testing.assert_allclose(np.abs(validation.primary_mode[1]), [1, 0, 0], atol=1e-10)
     assert stages == ["relax_reactant", "relax_product", "neb"]
     assert interpolation == {"method": "idpp", "mic": True}
     assert climbing_stages == [False, True]
@@ -203,3 +216,90 @@ def test_refinement_returns_small_bounded_failure_outcomes() -> None:
     assert collapsed.status == "collapsed" and len(collapsed.images) == 2
     assert relaxation_failed.status == "relaxation_failed"
     assert failed.status == "failed" and "calculator unavailable" in failed.message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_signed", "expected_indices", "expected_status"),
+    [
+        (
+            np.asarray([100.0 + 0j, 49.0j]),
+            (100.0, -49.0),
+            (),
+            "zero_imaginary_modes",
+        ),
+        (
+            np.asarray([50.0j, 100.0 + 0j]),
+            (-50.0, 100.0),
+            (0,),
+            "one_imaginary_mode",
+        ),
+        (
+            np.asarray([60.0j, -75.0j]),
+            (-60.0, -75.0),
+            (0, 1),
+            "multiple_imaginary_modes",
+        ),
+    ],
+)
+def test_frequency_classification_uses_a_significant_imaginary_cutoff(
+    raw,
+    expected_signed,
+    expected_indices,
+    expected_status,
+) -> None:
+    signed, indices, status = _classify_frequencies(raw, cutoff_cm1=50.0)
+
+    assert signed == expected_signed
+    assert indices == expected_indices
+    assert status == expected_status
+
+
+def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> None:
+    def fail_frequency_setup(atoms):
+        if atoms.calc is not None:
+            raise RuntimeError("frequency setup unavailable")
+        return atom_ids(atoms)
+
+    monkeypatch.setattr("reactionflow.pathway.atom_ids", fail_frequency_setup)
+
+    @contextmanager
+    def provider(_stage: str):
+        yield DoubleWell()
+
+    outcome = refine_pathway(
+        pathway_candidate(),
+        calculator_provider=provider,
+        config=PathwayConfig(
+            active_radius=0.2,
+            relax_fmax=0.02,
+            relax_steps=100,
+            images=5,
+            neb_fmax=0.03,
+            neb_steps=250,
+            ci_neb_steps=250,
+        ),
+        detector_config=BondDetectorConfig(pair_thresholds={"He-He": (5.07, 5.13)}),
+    )
+
+    assert outcome.status == "ci_neb_converged"
+    assert outcome.converged
+    assert len(outcome.images) == 5
+    assert all(image.calc is None for image in outcome.images)
+    validation = outcome.frequency_validation
+    assert validation is not None
+    assert validation.status == "failed"
+    assert "frequency setup unavailable" in validation.message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("frequency_delta", np.nan),
+        ("frequency_delta", np.inf),
+        ("imaginary_frequency_cutoff_cm1", np.nan),
+        ("imaginary_frequency_cutoff_cm1", np.inf),
+    ],
+)
+def test_frequency_config_rejects_non_finite_controls(field, value) -> None:
+    with pytest.raises(ValueError):
+        PathwayConfig(**{field: value})
