@@ -47,8 +47,8 @@ identity without silently reclassifying old records.
 - `detection.py`: persistent geometric bond-change detection.
 - `candidates.py`: generic topology-transition tracking, candidate records, and exact identity.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
-- `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, and serial ASE
-  CI-NEB with context-managed calculator leases.
+- `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, serial ASE
+  CI-NEB, and constrained active-region frequencies with context-managed calculator leases.
 - `segments.py`: structural checkpoints, immutable generations, and resume tokens.
 - `run.py`: the small scheduler-neutral state machine and synchronous ASE executor.
 - `trajectory.py`: optional append-only ASE trajectory monitoring and replay.
@@ -121,9 +121,10 @@ images concurrently.
 
 GPU and electronic-structure packages remain user-selected dependencies.
 
-The pathway primitive uses `relax_reactant`, `relax_product`, or `neb`; `ReactionRun` additionally
-uses `md` and owns durable outcome publication. Serializable provider specifications remain
-deferred until an adapter has a concrete need.
+The pathway primitive uses `relax_reactant`, `relax_product`, or `neb`; the frequency calculation
+reuses the live `neb` lease. `ReactionRun` additionally uses `md` and owns durable outcome
+publication. Serializable provider specifications remain deferred until an adapter has a concrete
+need.
 
 ## Resume fidelity
 
@@ -138,9 +139,11 @@ The package must never silently describe a structural resume as bitwise exact.
 
 ## Scientific scope
 
-The first milestone refines a constrained potential-energy path with endpoint relaxation and
-climbing-image NEB. A successful status is `neb_converged`.
+The package refines a constrained potential-energy path with endpoint relaxation and
+climbing-image NEB. A converged climbing image receives a fixed-cell, active-region frequency
+diagnostic without changing the top-level `ci_neb_converged` status.
 
-It does not establish a validated transition state. Vibrational analysis, confirmation of exactly
-one imaginary mode, intrinsic reaction coordinates, zero-point corrections, entropy, free-energy
-barriers, tunneling, uncertainty, alternative pathways, and kinetics are future capabilities.
+One significant imaginary mode is consistent with a constrained first-order saddle but does not
+establish endpoint connectivity. Intrinsic reaction coordinates, zero-point corrections, entropy,
+free-energy barriers, tunneling, uncertainty, alternative pathways, and kinetics remain future
+capabilities.

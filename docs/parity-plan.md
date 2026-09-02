@@ -192,6 +192,7 @@ the reaction-science implementation.
 
 ## Deferred work
 
-The first alpha does not include vibrational validation, IRC, free energies, distributed NEB,
-multiple pathway guesses, automatic replacement of failed reaction representatives, multi-GPU
-scheduling, a dashboard, a general plugin system, or reaction-network exploration.
+The first alpha does not include IRC, free energies, distributed NEB, multiple pathway guesses,
+automatic replacement of failed reaction representatives, multi-GPU scheduling, a dashboard, a
+general plugin system, or reaction-network exploration. Frequency validation is deliberately
+limited to a constrained active-region diagnostic after CI-NEB convergence.

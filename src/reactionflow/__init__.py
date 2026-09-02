@@ -12,7 +12,7 @@ from .detection import (
     atom_ids,
 )
 from .mlip import MLIPAdapter, load_mlip_adapter
-from .pathway import PathwayConfig, PathwayOutcome, refine_pathway
+from .pathway import FrequencyValidation, PathwayConfig, PathwayOutcome, refine_pathway
 from .restart import ComponentState, ExactRestartSnapshot
 from .run import ReactionRun, ReactionRunConfig, RunSummary
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
@@ -32,6 +32,7 @@ __all__ = [
     "ExactDynamicsRuntime",
     "ExactRestartSnapshot",
     "ExactRuntimeProvider",
+    "FrequencyValidation",
     "MLIPAdapter",
     "PathwayConfig",
     "PathwayOutcome",

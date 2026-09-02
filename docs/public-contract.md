@@ -51,7 +51,7 @@ The provisional top-level facade includes:
 - `CampaignConfig`, `TrajectorySpec`, `AdapterSpec`, and `MLIPAdapter`;
 - `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`;
 - `ReactionTracker` and `ReactionCandidate`;
-- `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()`; and
+- `PathwayConfig`, `PathwayOutcome`, `FrequencyValidation`, and `refine_pathway()`; and
 - stable-ID helpers and `same_reaction()`.
 
 Low-level implementation helpers remain module-level APIs unless deliberately promoted.
@@ -76,9 +76,9 @@ class IDs, and graph serialization remain implementation details.
 RF-2c adds the provisional module-level `OccurrenceStore` and `OccurrenceRecord` APIs. They retain
 and reopen immutable candidate bundles; `ReactionRun` owns their normal use.
 
-RF-3 promotes `PathwayConfig`, `PathwayOutcome`, and `refine_pathway()` for one in-memory candidate.
-The context-managed `CalculatorProvider` type remains module-level; an `MLIPAdapter` supplies it
-without changing the pathway primitive.
+RF-3 promotes `PathwayConfig`, `PathwayOutcome`, `FrequencyValidation`, and `refine_pathway()` for
+one in-memory candidate. The context-managed `CalculatorProvider` type remains module-level; an
+`MLIPAdapter` supplies it without changing the pathway primitive.
 
 RF-4 adds provisional module-level `SegmentStore`, `SegmentGeneration`, and `ResumeToken` APIs for
 structural or exact checkpoint/resume. They remain low-level APIs normally reached through
