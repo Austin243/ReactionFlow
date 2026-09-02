@@ -1,26 +1,38 @@
 # Independent trajectory campaigns
 
-A campaign is a JSON file containing one starting structure, one MLIP adapter factory, and any
-number of independently parameterized trajectories. ReactionFlow does not create a central
-scheduler or a monitor service. Each process owns exactly one trajectory, propagates MD on its one
-visible GPU, and runs that trajectory's bond monitor on CPU cores local to the same node at each
-observation boundary.
+A campaign is a JSON file containing one starting structure and any number of independently
+parameterized trajectories. Each trajectory uses exactly one MLIP adapter configuration. A schema
+version 1 campaign shares one adapter across every trajectory; schema version 2 defines named
+adapter profiles and makes the assignment explicit on each trajectory. ReactionFlow does not
+create a central scheduler or a monitor service. Each process owns exactly one trajectory,
+propagates MD on its one visible GPU, and runs that trajectory's bond monitor on CPU cores local to
+the same node at each observation boundary.
 
 There is no ReactionFlow campaign-size ceiling. On Perlmutter, four workers fit on each four-GPU
 node. A 4-trajectory campaign uses one node, 32 trajectories use eight nodes, and larger campaigns
 use the same mapping until they reach the allocation limits imposed by the site or queue.
 
-## Campaign file
+## Multiple models in one submission
+
+Use schema version 2 when trajectories in one submission should use different models. Define each
+complete adapter configuration once under `adapter_profiles`, then set `adapter_profile` on every
+trajectory:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "structure": "structure.extxyz",
   "output_root": "runs",
   "require_gpu": true,
-  "adapter": {
-    "factory": "my_mlip.reactionflow:create_adapter",
-    "options": {"model": "my-model"}
+  "adapter_profiles": {
+    "model-a": {
+      "factory": "my_mlip.reactionflow:create_adapter",
+      "options": {"checkpoint": "/models/model-a.ckpt"}
+    },
+    "model-b": {
+      "factory": "my_mlip.reactionflow:create_adapter",
+      "options": {"checkpoint": "/models/model-b.ckpt"}
+    }
   },
   "reaction_run": {
     "observation_interval": 10,
@@ -29,22 +41,54 @@ use the same mapping until they reach the allocation limits imposed by the site 
   },
   "trajectories": [
     {
-      "id": "T100-P20-seed11",
+      "id": "model-a-seed11",
+      "adapter_profile": "model-a",
       "total_steps": 100000,
       "timestep_fs": 1.0,
       "temperature_K": 100.0,
       "pressure_GPa": 20.0,
       "seed": 11,
       "conditions": {"hydrostatic": true}
+    },
+    {
+      "id": "model-b-seed22",
+      "adapter_profile": "model-b",
+      "total_steps": 100000,
+      "timestep_fs": 1.0,
+      "temperature_K": 100.0,
+      "pressure_GPa": 20.0,
+      "seed": 22,
+      "conditions": {"hydrostatic": true}
     }
   ]
 }
 ```
 
+The same representation works for 8, 200, or 500 trajectories: add one trajectory object per GPU
+task and assign any profile to each object. A profile can be referenced once or hundreds of times,
+and profiles may use different adapter factories as well as different options. Each worker imports
+and loads only its selected profile. That profile supplies the calculators for MD, endpoint
+relaxation, NEB, CI-NEB, and frequency validation before the worker restores and continues the same
+MD trajectory.
+
+The assignment is intentionally explicit rather than inferred from trajectory order, task rank, or
+GPU number. This keeps generated campaign files easy to audit and prevents inserting or reordering
+a trajectory from silently changing its model. `reactionflow plan` reports the trajectory count,
+resource estimate, and assignment counts under `adapter_profile_counts` before submission.
+
+Schema version 2 has no profile inheritance or per-trajectory option merging: every named profile
+is a complete adapter specification. All profiles in one submission must be usable in the same
+software environment and fit the requested per-task resources. Use separate campaigns when models
+need incompatible environments or different GPU shapes.
+
+The bundled ANI-1xnr campaign remains a schema version 1 example. Its top-level `adapter` applies
+to all trajectories and continues to be supported unchanged for single-model work.
+
 Paths are relative to the campaign file. Trajectory IDs are unique output-directory names. The
 standard temperature, pressure, time-step, seed, and step-count fields give adapters a common
 baseline; `conditions` carries additional JSON parameters without putting MLIP- or
-integrator-specific settings into ReactionFlow core.
+integrator-specific settings into ReactionFlow core. Model selection belongs in `adapter_profile`,
+not `conditions`.
 
 Validate and size a campaign without importing its MLIP:
 
@@ -58,7 +102,8 @@ reactionflow plan campaign.json --gpus-per-node 4
 ### Use an ASE calculator directly
 
 For a deterministic, stateless MLIP that already exposes an ASE `Calculator`, use the built-in
-generic adapter. No ReactionFlow-specific Python class is required:
+generic adapter. No ReactionFlow-specific Python class is required. This schema version 1 block can
+also be used unchanged as the value of a named schema version 2 adapter profile:
 
 ```json
 {
@@ -102,8 +147,8 @@ state can be captured explicitly.
 
 ### Write a custom adapter
 
-`adapter.factory` is an explicit `module:callable` reference. ReactionFlow calls it once in each
-worker:
+Each profile's `factory` (or `adapter.factory` in schema version 1) is an explicit
+`module:callable` reference. ReactionFlow calls the selected factory once in each worker:
 
 ```python
 def create_adapter(*, trajectory, options):
@@ -160,5 +205,7 @@ job size remain site policy rather than ReactionFlow settings. Current NERSC pol
 Every trajectory writes to `output_root/<trajectory-id>`. Resubmitting the same campaign exactly
 resumes incomplete workers from their last complete observation checkpoint and treats completed
 workers as idempotent no-ops. A per-trajectory contract binds the structure digest, trajectory
-conditions, reaction settings, adapter factory, and adapter options to that directory; changing
-those scientific inputs is rejected instead of being mislabeled as an exact resume.
+conditions, reaction settings, and resolved adapter factory and options to that directory; changing
+the selected model or its scientific inputs is rejected instead of being mislabeled as an exact
+resume. Renaming a profile without changing its resolved adapter does not change the scientific
+contract.

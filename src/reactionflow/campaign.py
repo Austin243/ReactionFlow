@@ -48,7 +48,7 @@ def _json_mapping(value: object, name: str) -> dict[str, Any]:
 
 @dataclass(frozen=True, slots=True)
 class AdapterSpec:
-    """Importable MLIP adapter factory and campaign-wide options."""
+    """Importable MLIP adapter factory and its options."""
 
     factory: str
     options: Mapping[str, Any] = field(default_factory=dict)
@@ -154,34 +154,40 @@ def _run_config(value: object) -> ReactionRunConfig:
 
 @dataclass(frozen=True, slots=True)
 class CampaignConfig:
-    """One structure, one adapter, and independently parameterized trajectories."""
+    """One structure and independently parameterized trajectories."""
 
     source: Path
     structure: Path
     output_root: Path
-    adapter: AdapterSpec
+    adapter: AdapterSpec | None
     reaction_run: ReactionRunConfig
     trajectories: tuple[TrajectorySpec, ...]
     require_gpu: bool = True
+    adapter_profiles: Mapping[str, AdapterSpec] = field(default_factory=dict)
+    _trajectory_adapter_profiles: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
     @classmethod
     def load(cls, path: str | Path) -> CampaignConfig:
         source = Path(path).resolve()
         value = _mapping(json.loads(source.read_text(encoding="utf-8")), "campaign")
-        allowed = {
+        schema_version = value.get("schema_version")
+        common_keys = {
             "schema_version",
             "structure",
             "output_root",
-            "adapter",
             "reaction_run",
             "trajectories",
             "require_gpu",
         }
+        if schema_version == 1:
+            allowed = common_keys | {"adapter"}
+        elif schema_version == 2:
+            allowed = common_keys | {"adapter_profiles"}
+        else:
+            raise ValueError("unsupported campaign schema")
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown campaign keys: {sorted(unknown)}")
-        if value.get("schema_version") != 1:
-            raise ValueError("unsupported campaign schema")
         structure_value = value.get("structure")
         output_value = value.get("output_root")
         if not isinstance(structure_value, str) or not structure_value:
@@ -198,21 +204,61 @@ class CampaignConfig:
             or not raw_trajectories
         ):
             raise ValueError("campaign.trajectories must be a non-empty array")
-        trajectories = tuple(TrajectorySpec.from_dict(item) for item in raw_trajectories)
+        adapter: AdapterSpec | None
+        adapter_profiles: dict[str, AdapterSpec]
+        trajectory_adapter_profiles: tuple[str, ...]
+        if schema_version == 1:
+            adapter = None
+            adapter_profiles = {}
+            trajectory_adapter_profiles = ()
+            trajectories = tuple(TrajectorySpec.from_dict(item) for item in raw_trajectories)
+        else:
+            raw_profiles = _mapping(value.get("adapter_profiles"), "campaign.adapter_profiles")
+            if not raw_profiles:
+                raise ValueError("campaign.adapter_profiles must be a non-empty object")
+            adapter_profiles = {}
+            for name, raw_profile in raw_profiles.items():
+                if not _TRAJECTORY_ID.fullmatch(name) or name in {".", ".."}:
+                    raise ValueError(
+                        f"adapter profile name must be a safe non-empty identifier: {name!r}"
+                    )
+                adapter_profiles[name] = AdapterSpec.from_dict(raw_profile)
+
+            parsed_trajectories: list[TrajectorySpec] = []
+            parsed_profiles: list[str] = []
+            for raw_trajectory in raw_trajectories:
+                trajectory_mapping = dict(_mapping(raw_trajectory, "trajectory"))
+                profile = trajectory_mapping.pop("adapter_profile", None)
+                if not isinstance(profile, str) or not profile:
+                    raise ValueError("trajectory.adapter_profile must name an adapter profile")
+                if profile not in adapter_profiles:
+                    raise ValueError(
+                        "trajectory.adapter_profile references unknown adapter profile: "
+                        f"{profile!r}"
+                    )
+                parsed_trajectories.append(TrajectorySpec.from_dict(trajectory_mapping))
+                parsed_profiles.append(profile)
+            adapter = None
+            trajectories = tuple(parsed_trajectories)
+            trajectory_adapter_profiles = tuple(parsed_profiles)
         identifiers = [trajectory.id for trajectory in trajectories]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("trajectory IDs must be unique")
         require_gpu = value.get("require_gpu", True)
         if type(require_gpu) is not bool:
             raise TypeError("campaign.require_gpu must be a boolean")
+        if schema_version == 1:
+            adapter = AdapterSpec.from_dict(value.get("adapter"))
         return cls(
             source=source,
             structure=structure,
             output_root=(source.parent / output_value).resolve(),
-            adapter=AdapterSpec.from_dict(value.get("adapter")),
+            adapter=adapter,
             reaction_run=_run_config(value.get("reaction_run", {})),
             trajectories=trajectories,
             require_gpu=require_gpu,
+            adapter_profiles=adapter_profiles,
+            _trajectory_adapter_profiles=trajectory_adapter_profiles,
         )
 
     def trajectory(self, index: int) -> TrajectorySpec:
@@ -221,6 +267,22 @@ class CampaignConfig:
         if not 0 <= index < len(self.trajectories):
             raise IndexError(f"trajectory index {index} is outside this campaign")
         return self.trajectories[index]
+
+    def adapter_for(self, index: int) -> AdapterSpec:
+        """Return the fully resolved adapter configuration for one trajectory."""
+
+        self.trajectory(index)
+        if self.adapter is not None:
+            return self.adapter
+        return self.adapter_profiles[self._trajectory_adapter_profiles[index]]
+
+    def adapter_profile_for(self, index: int) -> str | None:
+        """Return the named adapter profile assigned by schema v2, if any."""
+
+        self.trajectory(index)
+        if not self._trajectory_adapter_profiles:
+            return None
+        return self._trajectory_adapter_profiles[index]
 
 
 __all__ = ["AdapterSpec", "CampaignConfig", "TrajectorySpec"]
