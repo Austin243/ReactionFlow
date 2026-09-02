@@ -31,10 +31,11 @@ def _file_digest(path: Path) -> str:
 
 def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, object]:
     trajectory = campaign.trajectory(index)
+    adapter = campaign.adapter_for(index)
     scientific_config = {
         "adapter": {
-            "factory": campaign.adapter.factory,
-            "options": dict(campaign.adapter.options),
+            "factory": adapter.factory,
+            "options": dict(adapter.options),
         },
         "reaction_run": campaign.reaction_run.to_dict(),
         "trajectory": asdict(trajectory),
@@ -149,18 +150,19 @@ def run_selected_trajectory(
     """Run or exactly resume one selected trajectory without spawning workers."""
 
     trajectory = campaign.trajectory(index)
+    adapter_spec = campaign.adapter_for(index)
     if campaign.require_gpu:
         visible_gpu(environment)
     root = campaign.output_root / trajectory.id
     state_path = root / "state.json"
     if state_path.is_file():
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
-        adapter = load_mlip_adapter(campaign.adapter, trajectory)
+        adapter = load_mlip_adapter(adapter_spec, trajectory)
         run = ReactionRun.open(root)
         atoms = None
     else:
         atoms = read(campaign.structure)
-        adapter = load_mlip_adapter(campaign.adapter, trajectory)
+        adapter = load_mlip_adapter(adapter_spec, trajectory)
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         run = ReactionRun.create(root, config=campaign.reaction_run)
     return run.run_exact(
@@ -202,6 +204,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "require_gpu": campaign.require_gpu,
             "atoms": len(atoms),
         }
+        adapter_profile_counts: dict[str, int] = {}
+        for index in range(len(campaign.trajectories)):
+            profile = campaign.adapter_profile_for(index)
+            if profile is not None:
+                adapter_profile_counts[profile] = adapter_profile_counts.get(profile, 0) + 1
+        if adapter_profile_counts:
+            payload["adapter_profile_counts"] = adapter_profile_counts
         if arguments.command == "plan":
             if arguments.gpus_per_node < 1:
                 parser.error("--gpus-per-node must be positive")

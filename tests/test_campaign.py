@@ -100,6 +100,24 @@ def _campaign(tmp_path, *, count: int = 1, require_gpu: bool = False):
     return path
 
 
+def _profile_campaign(tmp_path, assignments: list[str]):
+    path = _campaign(tmp_path, count=len(assignments))
+    value = json.loads(path.read_text(encoding="utf-8"))
+    adapter = value.pop("adapter")
+    value["schema_version"] = 2
+    value["adapter_profiles"] = {
+        name: {
+            **adapter,
+            "options": {"model": name},
+        }
+        for name in dict.fromkeys(assignments)
+    }
+    for trajectory, profile in zip(value["trajectories"], assignments, strict=True):
+        trajectory["adapter_profile"] = profile
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
 def test_campaign_loads_relative_paths_and_arbitrary_trajectory_count(tmp_path) -> None:
     campaign = CampaignConfig.load(_campaign(tmp_path, count=130))
 
@@ -109,6 +127,82 @@ def test_campaign_loads_relative_paths_and_arbitrary_trajectory_count(tmp_path) 
     assert campaign.trajectory(129).temperature_K == 229.0
     assert campaign.trajectory(129).conditions == {"integrator": "npt"}
     assert campaign.reaction_run.observation_interval == 1
+    assert campaign.adapter_for(129) == campaign.adapter
+    assert campaign.adapter_profile_for(129) is None
+
+
+def test_v2_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
+    assignments = ["model-a"] * 4 + ["model-b"] * 2 + ["model-c"] * 2
+    path = _profile_campaign(tmp_path, assignments)
+    campaign = CampaignConfig.load(path)
+
+    assert campaign.adapter is None
+    assert [campaign.adapter_profile_for(index) for index in range(8)] == assignments
+    assert [campaign.adapter_for(index).options["model"] for index in range(8)] == assignments
+
+    assert main(["plan", str(path), "--gpus-per-node", "4"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["adapter_profile_counts"] == {
+        "model-a": 4,
+        "model-b": 2,
+        "model-c": 2,
+    }
+    assert (plan["trajectories"], plan["tasks"], plan["gpus"], plan["minimum_nodes"]) == (
+        8,
+        8,
+        8,
+        2,
+    )
+
+    FACTORY_CALLS.clear()
+    run_selected_trajectory(campaign, index=4, environment={})
+    assert FACTORY_CALLS == [("trajectory-0004", {"model": "model-b"})]
+
+
+def test_v2_rejects_invalid_profile_configuration(tmp_path) -> None:
+    path = _profile_campaign(tmp_path, ["model-a"])
+    valid = json.loads(path.read_text(encoding="utf-8"))
+
+    missing_assignment = json.loads(json.dumps(valid))
+    del missing_assignment["trajectories"][0]["adapter_profile"]
+    unknown_assignment = json.loads(json.dumps(valid))
+    unknown_assignment["trajectories"][0]["adapter_profile"] = "missing"
+    empty_profiles = {**valid, "adapter_profiles": {}}
+    unsafe_profile = json.loads(json.dumps(valid))
+    unsafe_profile["adapter_profiles"]["not safe"] = unsafe_profile["adapter_profiles"].pop(
+        "model-a"
+    )
+    schema_one_with_profiles = {**valid, "schema_version": 1}
+    schema_two_with_adapter = {**valid, "adapter": valid["adapter_profiles"]["model-a"]}
+
+    cases = [
+        (missing_assignment, "must name an adapter profile"),
+        (unknown_assignment, "references unknown adapter profile: 'missing'"),
+        (empty_profiles, "must be a non-empty object"),
+        (unsafe_profile, "profile name must be a safe non-empty identifier"),
+        (schema_one_with_profiles, "unknown campaign keys"),
+        (schema_two_with_adapter, "unknown campaign keys"),
+    ]
+    for value, message in cases:
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            CampaignConfig.load(path)
+
+
+def test_v2_contract_uses_resolved_adapter_not_profile_name(tmp_path) -> None:
+    path = _profile_campaign(tmp_path, ["model-a"])
+    first = run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["adapter_profiles"]["renamed"] = value["adapter_profiles"].pop("model-a")
+    value["trajectories"][0]["adapter_profile"] = "renamed"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    assert run_selected_trajectory(CampaignConfig.load(path), index=0, environment={}) == first
+
+    value["adapter_profiles"]["renamed"]["options"]["model"] = "changed-model"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="scientific configuration changed"):
+        run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
 
 
 def test_task_mapping_requires_exactly_one_process_per_trajectory() -> None:

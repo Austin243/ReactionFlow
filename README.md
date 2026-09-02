@@ -111,7 +111,8 @@ frequency diagnostic for converged CI-NEB results, and a message describing any 
 ## Use another ASE-compatible MLIP
 
 TorchANI and ANI-1xnr remain the ready-to-run default. To select another installed,
-ASE-compatible MLIP, replace the `adapter` block in the campaign JSON:
+ASE-compatible MLIP in a schema version 1 campaign, replace the `adapter` block in the campaign
+JSON:
 
 ```json
 "adapter": {
@@ -135,6 +136,56 @@ so change `checkpoint` and the other keys to the arguments that calculator expec
 absolute, compute-node-visible checkpoint path in both the appropriate calculator argument and
 `model_files`. Install the calculator package in `.perlmutter-python` before running the campaign.
 See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for the full interface.
+
+## Use multiple MLIPs in one submission
+
+For schema version 2, define each complete adapter configuration once under `adapter_profiles` and
+assign one by name to every trajectory:
+
+```json
+{
+  "schema_version": 2,
+  "structure": "structure.extxyz",
+  "output_root": "runs",
+  "require_gpu": true,
+  "adapter_profiles": {
+    "model-a": {
+      "factory": "my_mlip.reactionflow:create_adapter",
+      "options": {"checkpoint": "/models/a.ckpt"}
+    },
+    "model-b": {
+      "factory": "my_mlip.reactionflow:create_adapter",
+      "options": {"checkpoint": "/models/b.ckpt"}
+    }
+  },
+  "trajectories": [
+    {
+      "id": "run-001",
+      "adapter_profile": "model-a",
+      "total_steps": 100000,
+      "timestep_fs": 1.0,
+      "temperature_K": 300.0,
+      "pressure_GPa": 20.0,
+      "seed": 11
+    },
+    {
+      "id": "run-002",
+      "adapter_profile": "model-b",
+      "total_steps": 100000,
+      "timestep_fs": 1.0,
+      "temperature_K": 300.0,
+      "pressure_GPa": 20.0,
+      "seed": 22
+    }
+  ]
+}
+```
+
+Use the same explicit assignment for 8 trajectories or 500; each Slurm worker loads only the
+profile assigned to its trajectory. `reactionflow plan` summarizes the assignment counts before
+submission. Schema version 1 remains supported unchanged for campaigns where every trajectory uses
+one adapter. See the [campaign guide](docs/campaigns.md#multiple-models-in-one-submission) for the
+complete file format and execution guarantees.
 
 ## Change temperatures and pressures
 

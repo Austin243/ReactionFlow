@@ -39,3 +39,6 @@ sbatch -A <GPU_PROJECT> -q regular --nodes=8 --ntasks=32 \
 ```
 
 The command intentionally fails when the Slurm task count and campaign trajectory count differ.
+This checked-in campaign uses the schema version 1 single-adapter form. To assign a different model
+to each trajectory in the same submission, use schema version 2 named adapter profiles as described
+in the [campaign guide](../../../docs/campaigns.md#multiple-models-in-one-submission).
