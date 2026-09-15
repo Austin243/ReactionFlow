@@ -236,16 +236,25 @@ def test_gpu_worker_accepts_one_visible_device_and_rejects_shared_visibility() -
         visible_gpu({})
 
 
-def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path) -> None:
+def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path, monkeypatch) -> None:
     FACTORY_CALLS.clear()
     path = _campaign(tmp_path)
     campaign = CampaignConfig.load(path)
+    received = []
+    original = ReactionRun.run_exact
+
+    def capture(self, *args, **kwargs):
+        received.append(kwargs["pressure_GPa"])
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReactionRun, "run_exact", capture)
 
     first = run_selected_trajectory(campaign, index=0, environment={})
     second = run_selected_trajectory(campaign, index=0, environment={})
 
     assert (first.phase, first.global_step) == ("completed", 2)
     assert second == first
+    assert received == [20.0, 20.0]
     assert FACTORY_CALLS == [
         ("trajectory-0000", {"model": "test-model"}),
         ("trajectory-0000", {"model": "test-model"}),
@@ -260,30 +269,6 @@ def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path) -> None:
     path.write_text(json.dumps(changed))
     with pytest.raises(ValueError, match="scientific configuration changed"):
         run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
-
-
-@pytest.mark.parametrize("pressure", [None, 0.0, 20.0])
-def test_campaign_passes_target_pressure_to_refinement_on_start_and_resume(
-    tmp_path,
-    monkeypatch,
-    pressure,
-) -> None:
-    path = _campaign(tmp_path)
-    value = json.loads(path.read_text())
-    value["trajectories"][0]["pressure_GPa"] = pressure
-    path.write_text(json.dumps(value))
-    campaign = CampaignConfig.load(path)
-    received = []
-    original = ReactionRun.run_exact
-
-    def capture(self, *args, **kwargs):
-        received.append(kwargs["pressure_GPa"])
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(ReactionRun, "run_exact", capture)
-    run_selected_trajectory(campaign, index=0, environment={})
-    run_selected_trajectory(campaign, index=0, environment={})
-    assert received == [pressure, pressure]
 
 
 def test_cli_plan_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:

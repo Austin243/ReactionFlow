@@ -202,11 +202,8 @@ temperature, pressure, and random seed:
 A numeric `pressure_GPa` runs NPT at that target pressure. Set `"pressure_GPa": null` for NVT.
 Thermostat and barostat coupling times can be changed in that trajectory's `conditions` object.
 
-NPT pathways use SSNEB: both endpoints and the band can change cell volume and shape at the
-trajectory's target pressure, including zero pressure. The reported barrier is an enthalpy
-difference, Δ(E + PV). The calculator must supply stress as well as energy and forces. NVT keeps
-the existing fixed-cell NEB and potential-energy barrier. These are static pathway barriers;
-thermal free-energy corrections are not included. See [pathway refinement](docs/pathway-refinement.md).
+NPT uses variable-cell SSNEB and enthalpy barriers, Δ(E + PV); the calculator must supply stress.
+NVT keeps fixed-cell NEB. See [pathway refinement](docs/pathway-refinement.md) for details.
 
 ## Change the number of GPU nodes
 
