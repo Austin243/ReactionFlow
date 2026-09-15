@@ -565,6 +565,11 @@ class ReactionRun:
                 "status": outcome.status,
                 "barrier_eV": outcome.barrier,
                 "energies_eV": list(outcome.energies),
+                "method": outcome.method,
+                "pressure_GPa": outcome.pressure_GPa,
+                "barrier_quantity": outcome.barrier_quantity,
+                "enthalpies_eV": list(outcome.enthalpies),
+                "volumes_A3": list(outcome.volumes),
                 "message": outcome.message,
                 "frequency_validation": _frequency_validation_to_dict(outcome.frequency_validation),
             }
@@ -593,6 +598,10 @@ class ReactionRun:
             status=str(result["status"]),
             barrier=None if barrier is None else float(barrier),
             energies=tuple(map(float, result.get("energies_eV", []))),
+            method=str(result.get("method", "neb")),
+            pressure_GPa=result.get("pressure_GPa"),
+            enthalpies=tuple(map(float, result.get("enthalpies_eV", []))),
+            volumes=tuple(map(float, result.get("volumes_A3", []))),
             images=tuple(images),
             message=str(result.get("message", "")),
             frequency_validation=_frequency_validation_from_dict(
@@ -603,6 +612,8 @@ class ReactionRun:
     def refine_pending(
         self,
         calculator_provider: CalculatorProvider,
+        *,
+        pressure_GPa: float | None = None,
     ) -> tuple[PathwayOutcome, ...]:
         """Refine each queued representative serially and publish its result."""
 
@@ -622,6 +633,7 @@ class ReactionRun:
                         calculator_provider=calculator_provider,
                         config=self.config.pathway,
                         detector_config=self.occurrences.load_detector_config(occurrence_id),
+                        pressure_GPa=pressure_GPa,
                     )
                     self._publish_outcome(occurrence_id, outcome)
                 outcomes.append(outcome)
@@ -838,6 +850,7 @@ class ReactionRun:
         runtime_provider: ExactRuntimeProvider,
         pathway_calculator_provider: CalculatorProvider,
         total_steps: int,
+        pressure_GPa: float | None = None,
     ) -> RunSummary:
         """Run live detection, serial NEB/CI-NEB, and exact MD continuation."""
 
@@ -861,7 +874,7 @@ class ReactionRun:
                         "exact runtime was interrupted before its reaction checkpoint completed"
                     )
                 if self._phase == "refining":
-                    self.refine_pending(pathway_calculator_provider)
+                    self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
                     continue
                 if self._phase == "resume_ready":
                     if self._global_step >= total_steps:
@@ -895,6 +908,7 @@ class ReactionRun:
         pathway_calculator_provider: CalculatorProvider,
         dynamics_factory: DynamicsFactory,
         total_steps: int,
+        pressure_GPa: float | None = None,
     ) -> RunSummary:
         """Run synchronous ASE MD, refinement, and structural resume to a step target."""
 
@@ -919,7 +933,7 @@ class ReactionRun:
                     self.checkpoint(self._segment.atoms)
                     continue
                 if self._phase == "refining":
-                    self.refine_pending(pathway_calculator_provider)
+                    self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
                     continue
                 if self._phase == "resume_ready":
                     if self._global_step >= total_steps:

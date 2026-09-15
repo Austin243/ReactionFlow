@@ -1,15 +1,15 @@
-"""Fixed-cell endpoint relaxation, serial climbing-image NEB, and frequencies."""
+"""Endpoint relaxation, NVT NEB or constant-pressure SSNEB, and frequencies."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
-from ase import Atoms
+from ase import Atoms, units
 from ase.calculators.calculator import Calculator
 from ase.constraints import FixAtoms
 from ase.geometry import find_mic
@@ -19,6 +19,7 @@ from ase.vibrations import Vibrations
 
 from .candidates import ReactionCandidate
 from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
+from .ssneb import SSNEB, cell_filter
 
 CalculatorProvider = Callable[[str], AbstractContextManager[Calculator]]
 
@@ -91,6 +92,14 @@ class PathwayOutcome:
     images: tuple[Atoms, ...] = ()
     message: str = ""
     frequency_validation: FrequencyValidation | None = None
+    method: str = "neb"
+    pressure_GPa: float | None = None
+    enthalpies: tuple[float, ...] = ()
+    volumes: tuple[float, ...] = ()
+
+    @property
+    def barrier_quantity(self) -> str:
+        return "potential_energy" if self.pressure_GPa is None else "enthalpy"
 
     @property
     def converged(self) -> bool:
@@ -100,6 +109,8 @@ class PathwayOutcome:
 def _prepare_endpoints(
     candidate: ReactionCandidate,
     config: PathwayConfig,
+    *,
+    variable_cell: bool = False,
 ) -> tuple[Atoms, Atoms, tuple[int, ...]]:
     reactant = assign_atom_ids(candidate.reactant.copy())
     product = assign_atom_ids(candidate.product.copy())
@@ -120,7 +131,28 @@ def _prepare_endpoints(
     if reactant.pbc.tolist() != product.pbc.tolist():
         raise _EndpointUnresolved("reactant and product periodicity differs")
     cells_differ = not np.array_equal(reactant.cell, product.cell)
-    if cells_differ:
+    if variable_cell:
+        for endpoint in (reactant, product):
+            if (
+                not endpoint.pbc.all()
+                or endpoint.cell.rank < 3
+                or not np.isfinite(endpoint.cell).all()
+                or np.linalg.det(endpoint.cell) <= 0
+            ):
+                raise _EndpointUnresolved("SSNEB requires fully periodic right-handed cells")
+            # Remove rigid cell rotation without changing fractional coordinates
+            # or internal geometry. These are copies, never the MD checkpoint.
+            cell, rotation = endpoint.cell.standard_form()
+            endpoint.positions = endpoint.positions @ rotation.T
+            endpoint.set_cell(cell)
+        reference_positions = product.get_scaled_positions(wrap=False) @ reactant.cell
+        displacement = find_mic(
+            reference_positions - reactant.positions, cell=reactant.cell, pbc=True
+        )[0]
+        product.set_scaled_positions(
+            np.linalg.solve(reactant.cell.T, (reactant.positions + displacement).T).T
+        )
+    elif cells_differ:
         if not reactant.pbc.all() or reactant.cell.rank < 3 or product.cell.rank < 3:
             raise _EndpointUnresolved("changed cells require fully periodic nonsingular endpoints")
         reactant_volume = abs(float(np.linalg.det(reactant.cell)))
@@ -135,10 +167,11 @@ def _prepare_endpoints(
             raise _EndpointUnresolved("endpoint cell change exceeds pathway limits")
         product.set_cell(reactant.cell, scale_atoms=True)
 
-    displacement = product.positions - reactant.positions
-    if reactant.pbc.any():
-        displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
-    product.positions = reactant.positions + displacement
+    if not variable_cell:
+        displacement = product.positions - reactant.positions
+        if reactant.pbc.any():
+            displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
+        product.positions = reactant.positions + displacement
 
     indices = {atom_id: index for index, atom_id in enumerate(first_ids)}
     if not set(candidate.atom_ids) <= indices.keys():
@@ -159,7 +192,11 @@ def _prepare_endpoints(
 
     frozen = sorted(set(range(len(reactant))) - active)
     if frozen:
-        product.positions[frozen] = reactant.positions[frozen]
+        product.positions[frozen] = (
+            reactant.get_scaled_positions(wrap=False)[frozen] @ product.cell
+            if variable_cell
+            else reactant.positions[frozen]
+        )
         constraint = FixAtoms(indices=frozen)
         reactant.set_constraint(constraint)
         product.set_constraint(constraint.copy())
@@ -331,12 +368,18 @@ def _relax(
     stage: str,
     calculator_provider: CalculatorProvider,
     config: PathwayConfig,
+    pressure_GPa: float | None = None,
 ) -> bool:
     with calculator_provider(stage) as calculator:
         atoms.calc = calculator
         try:
+            target = (
+                atoms
+                if pressure_GPa is None
+                else cell_filter(atoms, pressure_GPa, atoms.cell.copy())
+            )
             return bool(
-                FIRE(atoms, logfile=None).run(
+                FIRE(target, logfile=None).run(
                     fmax=config.relax_fmax,
                     steps=config.relax_steps,
                 )
@@ -351,8 +394,36 @@ def refine_pathway(
     calculator_provider: CalculatorProvider,
     config: PathwayConfig | None = None,
     detector_config: BondDetectorConfig,
+    pressure_GPa: float | None = None,
 ) -> PathwayOutcome:
-    """Relax one candidate's endpoints and run a serial fixed-cell CI-NEB."""
+    """Run NVT NEB, or SSNEB when a target pressure (including zero) is supplied."""
+
+    if pressure_GPa is not None and (
+        isinstance(pressure_GPa, bool) or not np.isfinite(pressure_GPa)
+    ):
+        raise ValueError("pressure_GPa must be a finite number or None")
+    outcome = _refine_pathway(
+        candidate,
+        calculator_provider=calculator_provider,
+        config=config,
+        detector_config=detector_config,
+        pressure_GPa=pressure_GPa,
+    )
+    return replace(
+        outcome,
+        method="neb" if pressure_GPa is None else "ssneb",
+        pressure_GPa=pressure_GPa,
+    )
+
+
+def _refine_pathway(
+    candidate: ReactionCandidate,
+    *,
+    calculator_provider: CalculatorProvider,
+    config: PathwayConfig | None,
+    detector_config: BondDetectorConfig,
+    pressure_GPa: float | None,
+) -> PathwayOutcome:
 
     if not candidate.resolved:
         return PathwayOutcome("unresolved", message="candidate topology was not resolved")
@@ -361,19 +432,23 @@ def refine_pathway(
     options = config or PathwayConfig()
     images: list[Atoms] = []
     try:
-        reactant, product, active_indices = _prepare_endpoints(candidate, options)
+        reactant, product, active_indices = _prepare_endpoints(
+            candidate, options, variable_cell=pressure_GPa is not None
+        )
         images = [reactant, product]
         reactant_converged = _relax(
             reactant,
             stage="relax_reactant",
             calculator_provider=calculator_provider,
             config=options,
+            pressure_GPa=pressure_GPa,
         )
         product_converged = _relax(
             product,
             stage="relax_product",
             calculator_provider=calculator_provider,
             config=options,
+            pressure_GPa=pressure_GPa,
         )
         if not reactant_converged or not product_converged:
             return PathwayOutcome(
@@ -390,13 +465,17 @@ def refine_pathway(
         images = [reactant]
         images.extend(reactant.copy() for _ in range(options.images - 2))
         images.append(product)
-        band = NEB(
-            images,
-            climb=False,
-            allow_shared_calculator=True,
-            method="improvedtangent",
-        )
-        band.interpolate(method="idpp", mic=True)
+        if pressure_GPa is None:
+            band = NEB(
+                images,
+                climb=False,
+                allow_shared_calculator=True,
+                method="improvedtangent",
+            )
+            band.interpolate(method="idpp", mic=True)
+        else:
+            band = SSNEB(images, pressure_GPa=pressure_GPa)
+            band.interpolate()
         with calculator_provider("neb") as calculator:
             for image in images:
                 image.calc = calculator
@@ -427,17 +506,31 @@ def refine_pathway(
                         message="climbing-image NEB did not converge",
                     )
                 energies = tuple(float(image.get_potential_energy()) for image in images)
+                volumes = (
+                    () if pressure_GPa is None else tuple(image.get_volume() for image in images)
+                )
+                enthalpies = (
+                    ()
+                    if pressure_GPa is None
+                    else tuple(
+                        energy + pressure_GPa * units.GPa * volume
+                        for energy, volume in zip(energies, volumes, strict=True)
+                    )
+                )
+                profile = energies if pressure_GPa is None else enthalpies
                 frequency_validation = _validate_frequencies(
                     images,
-                    energies,
+                    profile,
                     active_indices,
                     calculator,
                     options,
                 )
                 return PathwayOutcome(
                     "ci_neb_converged",
-                    barrier=max(energies) - energies[0],
+                    barrier=max(profile) - profile[0],
                     energies=energies,
+                    enthalpies=enthalpies,
+                    volumes=volumes,
                     images=_snapshots(images),
                     frequency_validation=frequency_validation,
                 )

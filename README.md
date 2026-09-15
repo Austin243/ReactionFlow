@@ -3,7 +3,8 @@
 ReactionFlow turns reactive events observed during atomistic molecular dynamics into candidate
 transition paths. It monitors bond changes while each trajectory runs. When a persistent bond
 formation or breaking event is detected, ReactionFlow checkpoints and pauses that trajectory,
-relaxes the structures on both sides of the event, runs NEB followed by climbing-image NEB,
+relaxes the structures on both sides of the event, runs NEB followed by climbing-image NEB
+(variable-cell SSNEB for NPT trajectories),
 classifies the climbing image with a constrained active-region frequency calculation, then restores
 the exact molecular-dynamics state and continues the trajectory.
 
@@ -200,6 +201,9 @@ temperature, pressure, and random seed:
 
 A numeric `pressure_GPa` runs NPT at that target pressure. Set `"pressure_GPa": null` for NVT.
 Thermostat and barostat coupling times can be changed in that trajectory's `conditions` object.
+
+NPT uses variable-cell SSNEB and enthalpy barriers, Δ(E + PV); the calculator must supply stress.
+NVT keeps fixed-cell NEB. See [pathway refinement](docs/pathway-refinement.md) for details.
 
 ## Change the number of GPU nodes
 

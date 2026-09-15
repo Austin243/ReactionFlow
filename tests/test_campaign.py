@@ -12,6 +12,7 @@ from ase.io import write
 from reactionflow import ComponentState, ExactRestartSnapshot
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main, resolve_task_index, run_selected_trajectory, visible_gpu
+from reactionflow.run import ReactionRun
 
 
 class _TestRuntime:
@@ -235,16 +236,25 @@ def test_gpu_worker_accepts_one_visible_device_and_rejects_shared_visibility() -
         visible_gpu({})
 
 
-def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path) -> None:
+def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path, monkeypatch) -> None:
     FACTORY_CALLS.clear()
     path = _campaign(tmp_path)
     campaign = CampaignConfig.load(path)
+    received = []
+    original = ReactionRun.run_exact
+
+    def capture(self, *args, **kwargs):
+        received.append(kwargs["pressure_GPa"])
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReactionRun, "run_exact", capture)
 
     first = run_selected_trajectory(campaign, index=0, environment={})
     second = run_selected_trajectory(campaign, index=0, environment={})
 
     assert (first.phase, first.global_step) == ("completed", 2)
     assert second == first
+    assert received == [20.0, 20.0]
     assert FACTORY_CALLS == [
         ("trajectory-0000", {"model": "test-model"}),
         ("trajectory-0000", {"model": "test-model"}),

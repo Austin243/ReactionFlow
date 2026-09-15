@@ -47,8 +47,9 @@ identity without silently reclassifying old records.
 - `detection.py`: persistent geometric bond-change detection.
 - `candidates.py`: generic topology-transition tracking, candidate records, and exact identity.
 - `store.py`: atomic artifact publication, the run layout, and the single-writer SQLite registry.
-- `pathway.py`: fixed-cell endpoint preparation, relaxation, IDPP interpolation, serial ASE
+- `pathway.py`: ensemble-aware endpoint preparation and relaxation, NVT IDPP interpolation, serial ASE
   CI-NEB, and constrained active-region frequencies with context-managed calculator leases.
+- `ssneb.py`: variable-cell NEB and climbing-image refinement on E + PV for NPT pathways.
 - `segments.py`: structural checkpoints, immutable generations, and resume tokens.
 - `run.py`: the small scheduler-neutral state machine and synchronous ASE executor.
 - `trajectory.py`: optional append-only ASE trajectory monitoring and replay.
