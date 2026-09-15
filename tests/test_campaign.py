@@ -12,6 +12,7 @@ from ase.io import write
 from reactionflow import ComponentState, ExactRestartSnapshot
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main, resolve_task_index, run_selected_trajectory, visible_gpu
+from reactionflow.run import ReactionRun
 
 
 class _TestRuntime:
@@ -259,6 +260,30 @@ def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path) -> None:
     path.write_text(json.dumps(changed))
     with pytest.raises(ValueError, match="scientific configuration changed"):
         run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
+
+
+@pytest.mark.parametrize("pressure", [None, 0.0, 20.0])
+def test_campaign_passes_target_pressure_to_refinement_on_start_and_resume(
+    tmp_path,
+    monkeypatch,
+    pressure,
+) -> None:
+    path = _campaign(tmp_path)
+    value = json.loads(path.read_text())
+    value["trajectories"][0]["pressure_GPa"] = pressure
+    path.write_text(json.dumps(value))
+    campaign = CampaignConfig.load(path)
+    received = []
+    original = ReactionRun.run_exact
+
+    def capture(self, *args, **kwargs):
+        received.append(kwargs["pressure_GPa"])
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReactionRun, "run_exact", capture)
+    run_selected_trajectory(campaign, index=0, environment={})
+    run_selected_trajectory(campaign, index=0, environment={})
+    assert received == [pressure, pressure]
 
 
 def test_cli_plan_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:

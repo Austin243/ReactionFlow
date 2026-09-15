@@ -147,8 +147,14 @@ def test_run_ase_detects_checkpoints_refines_and_resumes(tmp_path, caplog) -> No
     )
 
     result.pop("frequency_validation")
+    for field in ("method", "pressure_GPa", "barrier_quantity", "enthalpies_eV", "volumes_A3"):
+        result.pop(field)
     result_path.write_text(json.dumps(result), encoding="utf-8")
-    assert run._load_outcome(record.occurrence_id).frequency_validation is None
+    legacy = run._load_outcome(record.occurrence_id)
+    assert legacy.frequency_validation is None
+    assert legacy.method == "neb" and legacy.pressure_GPa is None
+    assert legacy.barrier_quantity == "potential_energy"
+    assert legacy.enthalpies == legacy.volumes == ()
     assert len(read(result_dir / "images.traj", ":")) == 3
     assert (tmp_path / "segments/0000/checkpoint/resume.json").is_file()
     assert (tmp_path / "segments/0000/trajectory.traj").is_file()
@@ -313,8 +319,12 @@ class ScriptedRuntimeProvider:
             )
 
 
-def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path) -> None:
+@pytest.mark.parametrize("pressure", [None, 0.0])
+def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path, pressure) -> None:
     initial = pair(0.6)
+    if pressure is not None:
+        initial.set_cell([10, 10, 10])
+        initial.pbc = True
     leases = LeaseCounter()
     interrupted = ReactionRun.create(
         tmp_path,
@@ -327,6 +337,7 @@ def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path)
             runtime_provider=ScriptedRuntimeProvider(leases, interrupt_after_calls=1),
             pathway_calculator_provider=leases,
             total_steps=4,
+            pressure_GPa=pressure,
         )
 
     interrupted_state = json.loads((tmp_path / "state.json").read_text())
@@ -339,6 +350,7 @@ def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path)
         runtime_provider=ScriptedRuntimeProvider(leases),
         pathway_calculator_provider=leases,
         total_steps=4,
+        pressure_GPa=pressure,
     )
 
     assert (summary.phase, summary.generation, summary.global_step) == ("completed", 1, 4)
@@ -358,9 +370,16 @@ def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path)
     token = ResumeToken.read(tmp_path / "segments/0000/checkpoint/resume.json")
     assert token.fidelity == "exact"
     result = json.loads(next((tmp_path / "pathways").glob("*/result.json")).read_text())
-    assert result["status"] == "ci_neb_converged"
+    if pressure is None:
+        assert result["status"] == "ci_neb_converged"
+        assert result["method"] == "neb" and result["barrier_quantity"] == "potential_energy"
+    else:
+        # This calculator has no stress. Record the SSNEB failure and resume
+        # the exact MD state instead of silently falling back to fixed-cell NEB.
+        assert result["status"] == "failed" and "stress" in result["message"]
+        assert result["method"] == "ssneb" and result["pressure_GPa"] == pressure
     assert leases.live == 0 and leases.max_live == 1
-    assert leases.stages == [
+    expected_stages = [
         "md",
         "md",
         "relax_reactant",
@@ -368,3 +387,6 @@ def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path)
         "neb",
         "md",
     ]
+    if pressure is not None:
+        expected_stages = ["md", "md", "relax_reactant", "md"]
+    assert leases.stages == expected_stages
