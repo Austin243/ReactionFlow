@@ -188,9 +188,11 @@ The second table merges reaction classes across trajectories that share a model 
 pressure, because only those barriers are comparable. Classes merge by the same exact topology
 identity that each trajectory uses, including forward/reverse equivalence. Each row lists the bond
 changes, the number of trajectories and events, converged pathways, frequency diagnostics with one
-significant imaginary mode, and the minimum, median, and maximum barrier. NVT barriers are
-potential energies; NPT barriers are enthalpies. `--json` prints the same data, including every
-barrier value and trajectory ID, for scripted analysis.
+significant imaginary mode, saddle connectivity checks that connected out of those run, and the
+minimum, median, and maximum barrier. A line below the table totals the connectivity outcomes
+(connect, do not connect, inconclusive, failed) across the campaign. NVT barriers are potential
+energies; NPT barriers are enthalpies. `--json` prints the same data, including every barrier
+value, connectivity status count, and trajectory ID, for scripted analysis.
 
 ## Perlmutter mapping
 

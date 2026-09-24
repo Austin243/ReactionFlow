@@ -131,6 +131,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
                     "events": 0,
                     "pathways": Counter(),
                     "frequency": Counter(),
+                    "connectivity": Counter(),
                     "barriers_eV": [],
                 }
                 bucket.append(entry)
@@ -142,6 +143,9 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
                 validation = result.get("frequency_validation")
                 if validation:
                     entry["frequency"][validation["status"]] += 1
+                connectivity = result.get("connectivity")
+                if connectivity:
+                    entry["connectivity"][connectivity["status"]] += 1
                 if result["status"] == "ci_neb_converged" and result.get("barrier_eV") is not None:
                     entry["barriers_eV"].append(result["barrier_eV"])
     reactions = [
@@ -149,6 +153,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
             **{key: value for key, value in entry.items() if key != "_candidate"},
             "pathways": dict(entry["pathways"]),
             "frequency": dict(entry["frequency"]),
+            "connectivity": dict(entry["connectivity"]),
         }
         for bucket in buckets.values()
         for entry in bucket
@@ -180,6 +185,11 @@ def _pressure(value: float | None) -> str:
 def _converged(pathways: dict[str, int]) -> str:
     total = sum(pathways.values())
     return f"{pathways.get('ci_neb_converged', 0)}/{total}" if total else "-"
+
+
+def _connects(checks: dict[str, int]) -> str:
+    total = sum(checks.values())
+    return f"{checks.get('connects_endpoints', 0)}/{total}" if total else "-"
 
 
 def format_status(report: dict[str, Any]) -> str:
@@ -224,6 +234,7 @@ def format_status(report: dict[str, Any]) -> str:
                 str(entry["events"]),
                 _converged(entry["pathways"]),
                 str(entry["frequency"].get("one_imaginary_mode", 0)),
+                _connects(entry["connectivity"]),
                 "-"
                 if not barriers
                 else " / ".join(
@@ -242,12 +253,20 @@ def format_status(report: dict[str, Any]) -> str:
                 "events",
                 "converged",
                 "one imaginary mode",
+                "saddle connects",
                 "barrier eV (min / median / max)",
             ],
             reaction_rows,
         )
     )
     lines.append("")
+    checks = sum((Counter(entry["connectivity"]) for entry in report["reactions"]), Counter())
+    if checks:
+        lines.append(
+            f"Saddle connectivity checks: {checks['connects_endpoints']} connect, "
+            f"{checks['does_not_connect']} do not connect, {checks['inconclusive']} inconclusive, "
+            f"{checks['failed']} failed."
+        )
     lines.append("NVT barriers are potential energies; NPT barriers are enthalpies.")
     return "\n".join(lines)
 
