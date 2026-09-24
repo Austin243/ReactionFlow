@@ -13,6 +13,7 @@ from typing import Any
 
 from ase.calculators.calculator import Calculator
 
+from .._version import __version__
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState
 from .ase import ASELangevinBAOABAdapter
@@ -156,6 +157,7 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
                 "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
                 "allow_tf32": False,
                 "python_version": platform.python_version(),
+                "reactionflow_version": __version__,
                 "reactionflow_source_sha256": _package_sha256(Path(__file__).parents[1]),
                 "adapter_source_sha256": _source_sha256(Path(__file__)),
                 "ase_npt_source_sha256": _source_sha256(Path(__file__).parents[1] / "ase_npt.py"),

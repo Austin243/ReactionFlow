@@ -37,8 +37,10 @@ The setup script loads NERSC's `pytorch/2.11.0` module, installs the pinned Pyth
 ReactionFlow into `.perlmutter-python/` inside the checkout, downloads and verifies the pinned
 ANI-1xnr model data, and validates the campaign. It can be run again safely after updating the
 checkout, but exact ANI-1xnr checkpoints are bound to the installed ReactionFlow source: a
-trajectory already in progress resumes only under the version that started it. No container or
-separate Conda environment is required.
+trajectory already in progress resumes only under the version that started it. Each trajectory
+records that version in its `state.json` as `created_with_reactionflow`; run campaigns from a
+release tag (`git checkout v<version>` before setup) so that version can be reinstalled. No
+container or separate Conda environment is required.
 
 ### Run the campaign
 

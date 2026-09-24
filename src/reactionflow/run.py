@@ -18,6 +18,7 @@ from ase import Atoms
 from ase.io import read
 from ase.io.trajectory import Trajectory
 
+from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
 from .pathway import (
@@ -176,6 +177,7 @@ class ReactionRun:
         self._tracker: ReactionTracker | None = None
         self._active_checkpoint: Path | None = None
         self._exact_snapshot: ExactRestartSnapshot | None = None
+        self._created_with: str | None = __version__
 
     @classmethod
     def create(
@@ -208,6 +210,7 @@ class ReactionRun:
         run._global_step = int(value["global_step"])
         run._global_frame = int(value["global_frame"])
         run._pending = list(map(str, value["pending_pathway_ids"]))
+        run._created_with = value.get("created_with_reactionflow")
         failure = value.get("failure")
         run._failure = None if failure is None else dict(failure)
         detector_state = value.get("detector_state")
@@ -297,6 +300,7 @@ class ReactionRun:
     def _state(self) -> dict[str, object]:
         return {
             "schema_version": 2,
+            "created_with_reactionflow": self._created_with,
             "phase": self._phase,
             "generation": self._generation,
             "global_step": self._global_step,
@@ -314,11 +318,17 @@ class ReactionRun:
 
     def _write_state(self) -> None:
         temporary = self.state_path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(self._state(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self._state(), indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, self.state_path)
+        # Only the runtime checkpoint named by state.json is ever read. Now that the new state is
+        # on disk, remove superseded checkpoints and leftovers from interrupted attempts.
+        keep = None if self._active_checkpoint is None else self._active_checkpoint.name
+        for path in self.runtime_checkpoints.iterdir():
+            if path.name != keep:
+                shutil.rmtree(path, ignore_errors=True)
 
     def _publish_runtime_checkpoint(
         self,
@@ -351,6 +361,12 @@ class ReactionRun:
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            # The previous checkpoint is removed once state.json names this one, so this one must
+            # already be on disk if the node fails.
+            for path in temporary.rglob("*"):
+                if path.is_file():
+                    with path.open("rb") as handle:
+                        os.fsync(handle.fileno())
             os.replace(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
