@@ -101,7 +101,8 @@ run/
 Every durable JSON record has a schema version. SQLite uses `PRAGMA user_version`. Artifact paths in
 records are relative to the run root. Scientific state is not stored only in pickle files. State
 files, checkpoints, and candidate directories are published atomically when partial visibility
-could corrupt a restart.
+could corrupt a restart. Their files, and pathway results, are flushed to disk before the rename
+that publishes them, so nothing durable can name data that a node failure lost.
 
 `state.json` is authoritative for the `ReactionRun` phase and recovery cursor. SQLite is
 authoritative for occurrence and class assignment. Candidate bundles and pathway results are

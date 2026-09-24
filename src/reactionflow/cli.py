@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from ase.io import read
 
+from ._durable import flush_to_disk
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .run import ReactionRun, RunSummary
@@ -74,6 +75,7 @@ def _bind_trajectory_contract(root: Path, contract: dict[str, object]) -> None:
             json.dumps(contract, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        flush_to_disk(temporary)
         os.replace(temporary, path)
     except Exception:
         temporary.unlink(missing_ok=True)

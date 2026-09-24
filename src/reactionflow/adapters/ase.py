@@ -60,6 +60,17 @@ def _optional_positive_float(value: object, name: str) -> float | None:
     return None if value is None else _positive_float(value, name)
 
 
+def _differences(recorded: ComponentState, current: ComponentState) -> str:
+    """Name each calculator field that differs, as checkpoint value -> installed value."""
+
+    changed = [
+        f"{key} {recorded.metadata.get(key)!r} -> {current.metadata.get(key)!r}"
+        for key in sorted(recorded.metadata.keys() | current.metadata.keys())
+        if recorded.metadata.get(key) != current.metadata.get(key)
+    ]
+    return "; ".join(changed) or f"component {recorded.kind!r} -> {current.kind!r}"
+
+
 def _string_sequence(value: object, name: str) -> tuple[str, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise TypeError(f"{name} must be an array of strings")
@@ -160,7 +171,10 @@ class ASELangevinBAOABAdapter:
     def restore(self, snapshot: ExactRestartSnapshot) -> Iterator[_ASERuntime]:
         with self._lease() as (calculator, state):
             if snapshot.calculator != state:
-                raise ValueError("exact calculator environment differs from the checkpoint")
+                raise ValueError(
+                    "exact calculator environment differs from the checkpoint: "
+                    + _differences(snapshot.calculator, state)
+                )
             dynamics = restore_langevin_baoab(snapshot.atoms, calculator, snapshot.dynamics)
             try:
                 yield _ASERuntime(dynamics, state)

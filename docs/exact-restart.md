@@ -51,9 +51,10 @@ use a custom adapter that snapshots that state explicitly.
 The built-in ANI-1xnr adapter uses deterministic PyTorch execution, disables TF32, fixes the
 cuBLAS workspace configuration, verifies the model file SHA-256, and records the Torch, TorchANI,
 CUDA, GPU-architecture, model, adapter-source, and Langevin-codec identities. Restore refuses any
-change to that calculator contract; it also binds the complete installed ReactionFlow Python
-source tree. The ASE/NumPy codec checks above protect the remaining
-integrator, thermostat, barostat, and RNG state.
+change to that calculator contract; it also binds the installed ReactionFlow version and complete
+Python source tree. A refused restore names each changed field with its checkpoint and installed
+values. The ASE/NumPy codec checks above protect the remaining integrator, thermostat, barostat,
+and RNG state.
 
 ## Exact ReactionRun execution
 
@@ -66,7 +67,9 @@ snapshot together with the detector and reaction-tracker state. Reopening a run 
 an in-progress persistence window instead of forgetting a provisional bond event. When a stable
 reaction candidate is emitted, the exact checkpoint is bound to the segment resume token and the
 MD provider is released before endpoint and pathway calculators are acquired. The same runtime
-state is restored after refinement.
+state is restored after refinement. The checkpoint files and `state.json` are flushed to disk
+before the checkpoint that `state.json` previously named is removed, so each run keeps a single
+runtime checkpoint.
 
 ```python
 run = ReactionRun.create("trajectory-000", config=config)

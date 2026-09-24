@@ -1,7 +1,6 @@
 """General-purpose reaction discovery and pathway refinement."""
 
-from importlib.metadata import PackageNotFoundError, version
-
+from ._version import __version__
 from .campaign import AdapterSpec, CampaignConfig, TrajectorySpec
 from .candidates import ReactionCandidate, ReactionTracker, same_reaction
 from .detection import (
@@ -16,11 +15,6 @@ from .pathway import FrequencyValidation, PathwayConfig, PathwayOutcome, refine_
 from .restart import ComponentState, ExactRestartSnapshot
 from .run import ReactionRun, ReactionRunConfig, RunSummary
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
-
-try:
-    __version__ = version("reactionflow")
-except PackageNotFoundError:  # pragma: no cover - source tree without installation
-    __version__ = "0+unknown"
 
 __all__ = [
     "AdapterSpec",
