@@ -233,6 +233,22 @@ class ReactionRun:
         if run._phase == "refining" and not run._pending:
             run._phase = "resume_ready"
             run._write_state()
+        if (
+            run._phase == "running"
+            and run._generation == 0
+            and run._active_checkpoint is None
+            and not (run.root / "segments/0000/trajectory.traj").exists()
+        ):
+            # Interrupted before the first MD step; start again from the initial structure.
+            run._phase = "new"
+        if run._phase == "running":
+            # A representative registered by an attempt that stopped before recording it as
+            # pending is refined at the next observation boundary.
+            run._pending.extend(
+                record.occurrence_id
+                for record in run.occurrences.records()
+                if record.is_representative and not (run.pathways / record.occurrence_id).is_dir()
+            )
         if run._phase == "running" and run._active_checkpoint is not None:
             run._load_runtime_checkpoint()
         elif run._phase == "running" and run._generation > 0:
@@ -517,13 +533,23 @@ class ReactionRun:
         if self._segment is None:
             raise RuntimeError("the live segment is unavailable; reopen only after checkpointing")
         try:
-            token = self.segments.checkpoint(
-                self._segment,
-                atoms,
-                global_step=self._global_step,
-                global_frame=self._global_frame,
-                exact_restart=exact_restart,
-            )
+            if self._token_path.is_file():
+                # Published by an attempt that stopped before recording it; an exact replay
+                # reaches the same boundary.
+                token = ResumeToken.read(self._token_path)
+                if (token.global_step, token.global_frame) != (
+                    self._global_step,
+                    self._global_frame,
+                ):
+                    raise ValueError("generation is already checkpointed at another boundary")
+            else:
+                token = self.segments.checkpoint(
+                    self._segment,
+                    atoms,
+                    global_step=self._global_step,
+                    global_frame=self._global_frame,
+                    exact_restart=exact_restart,
+                )
             self._phase = "refining"
             self._write_state()
             return token
@@ -683,9 +709,9 @@ class ReactionRun:
             self._global_frame = self._segment.global_frame
             self._restore_observers(self._segment.atoms)
             self._phase = "running"
-            self._active_checkpoint = None
-            self._exact_snapshot = snapshot
-            self._write_state()
+            # Make the restored state this generation's exact checkpoint before the MD runtime
+            # is rebuilt, so an interruption while it loads still resumes exactly.
+            self._publish_runtime_checkpoint(snapshot, write_state=True)
             return self._segment
         except Exception as error:
             self._record_failure("resume_exact", error)
@@ -865,40 +891,38 @@ class ReactionRun:
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
 
-        try:
-            while self._phase != "completed":
-                if self._phase == "failed":
-                    raise RuntimeError(f"ReactionRun failed: {self._failure}")
-                if self._phase == "checkpoint_pending":
-                    raise RuntimeError(
-                        "exact runtime was interrupted before its reaction checkpoint completed"
-                    )
-                if self._phase == "refining":
-                    self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
+        # The durable-state methods record their own failures. Any other error, such as a
+        # runtime that this environment refuses to restore, leaves the last exact checkpoint in
+        # place, so the run is not marked failed and resumes once the cause is fixed.
+        while self._phase != "completed":
+            if self._phase == "failed":
+                raise RuntimeError(f"ReactionRun failed: {self._failure}")
+            if self._phase == "checkpoint_pending":
+                raise RuntimeError(
+                    "exact runtime was interrupted before its reaction checkpoint completed"
+                )
+            if self._phase == "refining":
+                self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
+                continue
+            if self._phase == "resume_ready":
+                if self._global_step >= total_steps:
+                    self.complete()
+                else:
+                    self.resume_exact_segment()
+                continue
+            if self._phase == "running":
+                if self._global_step >= total_steps:
+                    self.complete()
                     continue
-                if self._phase == "resume_ready":
-                    if self._global_step >= total_steps:
-                        self.complete()
-                    else:
-                        self.resume_exact_segment()
-                    continue
-                if self._phase == "running":
-                    if self._global_step >= total_steps:
-                        self.complete()
-                        continue
-                    if self._segment is None:
-                        raise RuntimeError("active exact runtime checkpoint is unavailable")
-                    self._run_exact_segment(
-                        total_steps=int(total_steps),
-                        runtime_provider=runtime_provider,
-                    )
-                    continue
-                raise RuntimeError(f"unsupported ReactionRun phase {self._phase!r}")
-            return self.summary()
-        except Exception as error:
-            if self._phase != "failed":
-                self._record_failure("run_exact", error)
-            raise
+                if self._segment is None:
+                    raise RuntimeError("active exact runtime checkpoint is unavailable")
+                self._run_exact_segment(
+                    total_steps=int(total_steps),
+                    runtime_provider=runtime_provider,
+                )
+                continue
+            raise RuntimeError(f"unsupported ReactionRun phase {self._phase!r}")
+        return self.summary()
 
     def run_ase(
         self,

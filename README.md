@@ -36,7 +36,9 @@ cd ReactionFlow
 The setup script loads NERSC's `pytorch/2.11.0` module, installs the pinned Python dependencies and
 ReactionFlow into `.perlmutter-python/` inside the checkout, downloads and verifies the pinned
 ANI-1xnr model data, and validates the campaign. It can be run again safely after updating the
-checkout. No container or separate Conda environment is required.
+checkout, but exact ANI-1xnr checkpoints are bound to the installed ReactionFlow source: a
+trajectory already in progress resumes only under the version that started it. No container or
+separate Conda environment is required.
 
 ### Run the campaign
 
@@ -79,9 +81,11 @@ trajectory; it never substitutes a relaxed endpoint or NEB image for the MD stat
 | Climbing-image NEB does not converge | `ci_neb_failed` | Save the current band and resume MD. |
 | Pathway preparation or calculator evaluation raises an unexpected error | `failed` | Save the available images and error message, then resume MD. |
 
-Failures to persist an outcome, restore the exact checkpoint, or otherwise maintain durable run
-state are different: ReactionFlow marks the trajectory itself as failed and stops instead of
-continuing from uncertain state. Scientific refinement failures are not retried automatically.
+Failures to persist an outcome or otherwise maintain durable run state are different: ReactionFlow
+marks the trajectory itself as failed and stops instead of continuing from uncertain state. An
+environment that refuses the exact checkpoint, such as a changed installation, is not such a
+failure: the job exits with that error, and resubmitting in the original environment resumes the
+trajectory. Scientific refinement failures are not retried automatically.
 
 Each detected occurrence and its pathway result share an `occurrence-id`:
 

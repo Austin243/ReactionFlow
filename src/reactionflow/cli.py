@@ -159,7 +159,7 @@ def run_selected_trajectory(
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         run = ReactionRun.open(root)
-        atoms = None
+        atoms = read(campaign.structure) if run.phase == "new" else None
     else:
         atoms = read(campaign.structure)
         adapter = load_mlip_adapter(adapter_spec, trajectory)

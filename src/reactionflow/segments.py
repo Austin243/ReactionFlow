@@ -161,7 +161,7 @@ class SegmentStore:
         frame = _counter(global_frame, "global_frame")
         initial = atoms.copy()
         assign_atom_ids(initial)
-        return self._generation(0, _canonical_snapshot(initial), step, frame)
+        return self._generation(0, _canonical_snapshot(initial), step, frame, recover_empty=True)
 
     def attach(
         self,
