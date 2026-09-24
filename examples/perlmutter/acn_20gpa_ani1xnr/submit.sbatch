@@ -33,4 +33,5 @@ campaign="$repo_root/examples/perlmutter/acn_20gpa_ani1xnr/campaign.json"
 
 # Slurm gives each process one A100. That process propagates one trajectory on its GPU and
 # performs live bond monitoring and any sequential endpoint/NEB/CI-NEB work on the same node.
-srun --kill-on-bad-exit=1 --cpu-bind=cores "$reactionflow_executable" run "$campaign"
+# A trajectory that stops with an error leaves the other tasks running.
+srun --cpu-bind=cores "$reactionflow_executable" run "$campaign"

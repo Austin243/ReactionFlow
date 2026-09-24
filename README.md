@@ -62,7 +62,9 @@ sbatch -A "$GPU_PROJECT" -q overrun --time-min=00:10:00 \
 Results are written to `outputs/acn_20gpa_ani1xnr/<trajectory-id>/`. If a confirmed bond change is
 found, only that trajectory pauses for endpoint relaxation, NEB, CI-NEB, and constrained frequency
 validation before resuming from its exact checkpoint. Submit the same command again after an
-interruption to resume incomplete trajectories; completed trajectories are left unchanged.
+interruption to resume incomplete trajectories; completed trajectories are left unchanged. A
+trajectory that stops with an error does not stop the others, and its error is recorded in
+`last-error.json` in its output directory.
 
 ## Refinement outcomes and recorded data
 
@@ -222,8 +224,17 @@ use:
 ```
 
 The script assigns one Slurm task to each GPU, so the campaign must contain exactly one trajectory
-entry per task: four entries per Perlmutter GPU node. Leave the included ANI-1xnr `submit.sbatch`
-unchanged when running the bundled four-trajectory example.
+entry per task: four entries per Perlmutter GPU node. It uses the same `.perlmutter-python`
+environment as the example, so submit it from the repository root (or set `REACTIONFLOW_ROOT` to
+the checkout) with the campaign file as its argument:
+
+```bash
+read -r -p "NERSC GPU project: " GPU_PROJECT
+sbatch -A "$GPU_PROJECT" -q regular examples/perlmutter/run-campaign.sbatch path/to/campaign.json
+```
+
+Leave the included ANI-1xnr `submit.sbatch` unchanged when running the bundled four-trajectory
+example.
 
 ## Benchmark presentation
 
