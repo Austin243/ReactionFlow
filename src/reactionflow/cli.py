@@ -9,6 +9,7 @@ import math
 import os
 import socket
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict
 from numbers import Integral
 from pathlib import Path
@@ -159,7 +160,7 @@ def run_selected_trajectory(
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         run = ReactionRun.open(root)
-        atoms = None
+        atoms = read(campaign.structure) if run.phase == "new" else None
     else:
         atoms = read(campaign.structure)
         adapter = load_mlip_adapter(adapter_spec, trajectory)
@@ -225,14 +226,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     index = resolve_task_index(len(campaign.trajectories), arguments.index)
-    summary = run_selected_trajectory(campaign, index=index)
-    payload = {
-        "trajectory_id": campaign.trajectory(index).id,
+    trajectory_id = campaign.trajectory(index).id
+    payload: dict[str, object] = {
+        "trajectory_id": trajectory_id,
         "trajectory_index": index,
         "hostname": socket.gethostname(),
-        **asdict(summary),
     }
-    print(json.dumps(payload, sort_keys=True))
+    # Every Slurm task shares one log, so each worker also records its own error by trajectory.
+    error_path = campaign.output_root / trajectory_id / "last-error.json"
+    with suppress(OSError):
+        error_path.unlink()
+    try:
+        summary = run_selected_trajectory(campaign, index=index)
+    except Exception as error:
+        payload["error"] = f"{type(error).__name__}: {error}"
+        print(json.dumps(payload, sort_keys=True))
+        with suppress(OSError):
+            error_path.parent.mkdir(parents=True, exist_ok=True)
+            error_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        raise
+    print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
     return 0
 
 
