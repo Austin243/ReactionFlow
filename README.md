@@ -3,7 +3,7 @@
 ReactionFlow turns reactive events observed during atomistic molecular dynamics into candidate
 transition paths. It monitors bond changes while each trajectory runs. When a persistent bond
 formation or breaking event is detected, ReactionFlow checkpoints and pauses that trajectory,
-relaxes the structures on both sides of the event, runs NEB followed by climbing-image NEB
+relaxes the full cell on both sides of the event, runs NEB followed by climbing-image NEB
 (variable-cell SSNEB for NPT trajectories),
 classifies the climbing image with a constrained active-region frequency calculation, then restores
 the exact molecular-dynamics state and continues the trajectory.
@@ -92,7 +92,7 @@ trajectory; it never substitutes a relaxed endpoint or NEB image for the MD stat
 | Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, barrier, frequency diagnostic, and saddle connectivity check; resume MD whatever those diagnostics report. |
 | Either endpoint does not relax within the configured limits | `relaxation_failed` | Save the attempted relaxed endpoints, skip NEB, and resume MD. |
 | Both relaxed endpoints occupy the same bond-topology basin, including a product that relaxes back to the reactant | `collapsed` | Save the relaxed endpoints, skip NEB, and resume MD. |
-| The candidate or relaxed endpoint topology remains ambiguous or no longer matches the detected event | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
+| The candidate or relaxed endpoint topology remains ambiguous, no longer matches the detected event, or relaxation changed bonds elsewhere in the cell | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
 | Initial NEB does not converge | `neb_failed` | Save the current band, skip CI-NEB, and resume MD. |
 | Climbing-image NEB does not converge | `ci_neb_failed` | Save the current band and resume MD. |
 | Pathway preparation or calculator evaluation raises an unexpected error | `failed` | Save the available images and error message, then resume MD. |
@@ -127,8 +127,8 @@ These are bond-monitor observation frames, not raw MD step numbers. The complete
 structures and pathway images retain stable IDs for every atom, and segment trajectory boundaries
 record both their global MD step and observation-frame counters. `result.json` records the outcome
 status, reaction class and occurrence IDs, barrier and image energies when available, a constrained
-frequency diagnostic and saddle connectivity check for converged CI-NEB results, and a message
-describing any failure.
+frequency diagnostic and saddle connectivity check for converged CI-NEB results, a message
+describing any failure, and the ReactionFlow version that produced it.
 
 ## Use another ASE-compatible MLIP
 

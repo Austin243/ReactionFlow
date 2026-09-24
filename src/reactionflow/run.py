@@ -624,6 +624,7 @@ class ReactionRun:
             result = {
                 "schema_version": 1,
                 "occurrence_id": occurrence_id,
+                "reactionflow_version": __version__,
                 "class_id": record.class_id,
                 "status": outcome.status,
                 "barrier_eV": outcome.barrier,

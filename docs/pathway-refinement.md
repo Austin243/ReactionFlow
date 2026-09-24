@@ -2,8 +2,8 @@
 
 `refine_pathway()` relaxes one resolved candidate, runs NEB and climbing-image NEB (SSNEB for NPT),
 then applies the constrained frequency diagnostic to the highest-energy or highest-enthalpy interior
-image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
-callers retain ownership of artifacts and retry policy.
+image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun`
+publishes its outcome while direct callers retain ownership of artifacts and retry policy.
 
 ```python
 from contextlib import contextmanager
@@ -46,17 +46,21 @@ frequency validation reuses that lease before it is released.
 - NVT retains the fixed reactant cell and configured cell-drift mapping limits. NPT retains and
   relaxes both endpoint cells at the target pressure, with no fixed-cell mapping limit. SSNEB
   requires fully periodic, nonsingular, right-handed cells and removes rigid cell rotation.
-- Atoms in changed bonds and neighbors within `active_radius` remain active. Other atoms are fixed
-  to the reactant position for NVT, or to its fractional coordinates for NPT, so they follow affine
-  cell deformation.
+- Every atom relaxes, in the endpoints, the NEB or SSNEB band, and the connectivity check; for NPT
+  the cell relaxes too. The product keeps its own coordinates for atoms in changed bonds and
+  neighbors within `active_radius`. Its other atoms start from the reactant's positions for NVT,
+  or its fractional coordinates for NPT, so both endpoints relax from the same surroundings.
 - Both endpoints are relaxed and checked against the exact bond thresholds used for detection.
-  Collapsed, ambiguous, and unexpectedly changed endpoints do not proceed to NEB.
+  Collapsed, ambiguous, and unexpectedly changed endpoints do not proceed to NEB. Neither does a
+  pair of endpoints whose bonds differ anywhere else in the cell: relaxation that forms or breaks
+  a bond away from the reaction would otherwise enter the path and the barrier.
 - NVT uses ASE IDPP interpolation; NPT interpolates reference-cell atomic and deformation coordinates
   after periodic alignment. Improved-tangent NEB converges before climbing is enabled. SSNEB includes
   both atomic and cell forces in its tangent and climbing projection, using enthalpy E + PV.
-- After CI-NEB convergence, central finite differences displace only the same active atoms used by
-  the pathway. Frequencies with imaginary magnitude at or above the configured cutoff are counted,
-  while the complete signed spectrum remains available for diagnosing small numerical modes.
+- After CI-NEB convergence, central finite differences displace only atoms in changed bonds and
+  neighbors within `active_radius`, holding the rest of the relaxed cell fixed. Frequencies with
+  imaginary magnitude at or above the configured cutoff are counted, while the complete signed
+  spectrum remains available for diagnosing small numerical modes.
 
 `PathwayOutcome.status` is one of `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
 `ci_neb_failed`, `ci_neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB
@@ -80,8 +84,8 @@ normalized over its active Cartesian components, and its sign is arbitrary.
 
 When the frequency diagnostic finds a significant imaginary mode, the saddle is displaced 0.1 Å
 each way along its primary mode, as the total displacement of the active atoms. Each copy is then
-relaxed exactly like the endpoints: same constraints, same `relax_fmax` and `relax_steps`, and the
-cell filter at the target pressure for NPT. Each relaxed side is classified with the detector's
+relaxed exactly like the endpoints: every atom free, the same `relax_fmax` and `relax_steps`, and
+the cell filter at the target pressure for NPT. Each relaxed side is classified with the detector's
 bond thresholds:
 
 - `reactant`, `product`, or `other`;

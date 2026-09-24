@@ -23,11 +23,11 @@
     "pathway": {
       "active_radius": 4.0,
       "relax_fmax": 0.05,
-      "relax_steps": 500,
+      "relax_steps": 2000,
       "images": 7,
       "neb_fmax": 0.05,
-      "neb_steps": 500,
-      "ci_neb_steps": 500,
+      "neb_steps": 2000,
+      "ci_neb_steps": 2000,
       "max_volume_change_fraction": 0.05,
       "max_cell_strain": 0.05
     }
