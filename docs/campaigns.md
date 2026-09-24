@@ -172,6 +172,26 @@ ReactionFlow includes one optional reference implementation:
 normal ReactionFlow installation and import remain independent of Torch. The complete four-GPU
 example is in [`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
 
+## Campaign status
+
+`reactionflow status campaign.json` summarizes a campaign without changing it, so it is safe to
+run while trajectories are still running. It opens each trajectory's registry read-only and never
+imports the MLIP.
+
+The first table has one row per trajectory: model profile, pressure, phase, step, detected events,
+converged pathways out of those refined, and the latest error. That error is the permanent
+failure for a `failed` trajectory, and otherwise the contents of `last-error.json`. Trajectories
+without output are listed as `not started`. A trajectory whose files cannot be read is reported
+with that error while the rest of the report still prints.
+
+The second table merges reaction classes across trajectories that share a model profile and
+pressure, because only those barriers are comparable. Classes merge by the same exact topology
+identity that each trajectory uses, including forward/reverse equivalence. Each row lists the bond
+changes, the number of trajectories and events, converged pathways, frequency diagnostics with one
+significant imaginary mode, and the minimum, median, and maximum barrier. NVT barriers are
+potential energies; NPT barriers are enthalpies. `--json` prints the same data, including every
+barrier value and trajectory ID, for scripted analysis.
+
 ## Perlmutter mapping
 
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) requests

@@ -139,6 +139,19 @@ def same_reaction(first: ReactionCandidate, second: ReactionCandidate) -> bool:
     )
 
 
+def reaction_key(candidate: ReactionCandidate) -> str:
+    """Hash shared by forward/reverse-equivalent candidates; confirm matches with same_reaction."""
+
+    return min(
+        nx.weisfeiler_lehman_graph_hash(
+            _reaction_graph(candidate, reverse=reverse),
+            node_attr="element",
+            edge_attr="change",
+        )
+        for reverse in (False, True)
+    )
+
+
 class ReactionTracker:
     """Emit candidates after a complete product topology remains stable."""
 
@@ -458,4 +471,4 @@ def _optional_frame(value: object) -> int | None:
     return value
 
 
-__all__ = ["ReactionCandidate", "ReactionTracker", "same_reaction"]
+__all__ = ["ReactionCandidate", "ReactionTracker", "reaction_key", "same_reaction"]

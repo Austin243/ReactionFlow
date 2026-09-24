@@ -68,6 +68,18 @@ interruption to resume incomplete trajectories; completed trajectories are left 
 trajectory that stops with an error does not stop the others, and its error is recorded in
 `last-error.json` in its output directory.
 
+Check progress at any time, including while the job runs; the command only reads the outputs:
+
+```bash
+module load pytorch/2.11.0
+export PYTHONUSERBASE="$PWD/.perlmutter-python" PATH="$PWD/.perlmutter-python/bin:$PATH"
+reactionflow status examples/perlmutter/acn_20gpa_ani1xnr/campaign.json
+```
+
+It lists each trajectory's phase, step, detected events, converged pathways, and latest error,
+then each reaction class merged across trajectories with its barrier range. Add `--json` for the
+same data in machine-readable form.
+
 ## Refinement outcomes and recorded data
 
 After a detected reaction is confirmed, ReactionFlow checkpoints the original MD state and refines
