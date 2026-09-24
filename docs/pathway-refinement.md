@@ -2,8 +2,8 @@
 
 `refine_pathway()` relaxes one resolved candidate, runs NEB and climbing-image NEB (SSNEB for NPT),
 then applies the constrained frequency diagnostic to the highest-energy or highest-enthalpy interior
-image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
-callers retain ownership of artifacts and retry policy.
+image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun`
+publishes its outcome while direct callers retain ownership of artifacts and retry policy.
 
 ```python
 from contextlib import contextmanager
@@ -58,8 +58,9 @@ frequency validation reuses that lease before it is released.
   after periodic alignment. Improved-tangent NEB converges before climbing is enabled. SSNEB includes
   both atomic and cell forces in its tangent and climbing projection, using enthalpy E + PV.
 - After CI-NEB convergence, central finite differences displace only atoms in changed bonds and
-  neighbors within `active_radius`, holding the rest of the relaxed cell fixed. Frequencies with imaginary magnitude at or above the configured cutoff are counted,
-  while the complete signed spectrum remains available for diagnosing small numerical modes.
+  neighbors within `active_radius`, holding the rest of the relaxed cell fixed. Frequencies with
+  imaginary magnitude at or above the configured cutoff are counted, while the complete signed
+  spectrum remains available for diagnosing small numerical modes.
 
 `PathwayOutcome.status` is one of `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
 `ci_neb_failed`, `ci_neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB

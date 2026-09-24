@@ -37,11 +37,11 @@ class PathwayConfig:
 
     active_radius: float = 4.0
     relax_fmax: float = 0.05
-    relax_steps: int = 500
+    relax_steps: int = 2000
     images: int = 7
     neb_fmax: float = 0.05
-    neb_steps: int = 500
-    ci_neb_steps: int = 500
+    neb_steps: int = 2000
+    ci_neb_steps: int = 2000
     max_volume_change_fraction: float = 0.05
     max_cell_strain: float = 0.05
     frequency_delta: float = 0.01
