@@ -179,7 +179,9 @@ four Slurm tasks per GPU node, one GPU per task, and 32 logical CPU cores per ta
 the same command in every worker. `SLURM_PROCID` selects one campaign entry, while Slurm restricts
 that process to one `CUDA_VISIBLE_DEVICES` entry. These resource flags follow NERSC's
 [Perlmutter GPU job](https://docs.nersc.gov/systems/perlmutter/running-jobs/) and
-[process/GPU affinity](https://docs.nersc.gov/jobs/affinity/) guidance.
+[process/GPU affinity](https://docs.nersc.gov/jobs/affinity/) guidance. The script loads the same
+`.perlmutter-python` environment as the ANI-1xnr example from the checkout it is submitted from, or
+from `REACTIONFLOW_ROOT`, and stops with a setup message if that environment is missing.
 
 Submit four trajectories on one node:
 

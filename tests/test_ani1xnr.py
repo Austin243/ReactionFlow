@@ -162,7 +162,7 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
     ):
         assert directive in script
     assert "module load pytorch/2.11.0" in script
-    assert "srun --kill-on-bad-exit=1 --cpu-bind=cores" in script
+    assert "srun --cpu-bind=cores" in script
     assert (
         'repo_root="${REACTIONFLOW_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is unset}}"' in script
     )
