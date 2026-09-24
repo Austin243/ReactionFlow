@@ -11,9 +11,9 @@ from tempfile import TemporaryDirectory
 import numpy as np
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
-from ase.constraints import FixAtoms
 from ase.geometry import find_mic
 from ase.mep import NEB
+from ase.neighborlist import neighbor_list
 from ase.optimize import FIRE
 from ase.vibrations import Vibrations
 
@@ -209,17 +209,32 @@ def _prepare_endpoints(
                 if distance <= config.active_radius
             )
 
-    frozen = sorted(set(range(len(reactant))) - active)
-    if frozen:
-        product.positions[frozen] = (
-            reactant.get_scaled_positions(wrap=False)[frozen] @ product.cell
+    # Atoms away from the reaction start from the reactant's positions in both endpoints, so both
+    # relax from the same surroundings. Nothing is constrained: every atom and, for NPT, the cell
+    # relax.
+    environment = sorted(set(range(len(reactant))) - active)
+    if environment:
+        product.positions[environment] = (
+            reactant.get_scaled_positions(wrap=False)[environment] @ product.cell
             if variable_cell
-            else reactant.positions[frozen]
+            else reactant.positions[environment]
         )
-        constraint = FixAtoms(indices=frozen)
-        reactant.set_constraint(constraint)
-        product.set_constraint(constraint.copy())
     return reactant, product, tuple(sorted(active))
+
+
+def _bonded_pairs(atoms: Atoms, detector_config: BondDetectorConfig) -> set[tuple[int, int]]:
+    """Atom-ID pairs within their bond-formation distance anywhere in the cell."""
+
+    ids = atom_ids(atoms)
+    symbols = atoms.get_chemical_symbols()
+    elements = set(symbols)
+    cutoff = max(detector_config.threshold_for(a, b)[0] for a in elements for b in elements)
+    first, second, distances = neighbor_list("ijd", atoms, cutoff)
+    return {
+        (min(ids[i], ids[j]), max(ids[i], ids[j]))
+        for i, j, distance in zip(first, second, distances, strict=True)
+        if i != j and distance <= detector_config.threshold_for(symbols[i], symbols[j])[0]
+    }
 
 
 def _bond_topology(
@@ -282,6 +297,14 @@ def _endpoint_status(
         return "collapsed", "relaxed endpoints occupy the same changed-bond basin"
     if actual != expected:
         return "unresolved", "relaxed endpoints do not match the candidate topology"
+    # With every atom free, relaxation can also form or break bonds away from the reaction; a
+    # difference between the endpoints there would enter the path and the barrier.
+    outside = (
+        _bonded_pairs(reactant, detector_config) ^ _bonded_pairs(product, detector_config)
+    ) - (candidate.reactant_bonds ^ candidate.product_bonds)
+    if outside:
+        pairs = ", ".join(f"{first}-{second}" for first, second in sorted(outside)[:5])
+        return "unresolved", f"relaxation changed bonds outside the reaction: {pairs}"
     return None
 
 
