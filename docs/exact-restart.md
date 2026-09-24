@@ -86,6 +86,9 @@ summary = run.run_exact(
 )
 ```
 
+A run interrupted before its first MD step reopens in phase `new`; pass the initial atoms to
+`run_exact()` again, as the CLI does.
+
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
 boundary. It never silently falls back from exact to structural recovery. The ANI-1xnr provider is
 optional and lazy-loaded so its model identity and calculator-state contract can be tested without

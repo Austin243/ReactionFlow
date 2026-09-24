@@ -209,3 +209,7 @@ conditions, reaction settings, and resolved adapter factory and options to that 
 the selected model or its scientific inputs is rejected instead of being mislabeled as an exact
 resume. Renaming a profile without changing its resolved adapter does not change the scientific
 contract.
+
+A worker that stops with an error prints one JSON line with its trajectory ID and the error, and
+writes the same record to `last-error.json` in its trajectory directory. The next attempt removes
+that file, so a record is present only when the latest attempt ended in an error.
