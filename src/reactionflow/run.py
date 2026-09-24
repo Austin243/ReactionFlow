@@ -18,6 +18,7 @@ from ase import Atoms
 from ase.io import read
 from ase.io.trajectory import Trajectory
 
+from ._durable import flush_to_disk
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
@@ -363,10 +364,7 @@ class ReactionRun:
             )
             # The previous checkpoint is removed once state.json names this one, so this one must
             # already be on disk if the node fails.
-            for path in temporary.rglob("*"):
-                if path.is_file():
-                    with path.open("rb") as handle:
-                        os.fsync(handle.fileno())
+            flush_to_disk(temporary)
             os.replace(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -619,6 +617,7 @@ class ReactionRun:
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            flush_to_disk(temporary)
             os.replace(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)

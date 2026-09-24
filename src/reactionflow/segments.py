@@ -13,6 +13,7 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 
+from ._durable import flush_to_disk
 from .detection import assign_atom_ids, atom_ids
 from .restart import ExactRestartSnapshot
 
@@ -259,6 +260,7 @@ class SegmentStore:
                 fidelity,
             )
             _write_token(token.path, token)
+            flush_to_disk(temporary)
             os.replace(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)

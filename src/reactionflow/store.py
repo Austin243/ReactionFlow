@@ -16,6 +16,7 @@ from uuid import uuid4
 from ase import Atoms
 from ase.io import read, write
 
+from ._durable import flush_to_disk
 from .candidates import ReactionCandidate, same_reaction
 from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
 
@@ -218,6 +219,7 @@ class OccurrenceStore:
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            flush_to_disk(temporary)
             os.replace(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
