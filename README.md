@@ -77,8 +77,8 @@ reactionflow status examples/perlmutter/acn_20gpa_ani1xnr/campaign.json
 ```
 
 It lists each trajectory's phase, step, detected events, converged pathways, and latest error,
-then each reaction class merged across trajectories with its barrier range. Add `--json` for the
-same data in machine-readable form.
+then each reaction class merged across trajectories with its barrier range and how many of its
+saddles connect their endpoints. Add `--json` for the same data in machine-readable form.
 
 ## Refinement outcomes and recorded data
 
