@@ -11,9 +11,9 @@ the exact molecular-dynamics state and continues the trajectory.
 The goal is to remove the manual step between seeing chemistry happen in an MD trajectory and
 calculating the corresponding minimum-energy path. ReactionFlow preserves the integrator,
 thermostat/barostat, random-number state, atomic state, and calculator contract needed for an exact
-restart. One significant imaginary mode is consistent with a constrained first-order saddle, but
-its displacement still needs to match the intended chemistry before calling it a confirmed
-transition state.
+restart. One significant imaginary mode is consistent with a constrained first-order saddle.
+ReactionFlow then displaces the saddle both ways along that mode, relaxes each side, and records
+whether one side reaches the reactant and the other the product.
 
 ## Perlmutter quick start
 
@@ -77,7 +77,7 @@ trajectory; it never substitutes a relaxed endpoint or NEB image for the MD stat
 
 | Situation | Recorded status | Behavior |
 | --- | --- | --- |
-| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, barrier, and nested frequency diagnostic; resume MD even when that diagnostic reports zero, multiple, or failed modes. |
+| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, barrier, frequency diagnostic, and saddle connectivity check; resume MD whatever those diagnostics report. |
 | Either endpoint does not relax within the configured limits | `relaxation_failed` | Save the attempted relaxed endpoints, skip NEB, and resume MD. |
 | Both relaxed endpoints occupy the same bond-topology basin, including a product that relaxes back to the reactant | `collapsed` | Save the relaxed endpoints, skip NEB, and resume MD. |
 | The candidate or relaxed endpoint topology remains ambiguous or no longer matches the detected event | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
@@ -115,7 +115,8 @@ These are bond-monitor observation frames, not raw MD step numbers. The complete
 structures and pathway images retain stable IDs for every atom, and segment trajectory boundaries
 record both their global MD step and observation-frame counters. `result.json` records the outcome
 status, reaction class and occurrence IDs, barrier and image energies when available, a constrained
-frequency diagnostic for converged CI-NEB results, and a message describing any failure.
+frequency diagnostic and saddle connectivity check for converged CI-NEB results, and a message
+describing any failure.
 
 ## Use another ASE-compatible MLIP
 

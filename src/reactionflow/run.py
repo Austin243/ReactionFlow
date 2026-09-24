@@ -24,6 +24,7 @@ from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
 from .pathway import (
     CalculatorProvider,
+    ConnectivityCheck,
     FrequencyValidation,
     PathwayConfig,
     PathwayOutcome,
@@ -141,6 +142,28 @@ def _frequency_validation_from_dict(
         imaginary_mode_indices=tuple(map(int, value.get("imaginary_mode_indices", []))),
         primary_mode_index=(None if primary_mode_index is None else int(primary_mode_index)),
         primary_mode=tuple(tuple(map(float, vector)) for vector in value.get("primary_mode", [])),
+        message=str(value.get("message", "")),
+    )
+
+
+def _connectivity_to_dict(check: ConnectivityCheck | None) -> dict[str, object] | None:
+    if check is None:
+        return None
+    return {
+        "status": check.status,
+        "displacement_A": check.displacement_A,
+        "sides": list(check.sides),
+        "message": check.message,
+    }
+
+
+def _connectivity_from_dict(value: Mapping[str, Any] | None) -> ConnectivityCheck | None:
+    if value is None:
+        return None
+    return ConnectivityCheck(
+        status=str(value["status"]),
+        displacement_A=float(value["displacement_A"]),
+        sides=tuple(map(str, value.get("sides", []))),
         message=str(value.get("message", "")),
     )
 
@@ -612,6 +635,7 @@ class ReactionRun:
                 "volumes_A3": list(outcome.volumes),
                 "message": outcome.message,
                 "frequency_validation": _frequency_validation_to_dict(outcome.frequency_validation),
+                "connectivity": _connectivity_to_dict(outcome.connectivity),
             }
             (temporary / "result.json").write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
@@ -648,6 +672,7 @@ class ReactionRun:
             frequency_validation=_frequency_validation_from_dict(
                 result.get("frequency_validation")
             ),
+            connectivity=_connectivity_from_dict(result.get("connectivity")),
         )
 
     def refine_pending(
