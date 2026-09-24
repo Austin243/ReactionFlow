@@ -21,6 +21,7 @@ from ._durable import flush_to_disk
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .run import ReactionRun, RunSummary
+from .status import campaign_status, format_status
 
 
 def _file_digest(path: Path) -> str:
@@ -193,6 +194,12 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="run one campaign trajectory in this process")
     run.add_argument("campaign", type=Path)
     run.add_argument("--index", type=int)
+
+    status = commands.add_parser(
+        "status", help="summarize trajectories and reactions without changing any run"
+    )
+    status.add_argument("campaign", type=Path)
+    status.add_argument("--json", action="store_true", help="print the report as JSON")
     return parser
 
 
@@ -200,6 +207,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
     campaign = CampaignConfig.load(arguments.campaign)
+    if arguments.command == "status":
+        report = campaign_status(campaign)
+        print(
+            json.dumps(report, indent=2, sort_keys=True)
+            if arguments.json
+            else format_status(report)
+        )
+        return 0
     if arguments.command in {"validate", "plan"}:
         atoms = read(campaign.structure)
         payload = {
