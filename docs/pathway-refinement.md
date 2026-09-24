@@ -2,7 +2,7 @@
 
 `refine_pathway()` relaxes one resolved candidate, runs NEB and climbing-image NEB (SSNEB for NPT),
 then applies the constrained frequency diagnostic to the highest-energy or highest-enthalpy interior
-image. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
+image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun` publishes its outcome while direct
 callers retain ownership of artifacts and retry policy.
 
 ```python
@@ -75,6 +75,28 @@ imaginary modes in this fixed-cell diagnostic.
 `frequency_delta` defaults to `0.01` Å and `imaginary_frequency_cutoff_cm1` defaults to
 `50.0` cm⁻¹. Imaginary frequencies are stored as negative real values. The primary mode vector is
 normalized over its active Cartesian components, and its sign is arbitrary.
+
+## Saddle connectivity
+
+When the frequency diagnostic finds a significant imaginary mode, the saddle is displaced 0.1 Å
+each way along its primary mode, as the total displacement of the active atoms. Each copy is then
+relaxed exactly like the endpoints: same constraints, same `relax_fmax` and `relax_steps`, and the
+cell filter at the target pressure for NPT. Each relaxed side is classified with the detector's
+bond thresholds:
+
+- `reactant`, `product`, or `other`;
+- `ambiguous` when a changed bond stays inside the hysteresis gap;
+- `not_converged` when the relaxation does not converge; and
+- `no_step` when the displaced copy already meets the force tolerance, so the mode is too soft to
+  test at this displacement.
+
+`connectivity.status` is `connects_endpoints` when one side reaches the reactant and the other the
+product. It is `inconclusive` when either side is `not_converged` or `no_step`,
+`does_not_connect` otherwise, and `failed` if the check raises. The check runs inside the NEB
+calculator lease and is recorded in `result.json`. It never changes the top-level
+`ci_neb_converged` status, and it is null when no significant imaginary mode was found. A saddle
+with one imaginary mode that connects both endpoints is strong evidence for the transition state
+of the detected reaction, but it is not an intrinsic reaction coordinate.
 
 ## Constant-pressure SSNEB
 

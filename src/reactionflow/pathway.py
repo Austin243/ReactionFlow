@@ -23,6 +23,9 @@ from .ssneb import SSNEB, cell_filter
 
 CalculatorProvider = Callable[[str], AbstractContextManager[Calculator]]
 
+# Total displacement of the saddle along its unit imaginary mode before each side is relaxed.
+_CONNECTIVITY_DISPLACEMENT_A = 0.1
+
 
 class _EndpointUnresolved(ValueError):
     pass
@@ -83,6 +86,21 @@ class FrequencyValidation:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectivityCheck:
+    """Where the saddle relaxes when displaced both ways along its primary imaginary mode.
+
+    Each side is "reactant", "product", "other", "ambiguous" (a changed bond left inside the
+    hysteresis gap), "not_converged", or "no_step" (the displaced copy already met the force
+    tolerance, so the mode is too soft to test at this displacement).
+    """
+
+    status: str
+    displacement_A: float
+    sides: tuple[str, ...] = ()
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class PathwayOutcome:
     """Bounded result with calculator-free snapshots of the attempted path."""
 
@@ -92,6 +110,7 @@ class PathwayOutcome:
     images: tuple[Atoms, ...] = ()
     message: str = ""
     frequency_validation: FrequencyValidation | None = None
+    connectivity: ConnectivityCheck | None = None
     method: str = "neb"
     pressure_GPa: float | None = None
     enthalpies: tuple[float, ...] = ()
@@ -203,18 +222,24 @@ def _prepare_endpoints(
     return reactant, product, tuple(sorted(active))
 
 
-def _endpoint_status(
+def _bond_topology(
     candidate: ReactionCandidate,
-    reactant: Atoms,
-    product: Atoms,
+    template: Atoms,
     detector_config: BondDetectorConfig,
-) -> tuple[str, str] | None:
-    changed = candidate.reactant_bonds ^ candidate.product_bonds
-    ids = atom_ids(reactant)
+) -> tuple[Callable[[Atoms], tuple[bool | None, ...]], tuple[tuple[bool, ...], tuple[bool, ...]]]:
+    """Classify the pairs that define the candidate's reaction with the detector thresholds.
+
+    Returns a function giving one state per pair for a structure (bonded, not bonded, or None
+    inside the hysteresis gap) and the states of the candidate's reactant and product.
+    """
+
+    ids = atom_ids(template)
     indices = {atom_id: index for index, atom_id in enumerate(ids)}
-    symbols = dict(zip(ids, reactant.get_chemical_symbols(), strict=True))
+    symbols = dict(zip(ids, template.get_chemical_symbols(), strict=True))
     region = tuple(candidate.atom_ids)
-    changed_atoms = {atom_id for bond in changed for atom_id in bond}
+    changed_atoms = {
+        atom_id for bond in candidate.reactant_bonds ^ candidate.product_bonds for atom_id in bond
+    }
     pairs = {
         tuple(sorted((first, second)))
         for index, first in enumerate(region)
@@ -227,24 +252,35 @@ def _endpoint_status(
         if changed_atom != atom_id
     )
     ordered_pairs = sorted(pairs)
-    actual: list[tuple[bool | None, ...]] = []
-    for endpoint in (reactant, product):
-        states: list[bool | None] = []
-        for first, second in ordered_pairs:
-            form, breaking = detector_config.threshold_for(symbols[first], symbols[second])
-            distance = endpoint.get_distance(indices[first], indices[second], mic=True)
-            states.append(True if distance <= form else False if distance >= breaking else None)
-        actual.append(tuple(states))
+    thresholds = [detector_config.threshold_for(symbols[a], symbols[b]) for a, b in ordered_pairs]
 
-    if any(state is None for endpoint in actual for state in endpoint):
-        return "unresolved", "a relaxed changed bond remains inside the hysteresis gap"
-    if actual[0] == actual[1]:
-        return "collapsed", "relaxed endpoints occupy the same changed-bond basin"
+    def states(atoms: Atoms) -> tuple[bool | None, ...]:
+        result: list[bool | None] = []
+        for (first, second), (form, breaking) in zip(ordered_pairs, thresholds, strict=True):
+            distance = atoms.get_distance(indices[first], indices[second], mic=True)
+            result.append(True if distance <= form else False if distance >= breaking else None)
+        return tuple(result)
+
     expected = (
         tuple(bond in candidate.reactant_bonds for bond in ordered_pairs),
         tuple(bond in candidate.product_bonds for bond in ordered_pairs),
     )
-    if tuple(actual) != expected:
+    return states, expected
+
+
+def _endpoint_status(
+    candidate: ReactionCandidate,
+    reactant: Atoms,
+    product: Atoms,
+    detector_config: BondDetectorConfig,
+) -> tuple[str, str] | None:
+    states, expected = _bond_topology(candidate, reactant, detector_config)
+    actual = (states(reactant), states(product))
+    if any(state is None for endpoint in actual for state in endpoint):
+        return "unresolved", "a relaxed changed bond remains inside the hysteresis gap"
+    if actual[0] == actual[1]:
+        return "collapsed", "relaxed endpoints occupy the same changed-bond basin"
+    if actual != expected:
         return "unresolved", "relaxed endpoints do not match the candidate topology"
     return None
 
@@ -362,6 +398,26 @@ def _validate_frequencies(
             transition_state.calc = None
 
 
+def _minimize(
+    atoms: Atoms,
+    calculator: Calculator,
+    config: PathwayConfig,
+    pressure_GPa: float | None,
+) -> tuple[bool, int]:
+    """Relax like an endpoint (cell filter at pressure for NPT); return (converged, steps)."""
+
+    atoms.calc = calculator
+    try:
+        target = (
+            atoms if pressure_GPa is None else cell_filter(atoms, pressure_GPa, atoms.cell.copy())
+        )
+        optimizer = FIRE(target, logfile=None)
+        converged = bool(optimizer.run(fmax=config.relax_fmax, steps=config.relax_steps))
+        return converged, int(optimizer.nsteps)
+    finally:
+        atoms.calc = None
+
+
 def _relax(
     atoms: Atoms,
     *,
@@ -371,21 +427,57 @@ def _relax(
     pressure_GPa: float | None = None,
 ) -> bool:
     with calculator_provider(stage) as calculator:
-        atoms.calc = calculator
-        try:
-            target = (
-                atoms
-                if pressure_GPa is None
-                else cell_filter(atoms, pressure_GPa, atoms.cell.copy())
+        return _minimize(atoms, calculator, config, pressure_GPa)[0]
+
+
+def _check_connectivity(
+    saddle: Atoms,
+    mode: tuple[tuple[float, float, float], ...],
+    active_indices: tuple[int, ...],
+    calculator: Calculator,
+    config: PathwayConfig,
+    pressure_GPa: float | None,
+    candidate: ReactionCandidate,
+    detector_config: BondDetectorConfig,
+) -> ConnectivityCheck:
+    """Relax the saddle displaced both ways along its imaginary mode and classify each side."""
+
+    sides: list[str] = []
+    try:
+        states, (reactant, product) = _bond_topology(candidate, saddle, detector_config)
+        for sign in (-1.0, 1.0):
+            side = saddle.copy()
+            side.positions[list(active_indices)] += (
+                sign * _CONNECTIVITY_DISPLACEMENT_A * np.asarray(mode, dtype=float)
             )
-            return bool(
-                FIRE(target, logfile=None).run(
-                    fmax=config.relax_fmax,
-                    steps=config.relax_steps,
-                )
+            converged, steps = _minimize(side, calculator, config, pressure_GPa)
+            if not converged:
+                sides.append("not_converged")
+                continue
+            if steps == 0:
+                sides.append("no_step")
+                continue
+            reached = states(side)
+            sides.append(
+                "ambiguous"
+                if None in reached
+                else "reactant"
+                if reached == reactant
+                else "product"
+                if reached == product
+                else "other"
             )
-        finally:
-            atoms.calc = None
+    except Exception as exc:
+        return ConnectivityCheck(
+            "failed", _CONNECTIVITY_DISPLACEMENT_A, tuple(sides), message=str(exc)
+        )
+    if sorted(sides) == ["product", "reactant"]:
+        status = "connects_endpoints"
+    elif {"not_converged", "no_step"} & set(sides):
+        status = "inconclusive"
+    else:
+        status = "does_not_connect"
+    return ConnectivityCheck(status, _CONNECTIVITY_DISPLACEMENT_A, tuple(sides))
 
 
 def refine_pathway(
@@ -525,6 +617,19 @@ def _refine_pathway(
                     calculator,
                     options,
                 )
+                connectivity = None
+                if frequency_validation.primary_mode:
+                    assert frequency_validation.transition_state_index is not None
+                    connectivity = _check_connectivity(
+                        images[frequency_validation.transition_state_index],
+                        frequency_validation.primary_mode,
+                        active_indices,
+                        calculator,
+                        options,
+                        pressure_GPa,
+                        candidate,
+                        detector_config,
+                    )
                 return PathwayOutcome(
                     "ci_neb_converged",
                     barrier=max(profile) - profile[0],
@@ -533,6 +638,7 @@ def _refine_pathway(
                     volumes=volumes,
                     images=_snapshots(images),
                     frequency_validation=frequency_validation,
+                    connectivity=connectivity,
                 )
             finally:
                 for image in images:
@@ -545,6 +651,7 @@ def _refine_pathway(
 
 __all__ = [
     "CalculatorProvider",
+    "ConnectivityCheck",
     "FrequencyValidation",
     "PathwayConfig",
     "PathwayOutcome",

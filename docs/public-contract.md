@@ -51,7 +51,8 @@ The provisional top-level facade includes:
 - `CampaignConfig`, `TrajectorySpec`, `AdapterSpec`, and `MLIPAdapter`;
 - `BondChangeDetector`, `BondDetectorConfig`, and `BondEvent`;
 - `ReactionTracker` and `ReactionCandidate`;
-- `PathwayConfig`, `PathwayOutcome`, `FrequencyValidation`, and `refine_pathway()`; and
+- `PathwayConfig`, `PathwayOutcome`, `FrequencyValidation`, `ConnectivityCheck`, and
+  `refine_pathway()`; and
 - stable-ID helpers and `same_reaction()`.
 
 Low-level implementation helpers remain module-level APIs unless deliberately promoted.
