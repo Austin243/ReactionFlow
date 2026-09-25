@@ -38,7 +38,8 @@ detector_config = store.load_detector_config(occurrence_id)
 
 The provider is entered sequentially for `relax_reactant`, `relax_product`, and `neb`. Only one
 calculator lease is live at a time. The NEB images share one calculator in serial execution, and
-frequency validation reuses that lease before it is released.
+frequency validation reuses that lease before it is released. The fixed endpoints are evaluated
+once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the moving images.
 
 ## Scientific workflow
 
