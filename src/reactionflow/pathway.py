@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.geometry import find_mic
 from ase.mep import NEB
 from ase.neighborlist import neighbor_list
@@ -595,6 +596,12 @@ def _refine_pathway(
             for image in images:
                 image.calc = calculator
             try:
+                # The endpoints never move in the band, but ASE asks for their energies on every
+                # step; evaluate each once with this lease instead.
+                for endpoint in (images[0], images[-1]):
+                    endpoint.calc = SinglePointCalculator(
+                        endpoint, energy=endpoint.get_potential_energy()
+                    )
                 neb_converged = bool(
                     FIRE(band, logfile=None).run(
                         fmax=options.neb_fmax,
