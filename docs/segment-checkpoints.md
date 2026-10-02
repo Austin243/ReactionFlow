@@ -40,7 +40,10 @@ interrupted resume handoff before its trajectory began.
 
 The checkpoint snapshot and versioned `resume.json` are staged together, then the complete bundle
 is renamed into place. A visible resume token therefore has a visible, readable snapshot beside
-it. The token records the source generation and global step/frame counters.
+it. The token records the source generation and global step/frame counters. ReactionRun also stages
+its candidate tracker inside this bundle and marks its presence in the token. On resume, unfinished
+local regions retain their endpoints and stability counts; a missing declared tracker is an error.
+Older tokens without a tracker remain readable for the legacy whole-system observation boundary.
 
 Resume restores positions, momenta, cell, periodicity, stable atom IDs, and counters. The returned
 atoms have no calculator attached. Arbitrary calculator, optimizer, thermostat, integrator, and

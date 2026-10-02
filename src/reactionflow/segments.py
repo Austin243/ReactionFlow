@@ -13,6 +13,7 @@ from ase import Atoms
 from ase.io import read, write
 
 from ._durable import ensure_directory, publish, sync_directory
+from .candidates import ReactionTracker
 from .detection import assign_atom_ids, atom_ids
 from .restart import ExactRestartSnapshot
 
@@ -39,6 +40,7 @@ class ResumeToken:
     global_step: int
     global_frame: int
     fidelity: str = "structural"
+    has_tracker: bool = False
 
     @property
     def checkpoint_path(self) -> Path:
@@ -68,7 +70,10 @@ class ResumeToken:
         source = _counter(value.get("source_generation"), "source_generation")
         step = _counter(value.get("global_step"), "global_step")
         frame = _counter(value.get("global_frame"), "global_frame")
-        return cls(path, source, step, frame, fidelity)
+        has_tracker = value.get("has_tracker", False)
+        if type(has_tracker) is not bool:
+            raise ValueError("resume token has an invalid tracker flag")
+        return cls(path, source, step, frame, fidelity, has_tracker)
 
 
 def _counter(value: object, name: str) -> int:
@@ -111,6 +116,7 @@ def _write_token(path: Path, token: ResumeToken) -> None:
         "source_generation": token.source_generation,
         "global_step": token.global_step,
         "global_frame": token.global_frame,
+        "has_tracker": token.has_tracker,
     }
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -218,6 +224,7 @@ class SegmentStore:
         global_step: int,
         global_frame: int,
         exact_restart: ExactRestartSnapshot | None = None,
+        tracker: ReactionTracker | None = None,
     ) -> ResumeToken:
         """Atomically publish one structural or exact checkpoint for a generation."""
 
@@ -252,12 +259,17 @@ class SegmentStore:
                 exact_restart.write(temporary / "exact-restart")
                 ExactRestartSnapshot.read(temporary / "exact-restart")
                 fidelity = "exact"
+            if tracker is not None:
+                if tracker.last_frame != frame:
+                    raise ValueError("tracker does not match the checkpoint boundary")
+                tracker.write_checkpoint(temporary / "tracker")
             token = ResumeToken(
                 temporary / "resume.json",
                 segment.generation,
                 step,
                 frame,
                 fidelity,
+                has_tracker=tracker is not None,
             )
             _write_token(token.path, token)
             publish(temporary, final)
@@ -270,6 +282,7 @@ class SegmentStore:
             step,
             frame,
             fidelity,
+            has_tracker=tracker is not None,
         )
 
     def read_exact(self, token: ResumeToken) -> ExactRestartSnapshot:

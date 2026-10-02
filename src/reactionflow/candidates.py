@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 from numbers import Integral
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import networkx as nx
@@ -37,10 +36,19 @@ class ReactionCandidate:
 
 @dataclass(slots=True)
 class _PendingTopology:
+    atom_ids: tuple[int, ...]
+    reactant: Atoms
+    reactant_bonds: frozenset[Bond]
+    reactant_frame: int
     bonds: frozenset[Bond]
     product: Atoms
     product_frame: int
     count: int = 0
+
+
+def _within(bonds: frozenset[Bond], region: Collection[int]) -> frozenset[Bond]:
+    ids = set(region)
+    return frozenset(bond for bond in bonds if set(bond) <= ids)
 
 
 def _bonds(values: Collection[Bond], valid_ids: set[int]) -> frozenset[Bond]:
@@ -53,11 +61,16 @@ def _bonds(values: Collection[Bond], valid_ids: set[int]) -> frozenset[Bond]:
 
 
 def _changed_regions(
-    reactant: frozenset[Bond], product: frozenset[Bond]
+    reactant: frozenset[Bond],
+    product: frozenset[Bond],
+    stable: frozenset[Bond] | None = None,
 ) -> tuple[tuple[int, ...], ...]:
-    changed_atoms = {atom_id for bond in reactant ^ product for atom_id in bond}
+    stable = product if stable is None else stable
+    changed_atoms = {
+        atom_id for bond in (reactant ^ product) | (stable ^ product) for atom_id in bond
+    }
     neighbors: dict[int, set[int]] = {}
-    for first, second in reactant | product:
+    for first, second in reactant | product | stable:
         neighbors.setdefault(first, set()).add(second)
         neighbors.setdefault(second, set()).add(first)
 
@@ -153,7 +166,7 @@ def reaction_key(candidate: ReactionCandidate) -> str:
 
 
 class ReactionTracker:
-    """Emit candidates after a complete product topology remains stable."""
+    """Confirm connected topology changes independently of activity elsewhere."""
 
     def __init__(self, *, stability_frames: int = 3) -> None:
         if (
@@ -165,53 +178,40 @@ class ReactionTracker:
         self.stability_frames = int(stability_frames)
         self._symbols: dict[int, str] | None = None
         self._accepted_bonds: frozenset[Bond] | None = None
+        # The latest frame seeds newly changing regions; pending regions keep their own endpoints.
         self._accepted: Atoms | None = None
         self._accepted_frame: int | None = None
-        self._reactant: Atoms | None = None
-        self._reactant_frame: int | None = None
-        self._pending: _PendingTopology | None = None
+        self._last_bonds: frozenset[Bond] = frozenset()
+        self._pending: list[_PendingTopology] = []
         self._last_frame: int | None = None
 
     @property
     def last_frame(self) -> int | None:
         return self._last_frame
 
-    def _clear_transition(self) -> None:
-        self._reactant = None
-        self._reactant_frame = None
-        self._pending = None
+    def _candidate(
+        self, pending: _PendingTopology, *, observed_frame: int, resolved: bool
+    ) -> ReactionCandidate | None:
+        reactant_bonds = _within(pending.reactant_bonds, pending.atom_ids)
+        if reactant_bonds == pending.bonds:
+            return None
+        return ReactionCandidate(
+            reactant=pending.reactant.copy(),
+            product=pending.product.copy(),
+            atom_ids=pending.atom_ids,
+            reactant_bonds=reactant_bonds,
+            product_bonds=pending.bonds,
+            reactant_frame=pending.reactant_frame,
+            product_frame=pending.product_frame,
+            observed_frame=observed_frame,
+            resolved=resolved,
+        )
 
-    def _freeze_reactant(self) -> None:
-        if self._reactant is None:
-            assert self._accepted is not None and self._accepted_frame is not None
-            self._reactant = self._accepted.copy()
-            self._reactant_frame = self._accepted_frame
-
-    def _candidates(self, *, observed_frame: int, resolved: bool) -> tuple[ReactionCandidate, ...]:
+    def _accept(self, pending: _PendingTopology) -> None:
         assert self._accepted_bonds is not None
-        assert self._reactant is not None and self._reactant_frame is not None
-        assert self._pending is not None
-        result: list[ReactionCandidate] = []
-        for region in _changed_regions(self._accepted_bonds, self._pending.bonds):
-            region_ids = set(region)
-            result.append(
-                ReactionCandidate(
-                    reactant=self._reactant.copy(),
-                    product=self._pending.product.copy(),
-                    atom_ids=region,
-                    reactant_bonds=frozenset(
-                        bond for bond in self._accepted_bonds if set(bond) <= region_ids
-                    ),
-                    product_bonds=frozenset(
-                        bond for bond in self._pending.bonds if set(bond) <= region_ids
-                    ),
-                    reactant_frame=self._reactant_frame,
-                    product_frame=self._pending.product_frame,
-                    observed_frame=observed_frame,
-                    resolved=resolved,
-                )
-            )
-        return tuple(result)
+        self._accepted_bonds = (
+            self._accepted_bonds - _within(self._accepted_bonds, pending.atom_ids)
+        ) | pending.bonds
 
     def process(
         self,
@@ -230,63 +230,86 @@ class ReactionTracker:
         if self._symbols is not None and symbols != self._symbols:
             raise ValueError("atom identities changed between frames")
         bonds = _bonds(stable_bonds, set(ids))
-        proposal = None if pending_bonds is None else _bonds(pending_bonds, set(ids))
-        snapshot = atoms.copy()
-        if self._accepted_bonds is None and proposal is not None:
+        proposal = bonds if pending_bonds is None else _bonds(pending_bonds, set(ids))
+        if self._accepted_bonds is None and pending_bonds is not None:
             raise ValueError("start the tracker before the detector has pending changes")
+        snapshot = atoms.copy()
         self._symbols = symbols
-        self._last_frame = frame
-
+        result: list[ReactionCandidate] = []
+        remaining: list[_PendingTopology] = []
         if self._accepted_bonds is None:
             self._accepted_bonds = bonds
-            self._accepted = snapshot
-            self._accepted_frame = frame
-            return ()
-
-        proposed_bonds = bonds if proposal is None else proposal
-        if proposed_bonds == self._accepted_bonds:
-            self._pending = None
-            if proposal is not None:
-                self._freeze_reactant()
-            else:
-                self._accepted = snapshot
-                self._accepted_frame = frame
-                self._reactant = None
-                self._reactant_frame = None
-            return ()
-
-        self._freeze_reactant()
-        if self._pending is None or proposed_bonds != self._pending.bonds:
-            self._pending = _PendingTopology(proposed_bonds, snapshot, frame)
-        if proposal is not None:
-            return ()
-        if bonds == self._pending.bonds:
-            self._pending.count += 1
-        if self._pending.count < self.stability_frames:
-            return ()
-
-        result = self._candidates(observed_frame=frame, resolved=True)
-        self._accepted_bonds = bonds
+        else:
+            assert self._accepted is not None and self._accepted_frame is not None
+            for region in _changed_regions(self._accepted_bonds, proposal, bonds):
+                overlaps = [
+                    item for item in self._pending if set(item.atom_ids).intersection(region)
+                ]
+                local_product = _within(proposal, region)
+                if (
+                    len(overlaps) == 1
+                    and overlaps[0].atom_ids == region
+                    and overlaps[0].bonds == local_product
+                ):
+                    pending = overlaps[0]
+                else:
+                    # A merge/split or another local change starts a new stability window. The
+                    # oldest whole-frame reactant remains the pre-crossing endpoint.
+                    oldest = (
+                        min(overlaps, key=lambda item: item.reactant_frame) if overlaps else None
+                    )
+                    pending = _PendingTopology(
+                        atom_ids=region,
+                        reactant=self._accepted if oldest is None else oldest.reactant,
+                        reactant_bonds=self._last_bonds
+                        if oldest is None
+                        else oldest.reactant_bonds,
+                        reactant_frame=self._accepted_frame
+                        if oldest is None
+                        else oldest.reactant_frame,
+                        bonds=local_product,
+                        product=snapshot,
+                        product_frame=frame,
+                    )
+                if _within(bonds ^ proposal, region):
+                    pending.count = 0
+                else:
+                    pending.count += 1
+                if pending.count < self.stability_frames:
+                    remaining.append(pending)
+                    continue
+                # If a region joins an independently accepted event, the oldest snapshot can
+                # precede that event. Keep this overlapping history as unresolved, rather than
+                # claiming a reactant topology that does not match the retained geometry.
+                resolved = _within(pending.reactant_bonds, region) == _within(
+                    self._accepted_bonds, region
+                )
+                candidate = self._candidate(pending, observed_frame=frame, resolved=resolved)
+                if candidate is not None:
+                    result.append(candidate)
+                self._accept(pending)
+        self._pending = remaining
         self._accepted = snapshot
-        self._accepted_frame = frame
-        self._clear_transition()
-        return result
+        self._accepted_frame = self._last_frame = frame
+        self._last_bonds = bonds
+        return tuple(result)
 
     def finish(self) -> tuple[ReactionCandidate, ...]:
-        """Drain an incomplete product topology as unresolved candidates."""
+        """Drain incomplete regions once, without labeling them resolved."""
 
-        if self._pending is None or self._last_frame is None:
-            self._clear_transition()
+        if self._last_frame is None:
             return ()
-        result = self._candidates(observed_frame=self._last_frame, resolved=False)
-        self._accepted_bonds = self._pending.bonds
-        self._accepted = self._pending.product.copy()
-        self._accepted_frame = self._pending.product_frame
-        self._clear_transition()
-        return result
+        result: list[ReactionCandidate] = []
+        for pending in self._pending:
+            candidate = self._candidate(pending, observed_frame=self._last_frame, resolved=False)
+            if candidate is not None:
+                result.append(candidate)
+            self._accept(pending)
+        self._pending = []
+        return tuple(result)
 
     def write_checkpoint(self, path: str | Path) -> Path:
-        """Atomically persist every state needed for exact monitor continuation."""
+        """Atomically persist independent windows and their endpoint snapshots."""
 
         final = Path(path).resolve()
         if final.exists():
@@ -295,49 +318,48 @@ class ReactionTracker:
         temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
         temporary.mkdir()
         try:
-            snapshots = {
-                "accepted": self._accepted,
-                "reactant": self._reactant,
-                "pending_product": (None if self._pending is None else self._pending.product),
-            }
+            snapshots = {"accepted.traj": self._accepted}
+            pending_data = []
+            for index, item in enumerate(self._pending):
+                reactant_name = f"reactant-{index}.traj"
+                product_name = f"product-{index}.traj"
+                snapshots[reactant_name] = item.reactant
+                snapshots[product_name] = item.product
+                pending_data.append(
+                    {
+                        "atom_ids": list(item.atom_ids),
+                        "reactant": reactant_name,
+                        "product": product_name,
+                        "reactant_bonds": _checkpoint_bonds(item.reactant_bonds),
+                        "reactant_frame": item.reactant_frame,
+                        "bonds": _checkpoint_bonds(item.bonds),
+                        "product_frame": item.product_frame,
+                        "count": item.count,
+                    }
+                )
             files: dict[str, str] = {}
-            for label, atoms in snapshots.items():
+            for filename, atoms in snapshots.items():
                 if atoms is None:
                     continue
                 snapshot = atoms.copy()
                 snapshot.calc = None
                 snapshot.info["atom_ids"] = list(atom_ids(snapshot))
-                filename = f"{label}.traj"
                 destination = temporary / filename
                 write(destination, snapshot, format="traj")
                 files[filename] = _file_digest(destination)
-
-            value: dict[str, Any] = {
-                "schema_version": 1,
+            value = {
+                "schema_version": 2,
                 "stability_frames": self.stability_frames,
-                "symbols": (
-                    None
-                    if self._symbols is None
-                    else [[atom_id, symbol] for atom_id, symbol in self._symbols.items()]
-                ),
+                "symbols": None if self._symbols is None else list(self._symbols.items()),
                 "accepted_bonds": _checkpoint_bonds(self._accepted_bonds),
                 "accepted_frame": self._accepted_frame,
-                "reactant_frame": self._reactant_frame,
-                "pending": (
-                    None
-                    if self._pending is None
-                    else {
-                        "bonds": _checkpoint_bonds(self._pending.bonds),
-                        "product_frame": self._pending.product_frame,
-                        "count": self._pending.count,
-                    }
-                ),
+                "last_bonds": _checkpoint_bonds(self._last_bonds),
+                "pending": pending_data,
                 "last_frame": self._last_frame,
                 "files": files,
             }
             (temporary / "tracker.json").write_text(
-                json.dumps(value, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
+                json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             publish(temporary, final)
         except Exception:
@@ -352,28 +374,33 @@ class ReactionTracker:
         *,
         stability_frames: int | None = None,
     ) -> ReactionTracker:
-        """Restore and integrity-check a version-1 tracker checkpoint."""
+        """Restore a tracker, including legacy whole-system stability windows."""
 
         root = Path(path).resolve()
         value = json.loads((root / "tracker.json").read_text(encoding="utf-8"))
-        if value.get("schema_version") != 1:
+        version = value.get("schema_version")
+        if version not in (1, 2):
             raise ValueError("unsupported reaction-tracker checkpoint")
         stored_stability = int(value["stability_frames"])
         if stability_frames is not None and stored_stability != stability_frames:
             raise ValueError("reaction-tracker checkpoint configuration does not match")
+        pending_data = value.get("pending")
+        expected_files = {"accepted.traj"} if value.get("accepted_bonds") is not None else set()
+        if version == 1:
+            if value.get("reactant_frame") is not None:
+                expected_files.add("reactant.traj")
+            if pending_data is not None:
+                expected_files.add("pending_product.traj")
+        else:
+            for index, item in enumerate(pending_data):
+                if (
+                    item["reactant"] != f"reactant-{index}.traj"
+                    or item["product"] != f"product-{index}.traj"
+                ):
+                    raise ValueError("reaction-tracker checkpoint has invalid snapshot names")
+                expected_files.update((item["reactant"], item["product"]))
         files = value.get("files")
-        if not isinstance(files, dict):
-            raise ValueError("reaction-tracker checkpoint has an invalid file manifest")
-        expected_files = {
-            name
-            for name, present in (
-                ("accepted.traj", value.get("accepted_bonds") is not None),
-                ("reactant.traj", value.get("reactant_frame") is not None),
-                ("pending_product.traj", value.get("pending") is not None),
-            )
-            if present
-        }
-        if set(files) != expected_files:
+        if not isinstance(files, dict) or set(files) != expected_files:
             raise ValueError("reaction-tracker checkpoint has an invalid snapshot set")
         for name, expected_digest in files.items():
             snapshot_path = root / name
@@ -383,29 +410,47 @@ class ReactionTracker:
         tracker = cls(stability_frames=stored_stability)
         symbols = value.get("symbols")
         tracker._symbols = (
-            None if symbols is None else {int(atom_id): str(symbol) for atom_id, symbol in symbols}
+            None if symbols is None else {int(key): str(symbol) for key, symbol in symbols}
         )
-        accepted_bonds = value.get("accepted_bonds")
-        tracker._accepted_bonds = _restore_bonds(accepted_bonds)
+        tracker._accepted_bonds = _restore_bonds(value.get("accepted_bonds"))
         tracker._accepted = (
-            None if accepted_bonds is None else _read_tracker_atoms(root / "accepted.traj")
+            None if tracker._accepted_bonds is None else _read_tracker_atoms(root / "accepted.traj")
         )
         tracker._accepted_frame = _optional_frame(value.get("accepted_frame"))
-        tracker._reactant_frame = _optional_frame(value.get("reactant_frame"))
-        tracker._reactant = (
-            None if tracker._reactant_frame is None else _read_tracker_atoms(root / "reactant.traj")
-        )
-        pending = value.get("pending")
-        if pending is not None:
-            pending_bonds = _restore_bonds(pending["bonds"])
-            assert pending_bonds is not None
-            tracker._pending = _PendingTopology(
-                bonds=pending_bonds,
-                product=_read_tracker_atoms(root / "pending_product.traj"),
-                product_frame=int(pending["product_frame"]),
-                count=int(pending["count"]),
-            )
         tracker._last_frame = _optional_frame(value.get("last_frame"))
+        if version == 1:
+            tracker._last_bonds = tracker._accepted_bonds or frozenset()
+            if pending_data is not None:
+                product_bonds = _restore_bonds(pending_data["bonds"])
+                assert tracker._accepted_bonds is not None and product_bonds is not None
+                for region in _changed_regions(tracker._accepted_bonds, product_bonds):
+                    tracker._pending.append(
+                        _PendingTopology(
+                            atom_ids=region,
+                            reactant=_read_tracker_atoms(root / "reactant.traj"),
+                            reactant_bonds=tracker._accepted_bonds,
+                            reactant_frame=int(value["reactant_frame"]),
+                            bonds=_within(product_bonds, region),
+                            product=_read_tracker_atoms(root / "pending_product.traj"),
+                            product_frame=int(pending_data["product_frame"]),
+                            count=int(pending_data["count"]),
+                        )
+                    )
+        else:
+            tracker._last_bonds = _restore_bonds(value["last_bonds"])
+            for item in pending_data:
+                tracker._pending.append(
+                    _PendingTopology(
+                        atom_ids=tuple(map(int, item["atom_ids"])),
+                        reactant=_read_tracker_atoms(root / item["reactant"]),
+                        reactant_bonds=_restore_bonds(item["reactant_bonds"]),
+                        reactant_frame=int(item["reactant_frame"]),
+                        bonds=_restore_bonds(item["bonds"]),
+                        product=_read_tracker_atoms(root / item["product"]),
+                        product_frame=int(item["product_frame"]),
+                        count=int(item["count"]),
+                    )
+                )
         tracker._validate_checkpoint()
         return tracker
 
@@ -414,19 +459,20 @@ class ReactionTracker:
             raise ValueError("reaction-tracker checkpoint has an incomplete accepted state")
         if (self._accepted is None) != (self._accepted_frame is None):
             raise ValueError("reaction-tracker checkpoint has an invalid accepted frame")
-        if (self._reactant is None) != (self._reactant_frame is None):
-            raise ValueError("reaction-tracker checkpoint has an invalid reactant state")
-        if self._pending is not None and self._reactant is None:
-            raise ValueError("reaction-tracker checkpoint has an incomplete transition")
-        for atoms in (self._accepted, self._reactant):
-            if atoms is not None:
-                atom_ids(atoms)
-                atoms.calc = None
-        if self._pending is not None:
-            atom_ids(self._pending.product)
-            self._pending.product.calc = None
-            if self._pending.count < 0:
+        seen: set[int] = set()
+        for pending in self._pending:
+            region = set(pending.atom_ids)
+            if seen.intersection(region) or not region or len(region) != len(pending.atom_ids):
+                raise ValueError("reaction-tracker checkpoint has invalid pending regions")
+            seen.update(region)
+            if pending.count < 0:
                 raise ValueError("reaction-tracker checkpoint has a negative stability count")
+            for atoms in (pending.reactant, pending.product):
+                symbols = dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
+                if symbols != self._symbols or not region <= symbols.keys():
+                    raise ValueError("reaction-tracker checkpoint has inconsistent atom identities")
+            if _bonds(pending.bonds, region) != pending.bonds:
+                raise ValueError("reaction-tracker checkpoint has invalid product bonds")
 
 
 def _file_digest(path: Path) -> str:
