@@ -366,6 +366,71 @@ def test_pending_reversion_does_not_replace_the_pre_crossing_reactant() -> None:
     assert candidate.product_bonds == frozenset()
 
 
+@pytest.mark.parametrize("checkpoint_frame", [None, 2, 3])
+@pytest.mark.parametrize("ending", ["merged", "first", "second"])
+def test_merge_retains_independent_origins_after_provisional_cancellation(
+    tmp_path, checkpoint_frame, ending
+):
+    from reactionflow import BondChangeDetector, BondDetectorConfig, assign_atom_ids
+
+    detector = BondChangeDetector(
+        BondDetectorConfig(persistence_frames=2, pair_thresholds={"H-H": (0.8, 1.2)})
+    )
+    tracker = ReactionTracker(stability_frames=2)
+    final_positions = {
+        "merged": [0, 0.6, 1.2, 1.8],
+        "first": [0, 0.6, 5, 7],
+        "second": [0, 2, 5, 5.6],
+    }
+    positions = [
+        [0, 2, 5, 7],
+        [0, 2, 5, 5.6],  # Provisional spectator bond 2-3.
+        [0, 0.6, 5, 7],  # It reverts as the independent 0-1 change starts.
+        [0, 0.6, 1.2, 1.8],  # The pending region now merges with atoms 2 and 3.
+        final_positions[ending],
+        final_positions[ending],
+        final_positions[ending],
+    ]
+    emitted = []
+    for frame, x in enumerate(positions):
+        atoms = assign_atom_ids(Atoms("H4", positions=[[value, 0, 0] for value in x]))
+        detector.process(atoms, frame=frame)
+        emitted.extend(
+            tracker.process(
+                atoms,
+                frame=frame,
+                stable_bonds=detector.stable_bonds,
+                pending_bonds=detector.pending_bonds,
+            )
+        )
+        if frame == checkpoint_frame:
+            tracker = ReactionTracker.read_checkpoint(
+                tracker.write_checkpoint(tmp_path / "tracker")
+            )
+            detector = BondChangeDetector.from_state(detector.export_state())
+
+    (candidate,) = emitted
+    assert candidate.observed_frame == 5
+    if ending == "merged":
+        assert not candidate.resolved
+        assert (candidate.reactant_frame, candidate.product_frame) == (1, 3)
+        assert candidate.atom_ids == (0, 1, 2, 3)
+        assert candidate.reactant_bonds == frozenset({(2, 3)})
+        assert candidate.reactant.get_distance(2, 3) == pytest.approx(0.6)
+        assert candidate.product_bonds == frozenset({(0, 1), (1, 2), (2, 3)})
+    else:
+        pair = (0, 1) if ending == "first" else (2, 3)
+        assert candidate.resolved
+        assert candidate.atom_ids == pair
+        assert candidate.reactant_frame == (1 if ending == "first" else 2)
+        assert candidate.product_frame == 4
+        assert candidate.reactant_bonds == frozenset()
+        assert candidate.product_bonds == frozenset({pair})
+        assert candidate.reactant.get_distance(*pair) > 1.2
+        assert candidate.product.get_distance(*pair) == pytest.approx(0.6)
+    assert tracker.finish() == ()
+
+
 def test_legacy_tracker_checkpoint_continues_each_pending_region(tmp_path) -> None:
     import hashlib
     import json

@@ -35,12 +35,14 @@ Start the detector and tracker together so the tracker sees a baseline before an
 - `pending_bonds` freezes each region's last pre-crossing frame. Only provisional detector changes
   in that region block its confirmation; unrelated bond flicker does not delay a stable reaction.
 - A product topology must repeat for `stability_frames` consecutive confirmed observations in its
-  region. A local topology change or a merge/split restarts that window while retaining the oldest
-  pre-crossing reactant frame.
+  region. A local topology change or a merge/split restarts that window. Each atom retains one
+  pre-crossing origin, with whole-frame snapshots shared across atoms. Merging retains these
+  origins so either region can recover its own baseline after a later split.
 - Disconnected regions emit independently in stable atom-ID order, and each accepted change emits
-  once. If a pending region later joins a previously accepted independent event, its oldest whole
-  snapshot may precede that event. Such overlapping history is retained as unresolved rather than
-  combining incompatible reactant geometry and topology.
+  once. The earliest retained snapshot matching the region's accepted topology becomes its
+  reactant. If no snapshot matches that baseline, overlapping history is retained as unresolved
+  using a truthful changed pair of snapshots, rather than combining incompatible geometry and
+  topology. Provisional bonds remain part of the topology recorded with each snapshot.
 - `finish()` returns incomplete product topologies with `resolved=False` and drains them once.
 
 A candidate contains full, calculator-free copies of the reactant and product structures. Its
@@ -51,8 +53,10 @@ observation that confirmed or drained it.
 The stability window counts processed frames, not MD steps or physical time. It is uniform across
 elements: hydrogen, metals, solvents, and other atoms receive no special transition policy.
 
-Tracker checkpoints use schema version 2 to retain every independent window, endpoint, and count.
-The reader also accepts version-1 checkpoints and splits their global window into connected regions.
+Tracker checkpoints use schema version 2 to retain every independent window, endpoint, origin, and
+count. The reader also accepts version 1 and splits its global window into connected regions,
+retaining the original reactant snapshot; it cannot reconstruct alternative snapshots discarded
+by the older tracker.
 ReactionRun includes the tracker in reaction checkpoints, so structural and exact continuation both
 retain other unfinished regions when a confirmed reaction pauses MD for refinement.
 

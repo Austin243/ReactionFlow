@@ -35,6 +35,14 @@ class ReactionCandidate:
 
 
 @dataclass(slots=True)
+class _ReactantOrigin:
+    atom_ids: tuple[int, ...]
+    atoms: Atoms
+    bonds: frozenset[Bond]
+    frame: int
+
+
+@dataclass(slots=True)
 class _PendingTopology:
     atom_ids: tuple[int, ...]
     reactant: Atoms
@@ -44,11 +52,35 @@ class _PendingTopology:
     product: Atoms
     product_frame: int
     count: int = 0
+    origins: tuple[_ReactantOrigin, ...] = ()
 
 
 def _within(bonds: frozenset[Bond], region: Collection[int]) -> frozenset[Bond]:
     ids = set(region)
     return frozenset(bond for bond in bonds if set(bond) <= ids)
+
+
+def _select_origin(
+    origins: Collection[_ReactantOrigin],
+    region: Collection[int],
+    accepted_bonds: frozenset[Bond],
+    product_bonds: frozenset[Bond],
+) -> _ReactantOrigin:
+    """Prefer an actual snapshot of this region's accepted basin."""
+
+    ordered = sorted(origins, key=lambda origin: (origin.frame, origin.atom_ids))
+    if not ordered:
+        raise ValueError("a pending reaction region requires a reactant origin")
+    baseline = _within(accepted_bonds, region)
+    for origin in ordered:
+        if _within(origin.bonds, region) == baseline:
+            return origin
+    # Overlapping histories can lack a common baseline. Preserve a truthful unresolved
+    # change, rather than dropping it because one origin happens to match the product.
+    return next(
+        (origin for origin in ordered if _within(origin.bonds, region) != product_bonds),
+        ordered[0],
+    )
 
 
 def _bonds(values: Collection[Bond], valid_ids: set[int]) -> frozenset[Bond]:
@@ -253,23 +285,38 @@ class ReactionTracker:
                 ):
                     pending = overlaps[0]
                 else:
-                    # A merge/split or another local change starts a new stability window. The
-                    # oldest whole-frame reactant remains the pre-crossing endpoint.
-                    oldest = (
-                        min(overlaps, key=lambda item: item.reactant_frame) if overlaps else None
-                    )
+                    # Keep one origin assignment per atom, sharing full snapshots. A merge
+                    # must retain each region's baseline so a later split can recover either
+                    # reaction without inventing a mixed whole-system geometry.
+                    origins = []
+                    covered = set()
+                    for item in overlaps:
+                        for origin in item.origins:
+                            support = tuple(sorted(set(origin.atom_ids).intersection(region)))
+                            if support:
+                                origins.append(
+                                    _ReactantOrigin(
+                                        support, origin.atoms, origin.bonds, origin.frame
+                                    )
+                                )
+                                covered.update(support)
+                    added = tuple(sorted(set(region) - covered))
+                    if added:
+                        origins.append(
+                            _ReactantOrigin(
+                                added, self._accepted, self._last_bonds, self._accepted_frame
+                            )
+                        )
+                    reactant = _select_origin(origins, region, self._accepted_bonds, local_product)
                     pending = _PendingTopology(
                         atom_ids=region,
-                        reactant=self._accepted if oldest is None else oldest.reactant,
-                        reactant_bonds=self._last_bonds
-                        if oldest is None
-                        else oldest.reactant_bonds,
-                        reactant_frame=self._accepted_frame
-                        if oldest is None
-                        else oldest.reactant_frame,
+                        reactant=reactant.atoms,
+                        reactant_bonds=reactant.bonds,
+                        reactant_frame=reactant.frame,
                         bonds=local_product,
                         product=snapshot,
                         product_frame=frame,
+                        origins=tuple(origins),
                     )
                 if _within(bonds ^ proposal, region):
                     pending.count = 0
@@ -291,7 +338,9 @@ class ReactionTracker:
         self._pending = remaining
         self._accepted = snapshot
         self._accepted_frame = self._last_frame = frame
-        self._last_bonds = bonds
+        # Match the latest geometry, including provisional changes outside pending regions.
+        # A later merge must not describe those atoms using only their older stable topology.
+        self._last_bonds = proposal
         return tuple(result)
 
     def finish(self) -> tuple[ReactionCandidate, ...]:
@@ -319,19 +368,30 @@ class ReactionTracker:
         temporary.mkdir()
         try:
             snapshots = {"accepted.traj": self._accepted}
+            origin_names = {}
             pending_data = []
             for index, item in enumerate(self._pending):
-                reactant_name = f"reactant-{index}.traj"
                 product_name = f"product-{index}.traj"
-                snapshots[reactant_name] = item.reactant
                 snapshots[product_name] = item.product
+                origins = []
+                for origin in item.origins:
+                    if origin.frame not in origin_names:
+                        name = f"reactant-origin-{len(origin_names)}.traj"
+                        origin_names[origin.frame] = name
+                        snapshots[name] = origin.atoms
+                    origins.append(
+                        {
+                            "atom_ids": list(origin.atom_ids),
+                            "snapshot": origin_names[origin.frame],
+                            "bonds": _checkpoint_bonds(origin.bonds),
+                            "frame": origin.frame,
+                        }
+                    )
                 pending_data.append(
                     {
                         "atom_ids": list(item.atom_ids),
-                        "reactant": reactant_name,
                         "product": product_name,
-                        "reactant_bonds": _checkpoint_bonds(item.reactant_bonds),
-                        "reactant_frame": item.reactant_frame,
+                        "origins": origins,
                         "bonds": _checkpoint_bonds(item.bonds),
                         "product_frame": item.product_frame,
                         "count": item.count,
@@ -392,13 +452,17 @@ class ReactionTracker:
             if pending_data is not None:
                 expected_files.add("pending_product.traj")
         else:
+            origin_files = set()
             for index, item in enumerate(pending_data):
-                if (
-                    item["reactant"] != f"reactant-{index}.traj"
-                    or item["product"] != f"product-{index}.traj"
-                ):
+                if item["product"] != f"product-{index}.traj":
                     raise ValueError("reaction-tracker checkpoint has invalid snapshot names")
-                expected_files.update((item["reactant"], item["product"]))
+                expected_files.add(item["product"])
+                origin_files.update(origin["snapshot"] for origin in item["origins"])
+            if origin_files != {
+                f"reactant-origin-{index}.traj" for index in range(len(origin_files))
+            }:
+                raise ValueError("reaction-tracker checkpoint has invalid origin snapshots")
+            expected_files.update(origin_files)
         files = value.get("files")
         if not isinstance(files, dict) or set(files) != expected_files:
             raise ValueError("reaction-tracker checkpoint has an invalid snapshot set")
@@ -424,31 +488,52 @@ class ReactionTracker:
                 product_bonds = _restore_bonds(pending_data["bonds"])
                 assert tracker._accepted_bonds is not None and product_bonds is not None
                 for region in _changed_regions(tracker._accepted_bonds, product_bonds):
+                    reactant = _read_tracker_atoms(root / "reactant.traj")
+                    reactant_frame = int(value["reactant_frame"])
                     tracker._pending.append(
                         _PendingTopology(
                             atom_ids=region,
-                            reactant=_read_tracker_atoms(root / "reactant.traj"),
+                            reactant=reactant,
                             reactant_bonds=tracker._accepted_bonds,
-                            reactant_frame=int(value["reactant_frame"]),
+                            reactant_frame=reactant_frame,
                             bonds=_within(product_bonds, region),
                             product=_read_tracker_atoms(root / "pending_product.traj"),
                             product_frame=int(pending_data["product_frame"]),
                             count=int(pending_data["count"]),
+                            origins=(
+                                _ReactantOrigin(
+                                    region, reactant, tracker._accepted_bonds, reactant_frame
+                                ),
+                            ),
                         )
                     )
         else:
             tracker._last_bonds = _restore_bonds(value["last_bonds"])
+            snapshots = {name: _read_tracker_atoms(root / name) for name in origin_files}
             for item in pending_data:
+                region = tuple(map(int, item["atom_ids"]))
+                bonds = _restore_bonds(item["bonds"])
+                origins = tuple(
+                    _ReactantOrigin(
+                        tuple(map(int, origin["atom_ids"])),
+                        snapshots[origin["snapshot"]],
+                        _restore_bonds(origin["bonds"]),
+                        int(origin["frame"]),
+                    )
+                    for origin in item["origins"]
+                )
+                reactant = _select_origin(origins, region, tracker._accepted_bonds, bonds)
                 tracker._pending.append(
                     _PendingTopology(
-                        atom_ids=tuple(map(int, item["atom_ids"])),
-                        reactant=_read_tracker_atoms(root / item["reactant"]),
-                        reactant_bonds=_restore_bonds(item["reactant_bonds"]),
-                        reactant_frame=int(item["reactant_frame"]),
-                        bonds=_restore_bonds(item["bonds"]),
+                        atom_ids=region,
+                        reactant=reactant.atoms,
+                        reactant_bonds=reactant.bonds,
+                        reactant_frame=reactant.frame,
+                        bonds=bonds,
                         product=_read_tracker_atoms(root / item["product"]),
                         product_frame=int(item["product_frame"]),
                         count=int(item["count"]),
+                        origins=origins,
                     )
                 )
         tracker._validate_checkpoint()
@@ -473,6 +558,22 @@ class ReactionTracker:
                     raise ValueError("reaction-tracker checkpoint has inconsistent atom identities")
             if _bonds(pending.bonds, region) != pending.bonds:
                 raise ValueError("reaction-tracker checkpoint has invalid product bonds")
+            covered: set[int] = set()
+            for origin in pending.origins:
+                support = set(origin.atom_ids)
+                if not support or not support <= region or covered.intersection(support):
+                    raise ValueError("reaction-tracker checkpoint has invalid origin ownership")
+                covered.update(support)
+                symbols = dict(
+                    zip(atom_ids(origin.atoms), origin.atoms.get_chemical_symbols(), strict=True)
+                )
+                if symbols != self._symbols:
+                    raise ValueError(
+                        "reaction-tracker checkpoint has inconsistent origin identities"
+                    )
+                _bonds(origin.bonds, set(symbols))
+            if covered != region:
+                raise ValueError("reaction-tracker checkpoint has incomplete origin ownership")
 
 
 def _file_digest(path: Path) -> str:
