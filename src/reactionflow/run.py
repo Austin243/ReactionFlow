@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
@@ -18,7 +17,7 @@ from ase import Atoms
 from ase.io import read
 from ase.io.trajectory import Trajectory
 
-from ._durable import flush_to_disk
+from ._durable import ensure_directory, publish, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
@@ -186,8 +185,8 @@ class ReactionRun:
         self.state_path = self.root / "state.json"
         self.pathways = self.root / "pathways"
         self.runtime_checkpoints = self.root / "runtime-checkpoints"
-        self.pathways.mkdir(parents=True, exist_ok=True)
-        self.runtime_checkpoints.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.pathways)
+        ensure_directory(self.runtime_checkpoints)
         self.occurrences = OccurrenceStore(self.root)
         self.segments = SegmentStore(self.root)
         self._phase = "new"
@@ -213,7 +212,7 @@ class ReactionRun:
         """Create a new durable run directory."""
 
         path = Path(root).resolve()
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path)
         if (path / "state.json").exists():
             raise FileExistsError(path / "state.json")
         run = cls(path, config or ReactionRunConfig())
@@ -255,6 +254,7 @@ class ReactionRun:
         token_path = run._token_path
         if run._phase == "checkpoint_pending" and token_path.is_file():
             ResumeToken.read(token_path)
+            sync_directory(token_path.parent.parent)
             run._phase = "refining"
             run._write_state()
         if run._phase == "refining" and not run._pending:
@@ -344,11 +344,9 @@ class ReactionRun:
         temporary = self.state_path.with_suffix(".json.tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps(self._state(), indent=2, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.state_path)
-        # Only the runtime checkpoint named by state.json is ever read. Now that the new state is
-        # on disk, remove superseded checkpoints and leftovers from interrupted attempts.
+        publish(temporary, self.state_path)
+        # Prune only after both the new state and its directory entry are durable.
+        # A failed publication must leave the previous checkpoint available for recovery.
         keep = None if self._active_checkpoint is None else self._active_checkpoint.name
         for path in self.runtime_checkpoints.iterdir():
             if path.name != keep:
@@ -387,8 +385,7 @@ class ReactionRun:
             )
             # The previous checkpoint is removed once state.json names this one, so this one must
             # already be on disk if the node fails.
-            flush_to_disk(temporary)
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -579,6 +576,7 @@ class ReactionRun:
                     self._global_frame,
                 ):
                     raise ValueError("generation is already checkpointed at another boundary")
+                sync_directory(self._token_path.parent.parent)
             else:
                 token = self.segments.checkpoint(
                     self._segment,
@@ -615,6 +613,7 @@ class ReactionRun:
     ) -> None:
         final = self.pathways / occurrence_id
         if final.exists():
+            sync_directory(self.pathways)
             return
         record = self._record_for(occurrence_id)
         temporary = self.pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
@@ -642,8 +641,7 @@ class ReactionRun:
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            flush_to_disk(temporary)
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -694,6 +692,7 @@ class ReactionRun:
                 directory = self.pathways / occurrence_id
                 if directory.is_dir():
                     outcome = self._load_outcome(occurrence_id)
+                    sync_directory(self.pathways)
                 else:
                     outcome = refine_pathway(
                         self.occurrences.load(occurrence_id),

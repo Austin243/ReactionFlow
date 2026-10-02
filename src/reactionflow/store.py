@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -16,7 +15,7 @@ from uuid import uuid4
 from ase import Atoms
 from ase.io import read, write
 
-from ._durable import flush_to_disk
+from ._durable import ensure_directory, publish, sync_directory
 from .candidates import ReactionCandidate, same_reaction
 from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
 
@@ -100,7 +99,7 @@ class OccurrenceStore:
         self.root = Path(root)
         self.database = self.root / "reactions.sqlite3"
         self.candidates = self.root / "candidates"
-        self.candidates.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.candidates)
         with closing(self._connect()) as db, db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1):
@@ -176,6 +175,8 @@ class OccurrenceStore:
         return self._record(row), True
 
     def _recover(self) -> None:
+        # An interrupted publication may have renamed a bundle without syncing its parent.
+        sync_directory(self.candidates)
         bundles: list[tuple[str, str, ReactionCandidate]] = []
         for directory in sorted(self.candidates.iterdir()):
             if not directory.is_dir() or directory.name.startswith("."):
@@ -206,6 +207,7 @@ class OccurrenceStore:
             stored_metadata, stored_candidate = _read_bundle(final)
             if stored_metadata != metadata:
                 raise ValueError(f"occurrence ID {occurrence_id!r} has conflicting data")
+            sync_directory(self.candidates)
             return stored_candidate
 
         temporary = self.candidates / f".{occurrence_id}.tmp"
@@ -219,8 +221,7 @@ class OccurrenceStore:
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            flush_to_disk(temporary)
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise

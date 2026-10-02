@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,6 +14,8 @@ from uuid import uuid4
 import numpy as np
 from ase import Atoms
 from ase.io import read, write
+
+from ._durable import ensure_directory, publish
 
 _TYPE_MARKER = "__reactionflow_type__"
 
@@ -132,7 +133,7 @@ class ExactRestartSnapshot:
         final = Path(path).resolve()
         if final.exists():
             raise FileExistsError(final)
-        final.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(final.parent)
         temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
         temporary.mkdir()
         try:
@@ -181,7 +182,7 @@ class ExactRestartSnapshot:
                 json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
                 encoding="utf-8",
             )
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise

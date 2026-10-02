@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +12,7 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 
-from ._durable import flush_to_disk
+from ._durable import ensure_directory, publish, sync_directory
 from .detection import assign_atom_ids, atom_ids
 from .restart import ExactRestartSnapshot
 
@@ -122,7 +121,7 @@ class SegmentStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
         self.segments = self.root / "segments"
-        self.segments.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.segments)
 
     def _generation(
         self,
@@ -139,6 +138,7 @@ class SegmentStore:
         except FileExistsError:
             if not recover_empty or any(directory.iterdir()):
                 raise
+        sync_directory(self.segments)
         return SegmentGeneration(
             generation=generation,
             directory=directory,
@@ -260,8 +260,7 @@ class SegmentStore:
                 fidelity,
             )
             _write_token(token.path, token)
-            flush_to_disk(temporary)
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
