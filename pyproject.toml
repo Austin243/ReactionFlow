@@ -21,6 +21,8 @@ dependencies = [
 reactionflow = "reactionflow.cli:main"
 
 [project.optional-dependencies]
+mace = ["mace-torch==0.3.16"]
+uma = ["fairchem-core==2.23.0"]
 ani1xnr = [
   "torch==2.11.0",
   "torchani==2.8.4",

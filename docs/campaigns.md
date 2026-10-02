@@ -84,7 +84,8 @@ need incompatible environments or different GPU shapes.
 The bundled ANI-1xnr campaign remains a schema version 1 example. Its top-level `adapter` applies
 to all trajectories and continues to be supported unchanged for single-model work.
 
-Paths are relative to the campaign file. Trajectory IDs are unique output-directory names. The
+The structure and output paths are relative to the campaign file; built-in model checkpoint and
+cache paths must be absolute. Trajectory IDs are unique output-directory names. The
 standard temperature, pressure, time-step, seed, and step-count fields give adapters a common
 baseline; `conditions` carries additional JSON parameters without putting MLIP- or
 integrator-specific settings into ReactionFlow core. Model selection belongs in `adapter_profile`,
@@ -98,6 +99,26 @@ reactionflow plan campaign.json --gpus-per-node 4
 ```
 
 ## MLIP adapter
+
+### Built-in MACE, UMA, and ANI-1xnr
+
+MACE and UMA have built-in factories and explicit setup/download commands:
+
+```bash
+reactionflow prepare campaign.json --install
+reactionflow run campaign.json --index 0
+```
+
+`--install` optionally installs the selected backend in the current Python environment. Omit it
+when dependencies are already installed. Preparation supports `--index` and does not create any
+trajectory state. Normal MACE/UMA runs use only prepared local weights; `run --download` explicitly
+allows preparation before the selected run. See [models and preparation](models.md) for profile
+examples, environment compatibility, UMA authentication, and exact-restart constraints. The pinned
+MACE/UMA dependency stacks need separate environments/campaigns; named profiles can mix models
+only when all their dependencies are compatible.
+
+ANI-1xnr retains its existing Perlmutter setup. `prepare` reports ANI and generic/custom adapters
+as `external_setup`; those adapters do not support `run --download`.
 
 ### Use an ASE calculator directly
 
@@ -124,14 +145,11 @@ also be used unchanged as the value of a named schema version 2 adapter profile:
 
 `calculator_factory` can name a calculator class or a function; ReactionFlow calls it with
 `calculator_kwargs` and requires it to return an ASE `Calculator`. The normal Perlmutter setup
-continues to install TorchANI and the pinned ANI-1xnr model as the ready-to-run default. To add
-another calculator to that same checkout environment:
+continues to install TorchANI and the pinned ANI-1xnr model for the bundled example. Install other
+calculator packages in a compatible environment used by your workers, for example:
 
 ```bash
-./scripts/setup-perlmutter-ani1xnr.sh
-module load pytorch/2.11.0
-export PYTHONUSERBASE="$PWD/.perlmutter-python"
-python -m pip install --user my-mlip-package
+python -m pip install my-mlip-package
 ```
 
 Use absolute model paths in portable batch configurations. Every path in `model_files` is required
@@ -167,10 +185,11 @@ lets a user package an ANI, MACE, NequIP, Allegro, CHGNet, or other ASE-compatib
 adding that stack to ReactionFlow. Strict execution rejects an adapter that cannot supply exact
 dynamics and calculator state.
 
-ReactionFlow includes one optional reference implementation:
-`reactionflow.adapters.ani1xnr:create_adapter`. It lazily imports the pinned ANI-1xnr stack, so
-normal ReactionFlow installation and import remain independent of Torch. The complete four-GPU
-example is in [`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
+The optional built-ins are `reactionflow.adapters.ani1xnr:create_adapter`,
+`reactionflow.adapters.mace:create_adapter`, and `reactionflow.adapters.uma:create_adapter`.
+Normal ReactionFlow installation and import remain independent of Torch. The complete four-GPU
+ANI-1xnr example is in
+[`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
 
 ## Campaign status
 
@@ -198,6 +217,10 @@ value, connectivity status count, and trajectory ID, for scripted analysis.
 
 ## Perlmutter mapping
 
+The bundled ANI environment is prepared by
+[`scripts/setup-perlmutter-ani1xnr.sh`](../scripts/setup-perlmutter-ani1xnr.sh). For MACE or UMA,
+use the separate backend environment described in [model preparation](models.md).
+
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) requests
 four Slurm tasks per GPU node, one GPU per task, and 32 logical CPU cores per task. `srun` launches
 the same command in every worker. `SLURM_PROCID` selects one campaign entry, while Slurm restricts
@@ -206,6 +229,8 @@ that process to one `CUDA_VISIBLE_DEVICES` entry. These resource flags follow NE
 [process/GPU affinity](https://docs.nersc.gov/jobs/affinity/) guidance. The script loads the same
 `.perlmutter-python` environment as the ANI-1xnr example from the checkout it is submitted from, or
 from `REACTIONFLOW_ROOT`, and stops with a setup message if that environment is missing.
+For MACE or UMA, adapt the environment activation in your own job script while preserving the
+one-task-per-trajectory mapping; the supplied scripts configure ANI-1xnr.
 
 Submit four trajectories on one node:
 

@@ -960,6 +960,15 @@ class ReactionRun:
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
 
+        if self._phase == "refining":
+            # A reopened adapter has not checked its model against the saved MD state yet.
+            # Verify before any pathway result can be published, including terminal work
+            # that will never resume MD. Read a separate snapshot so validation cannot
+            # mutate the run's checkpoint, and leave failures retryable in this phase.
+            token = ResumeToken.read(self._token_path)
+            with runtime_provider.restore(self.segments.read_exact(token)):
+                pass
+
         # The durable-state methods record their own failures. Any other error, such as a
         # runtime that this environment refuses to restore, leaves the last exact checkpoint in
         # place, so the run is not marked failed and resumes once the cause is fixed.

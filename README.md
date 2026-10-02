@@ -135,9 +135,21 @@ describing any failure, and the ReactionFlow version that produced it.
 
 ## Use another ASE-compatible MLIP
 
-TorchANI and ANI-1xnr remain the ready-to-run default. To select another installed,
-ASE-compatible MLIP in a schema version 1 campaign, replace the `adapter` block in the campaign
-JSON:
+ReactionFlow has built-in MACE and UMA adapters with optional model preparation:
+
+```bash
+reactionflow prepare campaign.json --install
+reactionflow run campaign.json --index 0
+```
+
+Configure the selected adapter first and use its own compatible Python environment. Preparation
+downloads weights before the run; normal MACE/UMA runs use local files. See the
+[model guide](docs/models.md) for profiles, optional package installation, local checkpoints,
+authentication, and restart constraints. The bundled Perlmutter example and setup scripts remain
+ANI-1xnr-specific.
+
+To select another installed ASE-compatible MLIP in a schema version 1 campaign, replace the
+`adapter` block in the campaign JSON:
 
 ```json
 "adapter": {
@@ -159,7 +171,7 @@ JSON:
 must return an ASE `Calculator`. ReactionFlow passes `calculator_kwargs` directly to that callable,
 so change `checkpoint` and the other keys to the arguments that calculator expects. Put the model's
 absolute, compute-node-visible checkpoint path in both the appropriate calculator argument and
-`model_files`. Install the calculator package in `.perlmutter-python` before running the campaign.
+`model_files`. Install the calculator package in the environment used by your trajectory workers.
 See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for the full interface.
 
 ## Use multiple MLIPs in one submission

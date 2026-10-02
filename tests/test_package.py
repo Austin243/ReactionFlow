@@ -26,8 +26,13 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
 
     for path in source_root.rglob("*.py"):
         allowed_for_path = set(allowed_external_roots)
-        if path.is_relative_to(source_root / "adapters"):
-            allowed_for_path.update({"torch", "torchani"})
+        optional_imports = {
+            "adapters/ani1xnr.py": {"torch", "torchani"},
+            "adapters/_torch.py": {"torch"},
+            "adapters/mace.py": {"mace"},
+            "adapters/uma.py": {"fairchem", "huggingface_hub", "omegaconf"},
+        }
+        allowed_for_path.update(optional_imports.get(path.relative_to(source_root).as_posix(), ()))
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
