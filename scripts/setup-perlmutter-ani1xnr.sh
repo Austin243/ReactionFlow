@@ -6,7 +6,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 module load pytorch/2.11.0
 
 export PYTHONUSERBASE=${REACTIONFLOW_PYTHONUSERBASE:-"$repo_root/.perlmutter-python"}
-export TORCHANI_DATA_DIR=${REACTIONFLOW_TORCHANI_DATA_DIR:-"$repo_root/.cache/torchani"}
+export REACTIONFLOW_MODEL_CACHE=${REACTIONFLOW_MODEL_CACHE:-"$repo_root/.cache/models"}
 export PATH="$PYTHONUSERBASE/bin:$PATH"
 unset PYTHONNOUSERSITE || true
 
@@ -20,8 +20,9 @@ PY
 
 python -m pip install --user --requirement "$repo_root/requirements/perlmutter-ani1xnr.txt"
 python -m pip install --user --force-reinstall --no-deps "$repo_root"
-python "$repo_root/scripts/cache_ani1xnr.py" --data-dir "$TORCHANI_DATA_DIR"
-python - <<'PY'
+campaign="$repo_root/examples/perlmutter/acn_20gpa_ani1xnr/campaign.json"
+reactionflow prepare "$campaign"
+TORCHANI_DATA_DIR="$REACTIONFLOW_MODEL_CACHE/ani1xnr" python - <<'PY'
 import os
 
 import torch
@@ -36,8 +37,7 @@ print(
 )
 PY
 
-reactionflow validate \
-    "$repo_root/examples/perlmutter/acn_20gpa_ani1xnr/campaign.json"
+reactionflow validate "$campaign"
 
 printf '\nSetup complete. Submit the example from this checkout with:\n'
 printf '  sbatch -A <GPU_PROJECT> -q regular %s\n' \
