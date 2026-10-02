@@ -14,12 +14,12 @@ and exact graph identity from `src/matensemble/reactions/core.py`; its element-s
 policy was not copied. `src/reactionflow/store.py` adapts the occurrence registry and atomic
 candidate publication from those baseline sources without MatEnsemble controller coupling.
 `src/reactionflow/pathway.py` adapts fixed-cell endpoint relaxation and serial CI-NEB without the
-upstream calculator registry or scheduler coupling. Detailed extraction notes are maintained in
-`docs/provenance.md`. `src/reactionflow/segments.py` adapts structural checkpoint and generation
-handling without the upstream driver reflection, stop-file policy, or exact-restart claims.
+upstream calculator registry or scheduler coupling. `src/reactionflow/segments.py` adapts
+structural checkpoint and generation handling without the upstream driver reflection, stop-file
+policy, or exact-restart claims.
 `src/reactionflow/run.py` is a scheduler-independent rewrite informed by the upstream controller's
 high-level stop/refine/resume sequence; MatEnsemble pipeline, chore, manager, and Flux integration
 were not copied.
 
 As further implementation is moved or adapted, the MatEnsemble copyright and license notice must
-remain preserved and the provenance ledger must be updated.
+remain preserved.

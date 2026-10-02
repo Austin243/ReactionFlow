@@ -76,8 +76,7 @@ restored = BondChangeDetector.from_state(payload, config=detector.config)
 ```
 
 The checkpoint stores configuration, atom identities, stable bonds, pending crossings, and the last
-frame. Version 1 is intentionally small; stricter validation and migrations will be added when a
-durable run store exists.
+frame.
 
 ## Scientific limits
 
