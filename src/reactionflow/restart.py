@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -13,15 +12,9 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 
+from ._durable import file_digest
+
 _TYPE_MARKER = "__reactionflow_type__"
-
-
-def _digest(path: Path) -> str:
-    checksum = sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
 
 
 def _encode_json(value: Any) -> Any:
@@ -165,8 +158,8 @@ class ExactRestartSnapshot:
             "atom_arrays": atom_arrays,
             "components": components,
             "files": {
-                "atoms.traj": _digest(atoms_path),
-                "arrays.npz": _digest(arrays_path),
+                "atoms.traj": file_digest(atoms_path),
+                "arrays.npz": file_digest(arrays_path),
             },
         }
         state_path.write_text(
@@ -188,7 +181,7 @@ class ExactRestartSnapshot:
             raise ValueError("exact-restart manifest has an invalid file set")
         for name, expected in files.items():
             file_path = root / name
-            if not file_path.is_file() or _digest(file_path) != expected:
+            if not file_path.is_file() or file_digest(file_path) != expected:
                 raise ValueError(f"restart artifact failed integrity check: {name}")
 
         atoms = read(root / "atoms.traj")

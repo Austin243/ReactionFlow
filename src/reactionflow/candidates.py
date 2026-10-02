@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Collection
 from dataclasses import dataclass
-from hashlib import sha256
 from numbers import Integral
 from pathlib import Path
 
@@ -13,7 +12,8 @@ import networkx as nx
 from ase import Atoms
 from ase.io import read, write
 
-from .detection import Bond, assign_atom_ids, atom_ids
+from ._durable import file_digest
+from .detection import Bond, atom_ids, canonical_copy, transport_copy
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,22 +162,25 @@ def _reaction_graph(candidate: ReactionCandidate, *, reverse: bool = False) -> n
     return graph
 
 
+def _isomorphic(first: nx.Graph, second: nx.Graph) -> bool:
+    return nx.is_isomorphic(
+        first,
+        second,
+        node_match=nx.algorithms.isomorphism.categorical_node_match("element", None),
+        edge_match=nx.algorithms.isomorphism.categorical_edge_match("change", None),
+    )
+
+
+def _graph_hash(graph: nx.Graph) -> str:
+    return nx.weisfeiler_lehman_graph_hash(graph, node_attr="element", edge_attr="change")
+
+
 def same_reaction(first: ReactionCandidate, second: ReactionCandidate) -> bool:
     """Return whether candidates are exact forward/reverse graph equivalents."""
 
-    node_match = nx.algorithms.isomorphism.categorical_node_match("element", None)
-    edge_match = nx.algorithms.isomorphism.categorical_edge_match("change", None)
-    first_graph = _reaction_graph(first)
-    return nx.is_isomorphic(
-        first_graph,
-        _reaction_graph(second),
-        node_match=node_match,
-        edge_match=edge_match,
-    ) or nx.is_isomorphic(
-        first_graph,
-        _reaction_graph(second, reverse=True),
-        node_match=node_match,
-        edge_match=edge_match,
+    graph = _reaction_graph(first)
+    return _isomorphic(graph, _reaction_graph(second)) or _isomorphic(
+        graph, _reaction_graph(second, reverse=True)
     )
 
 
@@ -185,13 +188,29 @@ def reaction_key(candidate: ReactionCandidate) -> str:
     """Hash shared by forward/reverse-equivalent candidates; confirm matches with same_reaction."""
 
     return min(
-        nx.weisfeiler_lehman_graph_hash(
-            _reaction_graph(candidate, reverse=reverse),
-            node_attr="element",
-            edge_attr="change",
-        )
-        for reverse in (False, True)
+        _graph_hash(_reaction_graph(candidate, reverse=reverse)) for reverse in (False, True)
     )
+
+
+class ReactionClasses:
+    """Names of known reaction topologies, found by key and confirmed by exact graph matching."""
+
+    def __init__(self) -> None:
+        self._graphs: dict[str, list[tuple[str, nx.Graph]]] = {}
+
+    def find(self, candidate: ReactionCandidate) -> str | None:
+        """Return the name of the class equivalent to this candidate, if one is known."""
+
+        directions = [_reaction_graph(candidate, reverse=reverse) for reverse in (False, True)]
+        for name, graph in self._graphs.get(min(map(_graph_hash, directions)), ()):
+            if any(_isomorphic(graph, direction) for direction in directions):
+                return name
+        return None
+
+    def add(self, name: str, candidate: ReactionCandidate) -> None:
+        self._graphs.setdefault(reaction_key(candidate), []).append(
+            (name, _reaction_graph(candidate))
+        )
 
 
 class ReactionTracker:
@@ -396,12 +415,9 @@ class ReactionTracker:
         for filename, atoms in snapshots.items():
             if atoms is None:
                 continue
-            snapshot = atoms.copy()
-            snapshot.calc = None
-            snapshot.info["atom_ids"] = list(atom_ids(snapshot))
             destination = final / filename
-            write(destination, snapshot, format="traj")
-            files[filename] = _file_digest(destination)
+            write(destination, transport_copy(atoms), format="traj")
+            files[filename] = file_digest(destination)
         value = {
             "schema_version": 2,
             "stability_frames": self.stability_frames,
@@ -437,9 +453,9 @@ class ReactionTracker:
         snapshots: dict[str, Atoms] = {}
         for name, expected_digest in value["files"].items():
             snapshot_path = root / name
-            if not snapshot_path.is_file() or _file_digest(snapshot_path) != expected_digest:
+            if not snapshot_path.is_file() or file_digest(snapshot_path) != expected_digest:
                 raise ValueError(f"reaction-tracker checkpoint failed integrity check: {name}")
-            snapshots[name] = _read_tracker_atoms(snapshot_path)
+            snapshots[name] = canonical_copy(read(snapshot_path))
 
         tracker = cls(stability_frames=stored_stability)
         symbols = value["symbols"]
@@ -480,23 +496,6 @@ class ReactionTracker:
         return tracker
 
 
-def _file_digest(path: Path) -> str:
-    checksum = sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
-
-
-def _read_tracker_atoms(path: Path) -> Atoms:
-    atoms = read(path)
-    atom_ids(atoms)
-    assign_atom_ids(atoms)
-    atoms.info.pop("atom_ids", None)
-    atoms.calc = None
-    return atoms
-
-
 def _checkpoint_bonds(values: Collection[Bond] | None) -> list[list[int]] | None:
     if values is None:
         return None
@@ -514,4 +513,10 @@ def _restore_bonds(
     )
 
 
-__all__ = ["ReactionCandidate", "ReactionTracker", "reaction_key", "same_reaction"]
+__all__ = [
+    "ReactionCandidate",
+    "ReactionClasses",
+    "ReactionTracker",
+    "reaction_key",
+    "same_reaction",
+]

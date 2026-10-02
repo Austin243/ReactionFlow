@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,12 +14,11 @@ from ase.calculators.calculator import Calculator
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.geometry import find_mic
 from ase.mep import NEB
-from ase.neighborlist import neighbor_list
 from ase.optimize import FIRE
 from ase.vibrations import Vibrations
 
 from .candidates import ReactionCandidate
-from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
+from .detection import Bond, BondDetectorConfig, atom_ids, canonical_copy, classify_bonds
 from .ssneb import SSNEB, cell_filter
 
 CalculatorProvider = Callable[[str], AbstractContextManager[Calculator]]
@@ -132,9 +131,8 @@ def _prepare_endpoints(
     *,
     variable_cell: bool = False,
 ) -> tuple[Atoms, Atoms, tuple[int, ...]]:
-    reactant = assign_atom_ids(candidate.reactant.copy())
-    product = assign_atom_ids(candidate.product.copy())
-    reactant.calc = product.calc = None
+    reactant = canonical_copy(candidate.reactant)
+    product = canonical_copy(candidate.product)
     reactant.set_constraint()
     product.set_constraint()
 
@@ -144,8 +142,6 @@ def _prepare_endpoints(
         raise ValueError("reactant and product atom IDs differ")
     order = {atom_id: index for index, atom_id in enumerate(second_ids)}
     product = product[[order[atom_id] for atom_id in first_ids]]
-    reactant.info.pop("atom_ids", None)
-    product.info.pop("atom_ids", None)
     if reactant.get_chemical_symbols() != product.get_chemical_symbols():
         raise ValueError("reactant and product elements differ")
     if reactant.pbc.tolist() != product.pbc.tolist():
@@ -223,103 +219,39 @@ def _prepare_endpoints(
     return reactant, product, tuple(sorted(active))
 
 
-def _whole_cell_topology(
-    atoms: Atoms, detector_config: BondDetectorConfig
-) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
-    """Return bonded and ambiguous atom-ID pairs using minimum-image thresholds."""
-
-    ids = atom_ids(atoms)
-    symbols = atoms.get_chemical_symbols()
-    elements = set(symbols)
-    cutoff = max(detector_config.threshold_for(a, b)[1] for a in elements for b in elements)
-    first, second, distances = neighbor_list("ijd", atoms, cutoff)
-    bonded: set[tuple[int, int]] = set()
-    ambiguous: set[tuple[int, int]] = set()
-    for i, j, distance in zip(first, second, distances, strict=True):
-        if i == j:
-            continue
-        pair = (min(ids[i], ids[j]), max(ids[i], ids[j]))
-        form, breaking = detector_config.threshold_for(symbols[i], symbols[j])
-        if distance <= form:
-            bonded.add(pair)
-        elif distance < breaking:
-            ambiguous.add(pair)
-    # Multiple periodic images can appear in the neighbor list. A bonded minimum image
-    # takes precedence over a farther image in the gap, just as it does in the detector.
-    return bonded, ambiguous - bonded
-
-
-def _bonded_pairs(atoms: Atoms, detector_config: BondDetectorConfig) -> set[tuple[int, int]]:
-    """Atom-ID pairs within their bond-formation distance anywhere in the cell."""
-
-    return _whole_cell_topology(atoms, detector_config)[0]
-
-
-def _bond_topology(
-    candidate: ReactionCandidate,
-    template: Atoms,
-    detector_config: BondDetectorConfig,
-) -> tuple[Callable[[Atoms], tuple[bool | None, ...]], tuple[tuple[bool, ...], tuple[bool, ...]]]:
-    """Classify the pairs that define the candidate's reaction with the detector thresholds.
-
-    Returns a function giving one state per pair for a structure (bonded, not bonded, or None
-    inside the hysteresis gap) and the states of the candidate's reactant and product.
-    """
-
-    ids = atom_ids(template)
-    indices = {atom_id: index for index, atom_id in enumerate(ids)}
-    symbols = dict(zip(ids, template.get_chemical_symbols(), strict=True))
-    region = tuple(candidate.atom_ids)
-    changed_atoms = {
-        atom_id for bond in candidate.reactant_bonds ^ candidate.product_bonds for atom_id in bond
-    }
-    pairs = {
-        tuple(sorted((first, second)))
-        for index, first in enumerate(region)
-        for second in region[index + 1 :]
-    }
-    pairs.update(
-        tuple(sorted((changed_atom, atom_id)))
-        for changed_atom in changed_atoms
-        for atom_id in ids
-        if changed_atom != atom_id
-    )
-    ordered_pairs = sorted(pairs)
-    thresholds = [detector_config.threshold_for(symbols[a], symbols[b]) for a, b in ordered_pairs]
-
-    def states(atoms: Atoms) -> tuple[bool | None, ...]:
-        result: list[bool | None] = []
-        for (first, second), (form, breaking) in zip(ordered_pairs, thresholds, strict=True):
-            distance = atoms.get_distance(indices[first], indices[second], mic=True)
-            result.append(True if distance <= form else False if distance >= breaking else None)
-        return tuple(result)
-
-    expected = (
-        tuple(bond in candidate.reactant_bonds for bond in ordered_pairs),
-        tuple(bond in candidate.product_bonds for bond in ordered_pairs),
-    )
-    return states, expected
-
-
 def _endpoint_status(
     candidate: ReactionCandidate,
     reactant: Atoms,
     product: Atoms,
     detector_config: BondDetectorConfig,
 ) -> tuple[str, str] | None:
-    states, expected = _bond_topology(candidate, reactant, detector_config)
-    actual = (states(reactant), states(product))
-    if any(state is None for endpoint in actual for state in endpoint):
+    """Check the relaxed endpoints against the candidate with the detector's thresholds."""
+
+    region = set(candidate.atom_ids)
+    changed_bonds = candidate.reactant_bonds ^ candidate.product_bonds
+    changed_atoms = {atom_id for bond in changed_bonds for atom_id in bond}
+
+    def local(bonds: Collection[Bond]) -> set[Bond]:
+        # Pairs inside the reacting region, plus any pair involving an atom of a changed bond.
+        return {
+            bond for bond in bonds if region.issuperset(bond) or changed_atoms.intersection(bond)
+        }
+
+    (reactant_bonds, reactant_gap), (product_bonds, product_gap) = (
+        classify_bonds(endpoint, detector_config) for endpoint in (reactant, product)
+    )
+    if local(reactant_gap | product_gap):
         return "unresolved", "a relaxed changed bond remains inside the hysteresis gap"
-    if actual[0] == actual[1]:
+    if local(reactant_bonds) == local(product_bonds):
         return "collapsed", "relaxed endpoints occupy the same changed-bond basin"
-    if actual != expected:
+    if (local(reactant_bonds), local(product_bonds)) != (
+        local(candidate.reactant_bonds),
+        local(candidate.product_bonds),
+    ):
         return "unresolved", "relaxed endpoints do not match the candidate topology"
     # With every atom free, relaxation can also form or break bonds away from the reaction; a
     # difference between the endpoints there would enter the path and the barrier.
-    outside = (
-        _bonded_pairs(reactant, detector_config) ^ _bonded_pairs(product, detector_config)
-    ) - (candidate.reactant_bonds ^ candidate.product_bonds)
+    outside = (reactant_bonds ^ product_bonds) - changed_bonds
     if outside:
         pairs = ", ".join(f"{first}-{second}" for first, second in sorted(outside)[:5])
         return "unresolved", f"relaxation changed bonds outside the reaction: {pairs}"
@@ -487,7 +419,7 @@ def _check_connectivity(
     sides: list[str] = []
     try:
         (reactant, reactant_gap), (product, product_gap) = (
-            _whole_cell_topology(endpoint, detector_config) for endpoint in endpoints
+            classify_bonds(endpoint, detector_config) for endpoint in endpoints
         )
         if reactant_gap or product_gap:
             return ConnectivityCheck(
@@ -509,7 +441,7 @@ def _check_connectivity(
                 continue
             # Every atom is free during descent; spectator changes and ambiguous pairs
             # must not count as reaching either of the actual relaxed NEB endpoints.
-            bonds, gap = _whole_cell_topology(side, detector_config)
+            bonds, gap = classify_bonds(side, detector_config)
             if gap:
                 sides.append("ambiguous")
                 continue

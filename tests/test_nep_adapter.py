@@ -207,8 +207,8 @@ def test_restart_binds_model_and_native_implementation(backend, atoms, changed):
         snapshot = runtime.snapshot()
     metadata = snapshot.calculator.metadata
     assert metadata["device"] == "cpu" and metadata["dtype"] == "float64"
-    assert metadata["native_library_sha256"] == nep._sha256(backend.native)
-    assert metadata["calculator_source_sha256"] == nep._sha256(Path(__file__))
+    assert metadata["native_library_sha256"] == nep.file_digest(backend.native)
+    assert metadata["calculator_source_sha256"] == nep.file_digest(Path(__file__))
     path = getattr(backend, changed)
     path.write_text("potential:2" if changed == "checkpoint" else "different native implementation")
     with pytest.raises(ValueError, match="changed during the run"), adapter.calculator("neb"):

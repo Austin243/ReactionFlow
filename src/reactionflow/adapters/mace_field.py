@@ -14,10 +14,10 @@ from typing import Any
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
+from .._durable import file_digest
 from ..campaign import TrajectorySpec
 from ._model_files import cached_download, model_cache, require_package
 from ._torch import TorchModelAdapter
-from .ase import _sha256
 
 SOURCE_URL = "https://github.com/mdi-group/mace-field.git"
 SOURCE_COMMIT = "136e4ef040d7c51a5b051a7a609ffb1f29307478"
@@ -121,7 +121,7 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
             raise FileNotFoundError(f"MACE-Field checkpoint does not exist: {path}")
     else:
         path = cached_download(_URL, model_cache(options, "mace-field"), download=download)
-        if _sha256(path) != _SHA256:
+        if file_digest(path) != _SHA256:
             raise ValueError("released MACE-Field checkpoint checksum differs")
     return {"checkpoint": path}
 

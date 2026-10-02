@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .campaign import CampaignConfig
-from .candidates import ReactionCandidate, reaction_key, same_reaction
+from .candidates import ReactionCandidate, ReactionClasses
 from .detection import atom_ids
 from .store import _read_bundle
 
@@ -52,7 +52,7 @@ def _describe(candidate: ReactionCandidate) -> str:
 
 
 def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
-    """Fill one trajectory's status row and return its classes as (candidate, key, events, results).
+    """Fill one trajectory's status row and return its classes as (candidate, events, results).
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
     step from state.json in place.
@@ -80,7 +80,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 result = _read_json(path)
                 results.append(result)
                 pathways[result["status"]] += 1
-        classes.append((candidate, reaction_key(candidate), len(occurrences), results))
+        classes.append((candidate, len(occurrences), results))
     row.update(events=len(records), pathways=dict(pathways))
     return classes
 
@@ -89,7 +89,9 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
     """Summarize every trajectory and merge reaction classes by model and pressure."""
 
     trajectories: list[dict[str, Any]] = []
-    buckets: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    # Only barriers from the same model and pressure are comparable, so classes merge within those.
+    known: dict[tuple[Any, ...], ReactionClasses] = {}
+    entries: dict[str, dict[str, Any]] = {}
     for index, spec in enumerate(campaign.trajectories):
         model = campaign.adapter_profile_for(index)
         row: dict[str, Any] = {
@@ -113,14 +115,13 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
         except Exception as error:  # a damaged trajectory must not hide the rest
             row["error"] = f"unreadable: {type(error).__name__}: {error}"
             continue
-        for candidate, key, events, results in classes:
-            bucket = buckets.setdefault((model, spec.pressure_GPa, key), [])
-            entry = next(
-                (item for item in bucket if same_reaction(candidate, item["_candidate"])), None
-            )
-            if entry is None:
-                entry = {
-                    "_candidate": candidate,
+        merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses())
+        for candidate, events, results in classes:
+            name = merged.find(candidate)
+            if name is None:
+                name = str(len(entries))
+                merged.add(name, candidate)
+                entries[name] = {
                     "reaction": _describe(candidate),
                     "model": model,
                     "pressure_GPa": spec.pressure_GPa,
@@ -134,7 +135,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
                     "connectivity": Counter(),
                     "barriers_eV": [],
                 }
-                bucket.append(entry)
+            entry = entries[name]
             if spec.id not in entry["trajectories"]:
                 entry["trajectories"].append(spec.id)
             entry["events"] += events
@@ -150,13 +151,12 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
                     entry["barriers_eV"].append(result["barrier_eV"])
     reactions = [
         {
-            **{key: value for key, value in entry.items() if key != "_candidate"},
+            **entry,
             "pathways": dict(entry["pathways"]),
             "frequency": dict(entry["frequency"]),
             "connectivity": dict(entry["connectivity"]),
         }
-        for bucket in buckets.values()
-        for entry in bucket
+        for entry in entries.values()
     ]
     reactions.sort(
         key=lambda item: (

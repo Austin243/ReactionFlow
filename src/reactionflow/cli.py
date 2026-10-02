@@ -18,20 +18,12 @@ from uuid import uuid4
 
 from ase.io import read
 
-from ._durable import ensure_directory, publish, sync_directory
+from ._durable import ensure_directory, file_digest, publish, sync_directory
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .run import ReactionRun, RunSummary
 from .status import campaign_status, format_status
-
-
-def _file_digest(path: Path) -> str:
-    checksum = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
 
 
 def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, object]:
@@ -55,7 +47,7 @@ def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, obje
         "schema_version": 1,
         "trajectory_id": trajectory.id,
         "configuration_sha256": hashlib.sha256(encoded).hexdigest(),
-        "structure_sha256": _file_digest(campaign.structure),
+        "structure_sha256": file_digest(campaign.structure),
     }
 
 

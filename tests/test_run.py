@@ -359,8 +359,8 @@ def test_fresh_occurrence_retries_failed_class_until_converged(
     row = {}
     (reaction,) = _trajectory(tmp_path, row)
     assert row["pathways"] == {failure_status: 1, "ci_neb_converged": 1}
-    assert reaction[2] == 3
-    assert [result["status"] for result in reaction[3]] == [failure_status, "ci_neb_converged"]
+    assert reaction[1] == 3
+    assert [result["status"] for result in reaction[2]] == [failure_status, "ci_neb_converged"]
 
 
 @pytest.mark.parametrize("pressure", [None, 0.0])

@@ -13,6 +13,7 @@ from typing import Any
 
 from ase.calculators.calculator import Calculator
 
+from .._durable import file_digest
 from .._version import __version__
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState
@@ -29,16 +30,8 @@ _CALCULATOR_KIND = "reactionflow.ani1xnr"
 _ALLOWED_OPTIONS = {"device", "dtype", "model_index", "strategy"}
 
 
-def _sha256(path: Path) -> str:
-    checksum = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
-
-
 def _source_sha256(path: Path) -> str:
-    return _sha256(path.resolve())
+    return file_digest(path.resolve())
 
 
 def _package_sha256(root: Path) -> str:
@@ -89,7 +82,7 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
             raise FileNotFoundError(
                 f"pinned ANI-1xnr weights are missing: {path}; run the setup script"
             )
-        digest = _sha256(path)
+        digest = file_digest(path)
         if digest != MODEL_SHA256:
             raise ValueError(
                 f"ANI-1xnr weights failed SHA-256 verification: {digest} != {MODEL_SHA256}"
@@ -148,7 +141,7 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
                 "model_repository": MODEL_REPOSITORY,
                 "model_revision": MODEL_REVISION,
                 "model_filename": MODEL_FILENAME,
-                "model_sha256": _sha256(model_path),
+                "model_sha256": file_digest(model_path),
                 "model_index": self.model_index,
                 "device": self.device,
                 "dtype": self.dtype,

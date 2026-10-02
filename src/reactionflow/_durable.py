@@ -3,7 +3,18 @@
 from __future__ import annotations
 
 import os
+from hashlib import sha256
 from pathlib import Path
+
+
+def file_digest(path: Path) -> str:
+    """SHA-256 of a file's contents."""
+
+    checksum = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
 
 
 def sync_directory(path: Path) -> None:
