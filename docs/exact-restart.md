@@ -58,27 +58,32 @@ and RNG state.
 
 ## Exact ReactionRun execution
 
-`ReactionRun.run_exact()` accepts an `ExactRuntimeProvider`. The provider has two context-managed
+`ReactionRun.run()` accepts an `ExactRuntimeProvider`. The provider has two context-managed
 operations: `start(atoms)` creates a fresh runtime and `restore(snapshot)` reconstructs one. The
 acquired runtime exposes its live atoms, exact step counter, `run(steps)`, and `snapshot()`.
 
 At every observation boundary, `ReactionRun` atomically publishes the dynamics/calculator
 snapshot together with the detector and reaction-tracker state. Reopening a run therefore retains
 an in-progress persistence window instead of forgetting a provisional bond event. When a stable
-reaction candidate is emitted, the exact checkpoint is bound to the segment resume token and the
-MD provider is released before endpoint and pathway calculators are acquired. Other disconnected
-regions may still be changing at this boundary: their tracker windows and detector persistence are
-restored along with the same runtime state after refinement. The checkpoint files and their
-directory entries are flushed
-before publication. The rename of `state.json` is then synchronized in its parent directory before
+reaction candidate is emitted, the MD provider is released before endpoint and pathway calculators
+are acquired, and MD then resumes from that same checkpoint in a new trajectory generation, exactly
+as a resubmitted job does. Other disconnected regions may still be changing at this boundary: their
+tracker windows and detector persistence are restored along with the same runtime state after
+refinement. The checkpoint files and their directory entries are flushed before publication. The
+rename of `state.json` is then synchronized in its parent directory before
 the previous runtime checkpoint is removed. A synchronization failure stops publication without
 pruning the previous checkpoint. This ordering requires a POSIX filesystem that honors file and
 directory `fsync`; shared HPC filesystems still need validation on the target system. A successful
 run keeps a single runtime checkpoint.
 
+`state.json` records the phase, generation, global counters, pending pathway occurrence IDs,
+detector state, configuration, any durable-state failure, and the active checkpoint. Each
+generation writes one frame per observation to `segments/<generation>/trajectory.traj`; a frame is
+written before its checkpoint, so an interrupted attempt never leaves a gap.
+
 ```python
 run = ReactionRun.create("trajectory-000", config=config)
-summary = run.run_exact(
+summary = run.run(
     atoms,
     runtime_provider=runtime_provider,
     pathway_calculator_provider=pathway_calculators,
@@ -87,18 +92,18 @@ summary = run.run_exact(
 
 # The same call resumes from the last complete observation checkpoint.
 run = ReactionRun.open("trajectory-000")
-summary = run.run_exact(
+summary = run.run(
     runtime_provider=runtime_provider,
     pathway_calculator_provider=pathway_calculators,
     total_steps=1_000_000,
 )
 ```
 
-A run interrupted before its first MD step reopens in phase `new`; pass the initial atoms to
-`run_exact()` again, as the CLI does.
+A run interrupted before its first checkpoint reopens in phase `new`; pass the initial atoms to
+`run()` again, as the CLI does.
 
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
-boundary. It never silently falls back from exact to structural recovery. The ANI-1xnr provider is
+boundary; there is no inexact fallback. The ANI-1xnr provider is
 optional and lazy-loaded so its model identity and calculator-state contract can be tested without
 making Torch part of the core installation. The generic ASE calculator provider likewise imports a
 user-selected MLIP only when a worker starts.

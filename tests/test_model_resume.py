@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import nullcontext
 from typing import ClassVar
 
@@ -8,7 +9,13 @@ import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
-from reactionflow import BondDetectorConfig, PathwayOutcome, ReactionRun, ReactionRunConfig
+from reactionflow import (
+    BondDetectorConfig,
+    ExactRestartSnapshot,
+    PathwayOutcome,
+    ReactionRun,
+    ReactionRunConfig,
+)
 from reactionflow.adapters import _torch, uma
 from reactionflow.adapters.ase import _ASERuntime
 from reactionflow.campaign import TrajectorySpec
@@ -57,7 +64,9 @@ def model(tmp_path, monkeypatch):
     return path, create
 
 
-def pending_run(root, adapter):
+def pending_run(root, adapter, monkeypatch):
+    """Stop a run in refinement at an exact checkpoint taken from a real ASE runtime."""
+
     run = ReactionRun.create(
         root,
         config=ReactionRunConfig(
@@ -68,16 +77,30 @@ def pending_run(root, adapter):
     )
     atoms = Atoms("H2", positions=[[0, 0, 0], [0.65, 0, 0]])
     atoms.info.update(charge=0, spin=1)
-    segment = run.start(atoms)
-    with adapter.start(segment.atoms) as runtime:
-        runtime.run(1)
+    advance = _ASERuntime.run
+
+    def break_bond(runtime, steps):
+        advance(runtime, steps)
         # Supply a bond-breaking observation while retaining an actual ASE restart state.
         runtime.atoms.positions[1] = runtime.atoms.positions[0] + [1.55, 0, 0]
-        run.observe(runtime.atoms, global_step=1, global_frame=1)
-        snapshot = runtime.snapshot()
-        token = run.checkpoint(runtime.atoms, exact_restart=snapshot)
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt("interrupted before refinement")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_ASERuntime, "run", break_bond)
+        patch.setattr("reactionflow.run.refine_pathway", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="before refinement"):
+            run.run(
+                atoms,
+                runtime_provider=adapter,
+                pathway_calculator_provider=adapter.calculator,
+                total_steps=1,
+            )
     assert run.phase == "refining"
-    return snapshot, token
+    state = json.loads((root / "state.json").read_text())
+    checkpoint = root / state["active_checkpoint"] / "exact-restart"
+    return ExactRestartSnapshot.read(checkpoint), checkpoint
 
 
 @pytest.mark.parametrize("total_steps", [1, 2])
@@ -86,11 +109,9 @@ def test_reopened_refinement_checks_model_before_publishing_and_failure_is_retry
 ):
     weights, create = model
     root = tmp_path / "run"
-    snapshot, token = pending_run(root, create())
+    snapshot, checkpoint = pending_run(root, create(), monkeypatch)
     before_state = (root / "state.json").read_bytes()
-    before_checkpoint = {
-        path.name: path.read_bytes() for path in token.exact_restart_path.iterdir()
-    }
+    before_checkpoint = {path.name: path.read_bytes() for path in checkpoint.iterdir()}
     refinements = []
     advances = []
     original_run = _ASERuntime.run
@@ -113,7 +134,7 @@ def test_reopened_refinement_checks_model_before_publishing_and_failure_is_retry
     reopened = ReactionRun.open(root)
     changed = create()
     with pytest.raises(ValueError, match="environment differs"):
-        reopened.run_exact(
+        reopened.run(
             runtime_provider=changed,
             pathway_calculator_provider=changed.calculator,
             total_steps=total_steps,
@@ -123,13 +144,11 @@ def test_reopened_refinement_checks_model_before_publishing_and_failure_is_retry
     assert refinements == advances == []
     assert not list((root / "pathways").glob("*/result.json"))
     assert (root / "state.json").read_bytes() == before_state
-    assert {
-        path.name: path.read_bytes() for path in token.exact_restart_path.iterdir()
-    } == before_checkpoint
+    assert {path.name: path.read_bytes() for path in checkpoint.iterdir()} == before_checkpoint
 
     weights.write_text("1.0")
     restored = create()
-    result = ReactionRun.open(root).run_exact(
+    result = ReactionRun.open(root).run(
         runtime_provider=restored,
         pathway_calculator_provider=restored.calculator,
         total_steps=total_steps,

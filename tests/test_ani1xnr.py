@@ -149,7 +149,9 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
     assert [trajectory.seed for trajectory in campaign.trajectories] == [11, 22, 33, 44]
     assert {trajectory.pressure_GPa for trajectory in campaign.trajectories} == {20.0}
     assert {trajectory.total_steps for trajectory in campaign.trajectories} == {1000}
-    assert campaign.adapter.factory == "reactionflow.adapters.ani1xnr:create_adapter"
+    assert {campaign.adapter_for(index).factory for index in range(4)} == {
+        "reactionflow.adapters.ani1xnr:create_adapter"
+    }
     assert len(campaign.structure.read_text(encoding="utf-8").splitlines()) == 194
 
     script = (example / "submit.sbatch").read_text(encoding="utf-8")
@@ -170,7 +172,7 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
     assert "BASH_SOURCE[0]" not in script
 
     raw = json.loads((example / "campaign.json").read_text(encoding="utf-8"))
-    assert raw["adapter"]["options"]["model_index"] == 0
+    assert raw["adapter_profiles"]["ani1xnr"]["options"]["model_index"] == 0
 
 
 def test_setup_uses_nersc_pytorch_module_and_pinned_weights() -> None:

@@ -1,15 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "structure": "beta_acn_20gpa_relaxed.extxyz",
   "output_root": "../../../outputs/acn_20gpa_ani1xnr",
   "require_gpu": true,
-  "adapter": {
-    "factory": "reactionflow.adapters.ani1xnr:create_adapter",
-    "options": {
-      "device": "cuda",
-      "dtype": "float32",
-      "model_index": 0,
-      "strategy": "pyaev"
+  "adapter_profiles": {
+    "ani1xnr": {
+      "factory": "reactionflow.adapters.ani1xnr:create_adapter",
+      "options": {
+        "device": "cuda",
+        "dtype": "float32",
+        "model_index": 0,
+        "strategy": "pyaev"
+      }
     }
   },
   "reaction_run": {
@@ -35,6 +37,7 @@
   "trajectories": [
     {
       "id": "acn-0100K-20GPa-seed11",
+      "adapter_profile": "ani1xnr",
       "total_steps": 1000,
       "timestep_fs": 1.0,
       "temperature_K": 100.0,
@@ -49,6 +52,7 @@
     },
     {
       "id": "acn-0300K-20GPa-seed22",
+      "adapter_profile": "ani1xnr",
       "total_steps": 1000,
       "timestep_fs": 1.0,
       "temperature_K": 300.0,
@@ -63,6 +67,7 @@
     },
     {
       "id": "acn-0500K-20GPa-seed33",
+      "adapter_profile": "ani1xnr",
       "total_steps": 1000,
       "timestep_fs": 1.0,
       "temperature_K": 500.0,
@@ -77,6 +82,7 @@
     },
     {
       "id": "acn-0700K-20GPa-seed44",
+      "adapter_profile": "ani1xnr",
       "total_steps": 1000,
       "timestep_fs": 1.0,
       "temperature_K": 700.0,

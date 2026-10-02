@@ -153,21 +153,23 @@ NEP89 uses a CPU backend and requires fully periodic structures. See the
 authentication, and restart constraints. The bundled Perlmutter example and setup scripts remain
 ANI-1xnr-specific.
 
-To select another installed ASE-compatible MLIP in a schema version 1 campaign, replace the
-`adapter` block in the campaign JSON:
+To select another installed ASE-compatible MLIP, define an adapter profile in the campaign JSON
+and set each trajectory's `adapter_profile` to its name:
 
 ```json
-"adapter": {
-  "factory": "reactionflow.adapters.ase:create_adapter",
-  "options": {
-    "calculator_factory": "your_mlip.calculators:create_calculator",
-    "calculator_kwargs": {
-      "checkpoint": "/global/cfs/cdirs/your_project/models/model.ckpt",
-      "device": "cuda"
-    },
-    "model_files": [
-      "/global/cfs/cdirs/your_project/models/model.ckpt"
-    ]
+"adapter_profiles": {
+  "your-mlip": {
+    "factory": "reactionflow.adapters.ase:create_adapter",
+    "options": {
+      "calculator_factory": "your_mlip.calculators:create_calculator",
+      "calculator_kwargs": {
+        "checkpoint": "/global/cfs/cdirs/your_project/models/model.ckpt",
+        "device": "cuda"
+      },
+      "model_files": [
+        "/global/cfs/cdirs/your_project/models/model.ckpt"
+      ]
+    }
   }
 }
 ```
@@ -181,8 +183,8 @@ See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for t
 
 ## Use multiple MLIPs in one submission
 
-For schema version 2, define each complete adapter configuration once under `adapter_profiles` and
-assign one by name to every trajectory:
+Define each complete adapter configuration once under `adapter_profiles` and assign one by name
+to every trajectory:
 
 ```json
 {
@@ -225,8 +227,7 @@ assign one by name to every trajectory:
 
 Use the same explicit assignment for 8 trajectories or 500; each Slurm worker loads only the
 profile assigned to its trajectory. `reactionflow plan` summarizes the assignment counts before
-submission. Schema version 1 remains supported unchanged for campaigns where every trajectory uses
-one adapter. See the [campaign guide](docs/campaigns.md#multiple-models-in-one-submission) for the
+submission. See the [campaign guide](docs/campaigns.md#multiple-models-in-one-submission) for the
 complete file format and execution guarantees.
 
 ## Change temperatures and pressures

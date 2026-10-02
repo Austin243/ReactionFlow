@@ -434,146 +434,59 @@ class ReactionTracker:
         *,
         stability_frames: int | None = None,
     ) -> ReactionTracker:
-        """Restore a tracker, including legacy whole-system stability windows."""
+        """Restore a tracker written by ``write_checkpoint``."""
 
         root = Path(path).resolve()
         value = json.loads((root / "tracker.json").read_text(encoding="utf-8"))
-        version = value.get("schema_version")
-        if version not in (1, 2):
+        if value.get("schema_version") != 2:
             raise ValueError("unsupported reaction-tracker checkpoint")
         stored_stability = int(value["stability_frames"])
         if stability_frames is not None and stored_stability != stability_frames:
             raise ValueError("reaction-tracker checkpoint configuration does not match")
-        pending_data = value.get("pending")
-        expected_files = {"accepted.traj"} if value.get("accepted_bonds") is not None else set()
-        if version == 1:
-            if value.get("reactant_frame") is not None:
-                expected_files.add("reactant.traj")
-            if pending_data is not None:
-                expected_files.add("pending_product.traj")
-        else:
-            origin_files = set()
-            for index, item in enumerate(pending_data):
-                if item["product"] != f"product-{index}.traj":
-                    raise ValueError("reaction-tracker checkpoint has invalid snapshot names")
-                expected_files.add(item["product"])
-                origin_files.update(origin["snapshot"] for origin in item["origins"])
-            if origin_files != {
-                f"reactant-origin-{index}.traj" for index in range(len(origin_files))
-            }:
-                raise ValueError("reaction-tracker checkpoint has invalid origin snapshots")
-            expected_files.update(origin_files)
-        files = value.get("files")
-        if not isinstance(files, dict) or set(files) != expected_files:
-            raise ValueError("reaction-tracker checkpoint has an invalid snapshot set")
-        for name, expected_digest in files.items():
+        snapshots: dict[str, Atoms] = {}
+        for name, expected_digest in value["files"].items():
             snapshot_path = root / name
             if not snapshot_path.is_file() or _file_digest(snapshot_path) != expected_digest:
                 raise ValueError(f"reaction-tracker checkpoint failed integrity check: {name}")
+            snapshots[name] = _read_tracker_atoms(snapshot_path)
 
         tracker = cls(stability_frames=stored_stability)
-        symbols = value.get("symbols")
+        symbols = value["symbols"]
         tracker._symbols = (
             None if symbols is None else {int(key): str(symbol) for key, symbol in symbols}
         )
-        tracker._accepted_bonds = _restore_bonds(value.get("accepted_bonds"))
-        tracker._accepted = (
-            None if tracker._accepted_bonds is None else _read_tracker_atoms(root / "accepted.traj")
-        )
-        tracker._accepted_frame = _optional_frame(value.get("accepted_frame"))
-        tracker._last_frame = _optional_frame(value.get("last_frame"))
-        if version == 1:
-            tracker._last_bonds = tracker._accepted_bonds or frozenset()
-            if pending_data is not None:
-                product_bonds = _restore_bonds(pending_data["bonds"])
-                assert tracker._accepted_bonds is not None and product_bonds is not None
-                for region in _changed_regions(tracker._accepted_bonds, product_bonds):
-                    reactant = _read_tracker_atoms(root / "reactant.traj")
-                    reactant_frame = int(value["reactant_frame"])
-                    tracker._pending.append(
-                        _PendingTopology(
-                            atom_ids=region,
-                            reactant=reactant,
-                            reactant_bonds=tracker._accepted_bonds,
-                            reactant_frame=reactant_frame,
-                            bonds=_within(product_bonds, region),
-                            product=_read_tracker_atoms(root / "pending_product.traj"),
-                            product_frame=int(pending_data["product_frame"]),
-                            count=int(pending_data["count"]),
-                            origins=(
-                                _ReactantOrigin(
-                                    region, reactant, tracker._accepted_bonds, reactant_frame
-                                ),
-                            ),
-                        )
-                    )
-        else:
-            tracker._last_bonds = _restore_bonds(value["last_bonds"])
-            snapshots = {name: _read_tracker_atoms(root / name) for name in origin_files}
-            for item in pending_data:
-                region = tuple(map(int, item["atom_ids"]))
-                bonds = _restore_bonds(item["bonds"])
-                origins = tuple(
-                    _ReactantOrigin(
-                        tuple(map(int, origin["atom_ids"])),
-                        snapshots[origin["snapshot"]],
-                        _restore_bonds(origin["bonds"]),
-                        int(origin["frame"]),
-                    )
-                    for origin in item["origins"]
+        tracker._accepted_bonds = _restore_bonds(value["accepted_bonds"])
+        tracker._accepted = snapshots.get("accepted.traj")
+        tracker._accepted_frame = value["accepted_frame"]
+        tracker._last_bonds = _restore_bonds(value["last_bonds"])
+        tracker._last_frame = value["last_frame"]
+        for item in value["pending"]:
+            region = tuple(map(int, item["atom_ids"]))
+            bonds = _restore_bonds(item["bonds"])
+            origins = tuple(
+                _ReactantOrigin(
+                    tuple(map(int, origin["atom_ids"])),
+                    snapshots[origin["snapshot"]],
+                    _restore_bonds(origin["bonds"]),
+                    int(origin["frame"]),
                 )
-                reactant = _select_origin(origins, region, tracker._accepted_bonds, bonds)
-                tracker._pending.append(
-                    _PendingTopology(
-                        atom_ids=region,
-                        reactant=reactant.atoms,
-                        reactant_bonds=reactant.bonds,
-                        reactant_frame=reactant.frame,
-                        bonds=bonds,
-                        product=_read_tracker_atoms(root / item["product"]),
-                        product_frame=int(item["product_frame"]),
-                        count=int(item["count"]),
-                        origins=origins,
-                    )
+                for origin in item["origins"]
+            )
+            reactant = _select_origin(origins, region, tracker._accepted_bonds, bonds)
+            tracker._pending.append(
+                _PendingTopology(
+                    atom_ids=region,
+                    reactant=reactant.atoms,
+                    reactant_bonds=reactant.bonds,
+                    reactant_frame=reactant.frame,
+                    bonds=bonds,
+                    product=snapshots[item["product"]],
+                    product_frame=int(item["product_frame"]),
+                    count=int(item["count"]),
+                    origins=origins,
                 )
-        tracker._validate_checkpoint()
+            )
         return tracker
-
-    def _validate_checkpoint(self) -> None:
-        if (self._accepted_bonds is None) != (self._accepted is None):
-            raise ValueError("reaction-tracker checkpoint has an incomplete accepted state")
-        if (self._accepted is None) != (self._accepted_frame is None):
-            raise ValueError("reaction-tracker checkpoint has an invalid accepted frame")
-        seen: set[int] = set()
-        for pending in self._pending:
-            region = set(pending.atom_ids)
-            if seen.intersection(region) or not region or len(region) != len(pending.atom_ids):
-                raise ValueError("reaction-tracker checkpoint has invalid pending regions")
-            seen.update(region)
-            if pending.count < 0:
-                raise ValueError("reaction-tracker checkpoint has a negative stability count")
-            for atoms in (pending.reactant, pending.product):
-                symbols = dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
-                if symbols != self._symbols or not region <= symbols.keys():
-                    raise ValueError("reaction-tracker checkpoint has inconsistent atom identities")
-            if _bonds(pending.bonds, region) != pending.bonds:
-                raise ValueError("reaction-tracker checkpoint has invalid product bonds")
-            covered: set[int] = set()
-            for origin in pending.origins:
-                support = set(origin.atom_ids)
-                if not support or not support <= region or covered.intersection(support):
-                    raise ValueError("reaction-tracker checkpoint has invalid origin ownership")
-                covered.update(support)
-                symbols = dict(
-                    zip(atom_ids(origin.atoms), origin.atoms.get_chemical_symbols(), strict=True)
-                )
-                if symbols != self._symbols:
-                    raise ValueError(
-                        "reaction-tracker checkpoint has inconsistent origin identities"
-                    )
-                _bonds(origin.bonds, set(symbols))
-            if covered != region:
-                raise ValueError("reaction-tracker checkpoint has incomplete origin ownership")
 
 
 def _file_digest(path: Path) -> str:
@@ -608,14 +521,6 @@ def _restore_bonds(
         (first, second) if first < second else (second, first)
         for first, second in (tuple(map(int, bond)) for bond in values)
     )
-
-
-def _optional_frame(value: object) -> int | None:
-    if value is None:
-        return None
-    if type(value) is not int or value < 0:
-        raise ValueError("reaction-tracker checkpoint frame must be a non-negative integer")
-    return value
 
 
 __all__ = ["ReactionCandidate", "ReactionTracker", "reaction_key", "same_reaction"]
