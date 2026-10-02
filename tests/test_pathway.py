@@ -15,7 +15,7 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
-from reactionflow.pathway import FIRE, NEB, _classify_frequencies
+from reactionflow.pathway import FIRE, NEB, _check_connectivity, _classify_frequencies
 
 
 class DoubleWell(Calculator):
@@ -142,6 +142,9 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
     assert validation.imaginary_mode_indices == (0,)
     assert validation.frequencies_cm1[0] == pytest.approx(-521.3, abs=2)
     assert validation.primary_mode_index == 0
+    assert outcome.connectivity is not None
+    assert outcome.connectivity.status == "connects_endpoints"
+    assert set(outcome.connectivity.sides) == {"reactant", "product"}
     np.testing.assert_allclose(validation.primary_mode[0], 0, atol=1e-10)
     np.testing.assert_allclose(np.abs(validation.primary_mode[1]), [1, 0, 0], atol=1e-10)
     assert stages == ["relax_reactant", "relax_product", "neb"]
@@ -303,3 +306,111 @@ def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> Non
 def test_frequency_config_rejects_non_finite_controls(field, value) -> None:
     with pytest.raises(ValueError):
         PathwayConfig(**{field: value})
+
+
+class IndependentReactions(Calculator):
+    """Two distant double wells allow an unrelated spectator bond to break."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        q = self.atoms.positions[[1, 3], 0] - 1.1
+        forces = np.zeros((4, 3))
+        forces[[1, 3], 0] = -4 * q * (q * q - 0.25)
+        self.results = {"energy": float(np.sum((q * q - 0.25) ** 2)), "forces": forces}
+
+
+@pytest.mark.parametrize(
+    ("spectator_x", "expected_status", "expected_sides"),
+    [
+        (0.6, "connects_endpoints", ("reactant", "product")),
+        (1.11, "does_not_connect", ("other", "other")),
+    ],
+)
+def test_connectivity_checks_spectator_bonds(spectator_x, expected_status, expected_sides):
+    reactant = Atoms("H4", positions=[[0, 0, 0], [0.6, 0, 0], [0, 10, 0], [0.6, 10, 0]])
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1, 0] = 1.6
+    saddle = reactant.copy()
+    saddle.positions[1, 0] = 1.1
+    saddle.positions[3, 0] = spectator_x
+
+    check = _check_connectivity(
+        saddle,
+        ((1.0, 0.0, 0.0),),
+        (1,),
+        IndependentReactions(),
+        PathwayConfig(relax_fmax=1e-4),
+        None,
+        BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.2)}),
+        endpoints=(reactant, product),
+    )
+
+    assert check.status == expected_status
+    assert check.sides == expected_sides
+
+
+class SpectatorGap(Calculator):
+    """A spectator can descend to a stationary distance inside the hysteresis gap."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        x, y = self.atoms.positions[[1, 3], 0]
+        reaction = (x - 0.6) * (x - 1.6)
+        spectator = (y - 1.0) * (y - 1.6)
+        forces = np.zeros((4, 3))
+        forces[1, 0] = -2 * reaction * (2 * x - 2.2)
+        forces[3, 0] = -2 * spectator * (2 * y - 2.6)
+        self.results = {"energy": float(reaction**2 + spectator**2), "forces": forces}
+
+
+@pytest.mark.parametrize(
+    ("endpoint_y", "saddle_y", "expected_status", "expected_sides"),
+    [
+        (1.6, 1.61, "connects_endpoints", ("reactant", "product")),
+        (1.6, 1.01, "inconclusive", ("ambiguous", "ambiguous")),
+        (1.0, 1.01, "inconclusive", ()),
+    ],
+)
+def test_connectivity_rejects_spectator_hysteresis_gaps(
+    endpoint_y, saddle_y, expected_status, expected_sides
+):
+    reactant = Atoms("H4", positions=[[0, 0, 0], [0.6, 0, 0], [0, 10, 0], [endpoint_y, 10, 0]])
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1, 0] = 1.6
+    saddle = reactant.copy()
+    saddle.positions[1, 0] = 1.1
+    saddle.positions[3, 0] = saddle_y
+
+    check = _check_connectivity(
+        saddle,
+        ((1.0, 0.0, 0.0),),
+        (1,),
+        SpectatorGap(),
+        PathwayConfig(relax_fmax=1e-5),
+        None,
+        BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.2)}),
+        endpoints=(reactant, product),
+    )
+
+    assert check.status == expected_status
+    assert check.sides == expected_sides
+    if endpoint_y == 1.0:
+        assert "endpoint" in check.message and "hysteresis gap" in check.message
+
+
+def test_whole_cell_topology_uses_minimum_images_and_inclusive_formation_threshold():
+    from reactionflow.pathway import _whole_cell_topology
+
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0.8, 0, 0]], cell=[2, 10, 10], pbc=True)
+    atoms.set_array("atom_id", np.array([10, 20]))
+    detector_config = BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.6)})
+    # The image at 1.2 A is in the gap, but the minimum image is bonded at the boundary.
+    assert _whole_cell_topology(atoms, detector_config) == ({(10, 20)}, set())
+    atoms.positions[1, 0] = 0.9
+    assert _whole_cell_topology(atoms, detector_config) == (set(), {(10, 20)})

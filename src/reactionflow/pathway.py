@@ -90,7 +90,7 @@ class FrequencyValidation:
 class ConnectivityCheck:
     """Where the saddle relaxes when displaced both ways along its primary imaginary mode.
 
-    Each side is "reactant", "product", "other", "ambiguous" (a changed bond left inside the
+    Each side is "reactant", "product", "other", "ambiguous" (a pair left inside the
     hysteresis gap), "not_converged", or "no_step" (the displaced copy already met the force
     tolerance, so the mode is too soft to test at this displacement).
     """
@@ -223,19 +223,36 @@ def _prepare_endpoints(
     return reactant, product, tuple(sorted(active))
 
 
-def _bonded_pairs(atoms: Atoms, detector_config: BondDetectorConfig) -> set[tuple[int, int]]:
-    """Atom-ID pairs within their bond-formation distance anywhere in the cell."""
+def _whole_cell_topology(
+    atoms: Atoms, detector_config: BondDetectorConfig
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Return bonded and ambiguous atom-ID pairs using minimum-image thresholds."""
 
     ids = atom_ids(atoms)
     symbols = atoms.get_chemical_symbols()
     elements = set(symbols)
-    cutoff = max(detector_config.threshold_for(a, b)[0] for a in elements for b in elements)
+    cutoff = max(detector_config.threshold_for(a, b)[1] for a in elements for b in elements)
     first, second, distances = neighbor_list("ijd", atoms, cutoff)
-    return {
-        (min(ids[i], ids[j]), max(ids[i], ids[j]))
-        for i, j, distance in zip(first, second, distances, strict=True)
-        if i != j and distance <= detector_config.threshold_for(symbols[i], symbols[j])[0]
-    }
+    bonded: set[tuple[int, int]] = set()
+    ambiguous: set[tuple[int, int]] = set()
+    for i, j, distance in zip(first, second, distances, strict=True):
+        if i == j:
+            continue
+        pair = (min(ids[i], ids[j]), max(ids[i], ids[j]))
+        form, breaking = detector_config.threshold_for(symbols[i], symbols[j])
+        if distance <= form:
+            bonded.add(pair)
+        elif distance < breaking:
+            ambiguous.add(pair)
+    # Multiple periodic images can appear in the neighbor list. A bonded minimum image
+    # takes precedence over a farther image in the gap, just as it does in the detector.
+    return bonded, ambiguous - bonded
+
+
+def _bonded_pairs(atoms: Atoms, detector_config: BondDetectorConfig) -> set[tuple[int, int]]:
+    """Atom-ID pairs within their bond-formation distance anywhere in the cell."""
+
+    return _whole_cell_topology(atoms, detector_config)[0]
 
 
 def _bond_topology(
@@ -461,14 +478,23 @@ def _check_connectivity(
     calculator: Calculator,
     config: PathwayConfig,
     pressure_GPa: float | None,
-    candidate: ReactionCandidate,
     detector_config: BondDetectorConfig,
+    *,
+    endpoints: tuple[Atoms, Atoms],
 ) -> ConnectivityCheck:
     """Relax the saddle displaced both ways along its imaginary mode and classify each side."""
 
     sides: list[str] = []
     try:
-        states, (reactant, product) = _bond_topology(candidate, saddle, detector_config)
+        (reactant, reactant_gap), (product, product_gap) = (
+            _whole_cell_topology(endpoint, detector_config) for endpoint in endpoints
+        )
+        if reactant_gap or product_gap:
+            return ConnectivityCheck(
+                "inconclusive",
+                _CONNECTIVITY_DISPLACEMENT_A,
+                message="a relaxed endpoint contains atom pairs inside the hysteresis gap",
+            )
         for sign in (-1.0, 1.0):
             side = saddle.copy()
             side.positions[list(active_indices)] += (
@@ -481,15 +507,14 @@ def _check_connectivity(
             if steps == 0:
                 sides.append("no_step")
                 continue
-            reached = states(side)
+            # Every atom is free during descent; spectator changes and ambiguous pairs
+            # must not count as reaching either of the actual relaxed NEB endpoints.
+            bonds, gap = _whole_cell_topology(side, detector_config)
+            if gap:
+                sides.append("ambiguous")
+                continue
             sides.append(
-                "ambiguous"
-                if None in reached
-                else "reactant"
-                if reached == reactant
-                else "product"
-                if reached == product
-                else "other"
+                "reactant" if bonds == reactant else "product" if bonds == product else "other"
             )
     except Exception as exc:
         return ConnectivityCheck(
@@ -497,7 +522,7 @@ def _check_connectivity(
         )
     if sorted(sides) == ["product", "reactant"]:
         status = "connects_endpoints"
-    elif {"not_converged", "no_step"} & set(sides):
+    elif {"not_converged", "no_step", "ambiguous"} & set(sides):
         status = "inconclusive"
     else:
         status = "does_not_connect"
@@ -657,8 +682,8 @@ def _refine_pathway(
                         calculator,
                         options,
                         pressure_GPa,
-                        candidate,
                         detector_config,
+                        endpoints=(images[0], images[-1]),
                     )
                 return PathwayOutcome(
                     "ci_neb_converged",

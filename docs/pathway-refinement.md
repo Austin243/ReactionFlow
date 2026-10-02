@@ -90,13 +90,18 @@ the cell filter at the target pressure for NPT. Each relaxed side is classified 
 bond thresholds:
 
 - `reactant`, `product`, or `other`;
-- `ambiguous` when a changed bond stays inside the hysteresis gap;
+- `ambiguous` when any atom pair stays inside its hysteresis gap;
 - `not_converged` when the relaxation does not converge; and
 - `no_step` when the displaced copy already meets the force tolerance, so the mode is too soft to
   test at this displacement.
 
+A side is labeled `reactant` or `product` only when its whole-cell bond topology matches the
+corresponding relaxed NEB endpoint. A bond change elsewhere in the cell makes that side `other`.
+A relaxed endpoint with any pair in the hysteresis gap makes the check `inconclusive` before
+launching the descents. Matching unambiguous bond topology does not establish identical conformations.
+
 `connectivity.status` is `connects_endpoints` when one side reaches the reactant and the other the
-product. It is `inconclusive` when either side is `not_converged` or `no_step`,
+product. It is `inconclusive` when either side is `ambiguous`, `not_converged`, or `no_step`,
 `does_not_connect` otherwise, and `failed` if the check raises. The check runs inside the NEB
 calculator lease and is recorded in `result.json`. It never changes the top-level
 `ci_neb_converged` status, and it is null when no significant imaginary mode was found. A saddle
