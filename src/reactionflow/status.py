@@ -52,7 +52,7 @@ def _describe(candidate: ReactionCandidate) -> str:
 
 
 def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
-    """Fill one trajectory's status row and return its classes as (candidate, key, events, result).
+    """Fill one trajectory's status row and return its classes as (candidate, key, events, results).
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
     step from state.json in place.
@@ -73,14 +73,14 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     pathways: Counter[str] = Counter()
     for occurrences in members.values():
         _, candidate = _read_bundle(root / occurrences[0]["bundle"])
-        result = None
-        representative = next((item for item in occurrences if item["representative"]), None)
-        if representative is not None:
-            path = root / "pathways" / representative["occurrence_id"] / "result.json"
+        results = []
+        for occurrence in occurrences:
+            path = root / "pathways" / occurrence["occurrence_id"] / "result.json"
             if path.is_file():
                 result = _read_json(path)
+                results.append(result)
                 pathways[result["status"]] += 1
-        classes.append((candidate, reaction_key(candidate), len(occurrences), result))
+        classes.append((candidate, reaction_key(candidate), len(occurrences), results))
     row.update(events=len(records), pathways=dict(pathways))
     return classes
 
@@ -113,7 +113,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
         except Exception as error:  # a damaged trajectory must not hide the rest
             row["error"] = f"unreadable: {type(error).__name__}: {error}"
             continue
-        for candidate, key, events, result in classes:
+        for candidate, key, events, results in classes:
             bucket = buckets.setdefault((model, spec.pressure_GPa, key), [])
             entry = next(
                 (item for item in bucket if same_reaction(candidate, item["_candidate"])), None
@@ -138,7 +138,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
             if spec.id not in entry["trajectories"]:
                 entry["trajectories"].append(spec.id)
             entry["events"] += events
-            if result is not None:
+            for result in results:
                 entry["pathways"][result["status"]] += 1
                 validation = result.get("frequency_validation")
                 if validation:

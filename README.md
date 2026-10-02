@@ -101,7 +101,10 @@ Failures to persist an outcome or otherwise maintain durable run state are diffe
 marks the trajectory itself as failed and stops instead of continuing from uncertain state. An
 environment that refuses the exact checkpoint, such as a changed installation, is not such a
 failure: the job exits with that error, and resubmitting in the original environment resumes the
-trajectory. Scientific refinement failures are not retried automatically.
+trajectory. Published outcomes are never overwritten or rerun. After an unsuccessful refinement,
+a fresh resolved occurrence of the same reaction class can launch another attempt. Only one
+attempt per class is queued at a time. A `ci_neb_converged` outcome stops further attempts for that
+class, regardless of its separate frequency and connectivity diagnostics.
 
 Each detected occurrence and its pathway result share an `occurrence-id`:
 

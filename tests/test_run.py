@@ -17,12 +17,15 @@ from reactionflow import (
     ComponentState,
     ExactRestartSnapshot,
     PathwayConfig,
+    PathwayOutcome,
     ReactionRun,
     ReactionRunConfig,
     assign_atom_ids,
 )
 from reactionflow.pathway import Vibrations
+from reactionflow.run import refine_pathway
 from reactionflow.segments import ResumeToken
+from reactionflow.status import _trajectory
 
 
 class PairDoubleWell(Calculator):
@@ -252,6 +255,108 @@ def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(
     assert leases.stages == ["md", "relax_reactant", "relax_product", "neb"]
     assert leases.live == 0 and leases.max_live == 1
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "failure_status",
+    ["unresolved", "collapsed", "relaxation_failed", "neb_failed", "ci_neb_failed", "failed"],
+)
+def test_fresh_occurrence_retries_failed_class_until_converged(
+    tmp_path, monkeypatch, failure_status
+) -> None:
+    attempts = []
+
+    def fail_first(candidate, **kwargs):
+        attempts.append(candidate)
+        if len(attempts) == 1:
+            return PathwayOutcome(status=failure_status, images=(candidate.reactant,))
+        return refine_pathway(candidate, **kwargs)
+
+    def fail_frequencies(_vibrations):
+        raise RuntimeError("diagnostics remain separate from pathway convergence")
+
+    monkeypatch.setattr("reactionflow.run.refine_pathway", fail_first)
+    monkeypatch.setattr(Vibrations, "run", fail_frequencies)
+    leases = LeaseCounter()
+    run = ReactionRun.create(tmp_path, config=run_config(observation_interval=1))
+    atoms = run.start(pair(0.65)).atoms.copy()
+    atoms.positions[1, 0] = 1.55
+    (first,) = run.observe(atoms, global_step=1, global_frame=1)
+    run.checkpoint(atoms)
+    assert run.refine_pending(leases)[0].status == failure_status
+    first_result = tmp_path / "pathways" / first.occurrence_id / "result.json"
+    original_result = first_result.read_bytes()
+    run.resume_segment()
+
+    run = ReactionRun.open(tmp_path)
+    atoms = run.current_segment.atoms.copy()
+    atoms.positions[1, 0] = 0.65
+    (retry,) = run.observe(atoms, global_step=2, global_frame=2)
+    assert not retry.is_representative and retry.class_id == first.class_id
+    assert run.pending_pathway_ids == (retry.occurrence_id,)
+    candidate = run.occurrences.load(retry.occurrence_id)
+    # Replaying the same registration and observing an equivalent candidate while pending
+    # must not schedule the occurrence twice or queue another attempt for this class.
+    run._register((candidate,), label="00000002")
+    run._register((candidate,), label="equivalent-pending")
+    assert run.pending_pathway_ids == (retry.occurrence_id,)
+    run.checkpoint(atoms)
+
+    def interrupt_state_write():
+        raise KeyboardInterrupt("after immutable outcome publication")
+
+    monkeypatch.setattr(run, "_write_state", interrupt_state_write)
+    with pytest.raises(KeyboardInterrupt, match="outcome publication"):
+        run.refine_pending(leases)
+    run = ReactionRun.open(tmp_path)
+    (outcome,) = run.refine_pending(leases)
+    assert outcome.converged and outcome.frequency_validation.status == "failed"
+    assert len(attempts) == 2  # Reopen reused the published outcome.
+    assert first_result.read_bytes() == original_result
+    assert run.refine_pending(leases) == ()
+
+    atoms = run.resume_segment().atoms.copy()
+    atoms.positions[1, 0] = 1.55
+    run.observe(atoms, global_step=3, global_frame=3)
+    assert run.pending_pathway_ids == ()
+    assert run.complete().pathways == 2
+    row = {}
+    (reaction,) = _trajectory(tmp_path, row)
+    assert row["pathways"] == {failure_status: 1, "ci_neb_converged": 1}
+    assert reaction[2] == 4
+    assert [result["status"] for result in reaction[3]] == [failure_status, "ci_neb_converged"]
+
+
+def test_reopen_recovers_retry_registered_after_durable_boundary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reactionflow.run.refine_pathway",
+        lambda candidate, **kwargs: PathwayOutcome(
+            status="neb_failed", images=(candidate.reactant,)
+        ),
+    )
+    run = ReactionRun.create(tmp_path, config=run_config(observation_interval=1))
+    atoms = run.start(pair(0.65)).atoms.copy()
+    atoms.positions[1, 0] = 1.55
+    (first,) = run.observe(atoms, global_step=1, global_frame=1)
+    run._register((run.occurrences.load(first.occurrence_id),), label="equivalent-pending")
+    run.checkpoint(atoms)
+    run.refine_pending(LeaseCounter())
+    run.resume_segment()
+    run = ReactionRun.open(tmp_path)
+    assert run.pending_pathway_ids == ()  # The old in-flight duplicate stays skipped.
+
+    atoms = run.current_segment.atoms.copy()
+    atoms.positions[1, 0] = 0.65
+    (retry,) = run._observe(atoms, global_step=2, global_frame=2, persist=False)
+    assert not retry.is_representative
+    run = ReactionRun.open(tmp_path)  # Registration survived; pending state did not.
+    assert run.pending_pathway_ids == (retry.occurrence_id,)
+    run.observe(atoms, global_step=2, global_frame=2)
+    assert run.pending_pathway_ids == (retry.occurrence_id,)
+    run.checkpoint(atoms)
+    run.refine_pending(LeaseCounter())
+    run.resume_segment()
+    assert ReactionRun.open(tmp_path).pending_pathway_ids == ()
 
 
 class ScriptedExactRuntime:

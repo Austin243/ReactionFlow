@@ -269,13 +269,12 @@ class ReactionRun:
             # Interrupted before the first MD step; start again from the initial structure.
             run._phase = "new"
         if run._phase == "running":
-            # A representative registered by an attempt that stopped before recording it as
-            # pending is refined at the next observation boundary.
-            run._pending.extend(
-                record.occurrence_id
-                for record in run.occurrences.records()
-                if record.is_representative and not (run.pathways / record.occurrence_id).is_dir()
-            )
+            # Recover registrations newer than the durable observation boundary, including
+            # retries. Older duplicates skipped while an attempt was pending stay skipped.
+            for record in run.occurrences.records():
+                candidate = run.occurrences.load(record.occurrence_id)
+                if record.is_representative or candidate.observed_frame > run._global_frame:
+                    run._queue_pathway(record, candidate)
         if run._phase == "running" and run._active_checkpoint is not None:
             run._load_runtime_checkpoint()
         elif run._phase == "running" and run._generation > 0:
@@ -495,6 +494,21 @@ class ReactionRun:
             self._record_failure("start", error)
             raise
 
+    def _queue_pathway(self, record: OccurrenceRecord, candidate: ReactionCandidate) -> None:
+        if not candidate.resolved or (self.pathways / record.occurrence_id).is_dir():
+            return
+        for previous in self.occurrences.records():
+            if previous.class_id != record.class_id:
+                continue
+            if previous.occurrence_id in self._pending:
+                return
+            result_path = self.pathways / previous.occurrence_id / "result.json"
+            if result_path.is_file():
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                if result["status"] == "ci_neb_converged":
+                    return
+        self._pending.append(record.occurrence_id)
+
     def _register(
         self,
         candidates: tuple[ReactionCandidate, ...],
@@ -510,8 +524,8 @@ class ReactionRun:
                 detector_config=self.config.detector,
             )
             records.append(record)
-            if inserted and record.is_representative:
-                self._pending.append(record.occurrence_id)
+            if inserted:
+                self._queue_pathway(record, candidate)
         return tuple(records)
 
     def observe(
@@ -690,7 +704,7 @@ class ReactionRun:
         *,
         pressure_GPa: float | None = None,
     ) -> tuple[PathwayOutcome, ...]:
-        """Refine each queued representative serially and publish its result."""
+        """Refine each queued occurrence serially and publish its immutable result."""
 
         self._require("refining", "resume_ready")
         if self._phase == "resume_ready":

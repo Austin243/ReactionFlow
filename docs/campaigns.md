@@ -183,6 +183,8 @@ converged pathways out of those refined, and the latest error. That error is the
 failure for a `failed` trajectory, and otherwise the contents of `last-error.json`. Trajectories
 without output are listed as `not started`. A trajectory whose files cannot be read is reported
 with that error while the rest of the report still prints.
+Pathway counts include every published attempt, including unsuccessful earlier occurrences when a
+later occurrence of the same class succeeds.
 
 The second table merges reaction classes across trajectories that share a model profile and
 pressure, because only those barriers are comparable. Classes merge by the same exact topology

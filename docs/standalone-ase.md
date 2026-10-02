@@ -47,9 +47,13 @@ summary = run.run_ase(
 ```
 
 Dynamics run in chunks ending at observation boundaries. Every candidate from a boundary is
-registered. A newly resolved representative stops the current segment, publishes a structural
-checkpoint, and releases the MD calculator before representatives are refined sequentially.
-Equivalent later occurrences remain in the registry but do not launch another pathway.
+registered. A resolved occurrence stops the current segment, publishes a structural checkpoint,
+and releases the MD calculator when its reaction class has neither a queued attempt nor a
+`ci_neb_converged` result. Queued occurrences are refined sequentially. After an unsuccessful
+attempt, a fresh equivalent occurrence can launch another pathway; each published outcome remains
+immutable. Frequency and connectivity diagnostics remain separate from convergence and do not
+trigger retries. Equivalent occurrences observed while an attempt is queued remain in the registry
+but are not retried later.
 
 Each calculator provider is a context manager receiving `md`, `relax_reactant`, `relax_product`,
 or `neb`. The synchronous executor never overlaps leases. This supports serial one-GPU use, but
@@ -77,7 +81,7 @@ run.refine_pending(pathway_calculators)
 segment = run.resume_segment()
 ```
 
-`state.json` atomically records the phase, generation, global counters, pending representative
+`state.json` atomically records the phase, generation, global counters, pending pathway
 occurrence IDs, detector continuity state, configuration, and orchestration failures. Candidate
 bundles, checkpoint bundles, and pathway directories are separately atomic. Each pathway directory
 contains versioned `result.json` and calculator-free `images.traj`. If interruption occurs while a
