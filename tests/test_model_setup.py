@@ -159,7 +159,7 @@ def test_external_setup_is_skipped_and_download_is_explicitly_unsupported(
             "message": "This adapter manages its own dependencies and model files.",
         }
     ]
-    with pytest.raises(ValueError, match=r"built-in MACE and UMA.*manages its own setup"):
+    with pytest.raises(ValueError, match=r"built-in model adapters.*manages its own setup"):
         cli.run_selected_trajectory(campaign, index=0, download=True)
     assert not campaign.output_root.exists()
 
@@ -354,3 +354,215 @@ def test_read_only_commands_do_not_prepare_models(tmp_path, monkeypatch, command
 
     assert cli.main([command, str(campaign.source)]) == 0
     assert not campaign.output_root.exists()
+
+
+def test_new_run_preflight_failure_leaves_no_trajectory_contract(tmp_path, monkeypatch):
+    campaign = _campaign(tmp_path, {"mace": {"factory": MACE}}, ["mace"])
+
+    def preflight(atoms):
+        assert atoms.get_chemical_symbols() == ["He"]
+        raise ValueError("unsupported model inputs")
+
+    adapter = SimpleNamespace(calculator=object(), preflight=preflight)
+    monkeypatch.setattr(cli, "load_mlip_adapter", lambda *args: adapter)
+    with pytest.raises(ValueError, match="unsupported model inputs"):
+        cli.run_selected_trajectory(campaign, index=0)
+    assert not campaign.output_root.exists()
+
+
+def test_models_command_needs_neither_campaign_nor_optional_packages(capsys):
+    assert cli.main(["models", "--backend", "chgnet"]) == 0
+    result = json.loads(capsys.readouterr().out)["backends"]
+    assert len(result) == 1 and result[0]["backend"] == "chgnet"
+    assert {model["name"] for model in result[0]["models"]} == {"0.3.0", "r2scan"}
+
+
+def test_models_rejects_unknown_backend(capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["models", "--backend", "typo"])
+    assert error.value.code == 2
+    assert "unknown backend" in capsys.readouterr().err
+
+
+def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+    optional = {
+        "torch",
+        "mace",
+        "fairchem",
+        "aimnet",
+        "orb_models",
+        "mattersim",
+        "chgnet",
+        "sevenn",
+        "calorine",
+        "_nepy",
+    }
+
+    def guarded_import(name, *args, **kwargs):
+        if name.split(".")[0] in optional:
+            pytest.fail(f"catalog imported optional library {name}")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    assert cli.main(["models"]) == 0
+    backends = json.loads(capsys.readouterr().out)["backends"]
+    assert {item["backend"] for item in backends} == {
+        "mace",
+        "mace_field",
+        "uma",
+        "aimnet2",
+        "orb",
+        "mattersim",
+        "chgnet",
+        "sevennet",
+        "nep",
+    }
+
+
+@pytest.mark.parametrize("backend", ["mattersim", "sevennet"])
+def test_install_rejects_incompatible_e3nn_before_pip(tmp_path, monkeypatch, backend):
+    campaign = _campaign(
+        tmp_path,
+        {
+            "mace": {"factory": MACE},
+            "other": {"factory": f"reactionflow.adapters.{backend}:create_adapter"},
+        },
+        ["mace", "other"],
+    )
+    monkeypatch.setattr(
+        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
+    )
+    with pytest.raises(ValueError, match="e3nn"):
+        model_setup.install_and_prepare(campaign)
+
+
+@pytest.mark.parametrize(
+    ("backend", "package", "pinned"),
+    [("uma", "fairchem-core", "2.23.0"), ("mattersim", "mattersim", "1.2.5")],
+)
+@pytest.mark.parametrize("selection", ["both", "orb", "other"])
+def test_installer_preserves_incompatible_neighbor_runtime(
+    tmp_path, monkeypatch, backend, package, pinned, selection
+):
+    profiles = {
+        "orb": {"factory": "reactionflow.adapters.orb:create_adapter"},
+        "other": {"factory": f"reactionflow.adapters.{backend}:create_adapter"},
+    }
+    campaign = _campaign(
+        tmp_path, profiles, ["orb", "other"] if selection == "both" else [selection]
+    )
+
+    def version(name):
+        if selection == "orb" and name == package:
+            return pinned
+        if selection == "other" and name == "orb-models":
+            return "0.7.0"
+        raise model_setup.PackageNotFoundError
+
+    monkeypatch.setattr(model_setup, "version", version)
+    monkeypatch.setattr(
+        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
+    )
+    with pytest.raises(ValueError, match="Python environment"):
+        model_setup.install_and_prepare(campaign)
+
+
+def test_polar_installs_compatible_electrostatics_only_when_selected(tmp_path, monkeypatch):
+    campaign = _campaign(
+        tmp_path,
+        {"polar": {"factory": MACE, "options": {"family": "polar", "model": "polar-1-s"}}},
+        ["polar"],
+    )
+    commands = []
+    monkeypatch.setattr(
+        model_setup.subprocess,
+        "run",
+        lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0),
+    )
+    assert model_setup.install_and_prepare(campaign) == 0
+    assert commands[0] == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "mace-torch==0.3.16",
+        "graph_longrange @ git+https://github.com/WillBaldwin0/graph_electrostatics.git@0e21d5546c482d08388a08eb4d948e833227ce47",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("backend", "packages"),
+    [("sevennet", ["sevenn==0.13.0", "torch>=2.8,<3"]), ("nep", ["calorine==4.0"])],
+)
+def test_selected_setup_includes_backend_runtime_dependencies(
+    tmp_path, monkeypatch, backend, packages
+):
+    campaign = _campaign(
+        tmp_path,
+        {"chosen": {"factory": f"reactionflow.adapters.{backend}:create_adapter"}},
+        ["chosen"],
+    )
+    commands = []
+    monkeypatch.setattr(
+        model_setup.subprocess,
+        "run",
+        lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0),
+    )
+    assert model_setup.install_and_prepare(campaign) == 0
+    assert commands[0] == [sys.executable, "-m", "pip", "install", *packages]
+    assert commands[1] == [
+        sys.executable,
+        "-m",
+        "reactionflow.cli",
+        "prepare",
+        str(campaign.source),
+    ]
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        MACE,
+        UMA,
+        "reactionflow.adapters.mattersim:create_adapter",
+        "reactionflow.adapters.sevennet:create_adapter",
+    ],
+)
+def test_field_requires_compatible_environment_before_install(tmp_path, monkeypatch, other):
+    field = "reactionflow.adapters.mace_field:create_adapter"
+    campaign = _campaign(
+        tmp_path, {"field": {"factory": field}, "other": {"factory": other}}, ["field", "other"]
+    )
+    monkeypatch.setattr(
+        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
+    )
+    with pytest.raises(ValueError, match="separate"):
+        model_setup.install_and_prepare(campaign)
+
+
+@pytest.mark.parametrize("select_field", [False, True])
+def test_installer_cannot_overwrite_other_mace_distribution(tmp_path, monkeypatch, select_field):
+    field = "reactionflow.adapters.mace_field:create_adapter"
+    factory = field if select_field else MACE
+    campaign = _campaign(tmp_path, {"chosen": {"factory": factory}}, ["chosen"])
+
+    def installed(name):
+        if name == "mace-torch":
+            return "0.3.16" if select_field else "0.3.15"
+        raise model_setup.PackageNotFoundError
+
+    info = {} if select_field else {"vcs_info": {"commit_id": model_setup._FIELD_COMMIT}}
+    monkeypatch.setattr(model_setup, "version", installed)
+    monkeypatch.setattr(
+        model_setup,
+        "distribution",
+        lambda name: SimpleNamespace(read_text=lambda path: json.dumps(info)),
+    )
+    monkeypatch.setattr(
+        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
+    )
+    with pytest.raises(ValueError, match="fresh Python environment"):
+        model_setup.install_and_prepare(campaign)

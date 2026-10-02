@@ -37,6 +37,42 @@ _INFERENCE_SETTINGS = {
     "activation_checkpointing": False,
     "auto_add_default_untrained_tasks": True,
 }
+_TASKS = {
+    "omol": "OMol25, wB97M-V; molecules with explicit total charge and spin multiplicity",
+    "omat": "OMat24, PBE/PBE+U; inorganic materials",
+    "omc": "OMC25, PBE+D3; molecular crystals",
+    "odac": "ODAC23, PBE+D3; CO2/H2O adsorption in metal-organic frameworks",
+    "oc20": "OC20, RPBE; heterogeneous catalysis",
+    "oc22": "OC22, PBE+U; oxide catalysis (UMA 1.2 and 1.2.1)",
+    "oc25": "OC25, RPBE+D3; electrolyte/inorganic interfaces (UMA 1.2 and 1.2.1)",
+}
+_MODEL_TASKS = {
+    name: tuple(task for task in _TASKS if "1p2" in name or task not in {"oc22", "oc25"})
+    for name in ("uma-s-1p2p1", "uma-s-1p2", "uma-s-1p1", "uma-m-1p1")
+}
+
+
+def catalog() -> dict[str, Any]:
+    """Describe the pinned UMA models and tasks without optional imports or downloads."""
+
+    return {
+        "backend": "uma",
+        "factory": "reactionflow.adapters.uma:create_adapter",
+        "package": f"fairchem-core=={_VERSION}",
+        "models": [{"name": name, "tasks": list(tasks)} for name, tasks in _MODEL_TASKS.items()],
+        "tasks": dict(_TASKS),
+        "notes": [
+            "Every model requires an explicit task; the loaded checkpoint validates availability.",
+            "OC22 and OC25 require UMA 1.2 or 1.2.1. Other listed tasks also exist in UMA 1.1.",
+            "OMol requires integer atoms.info charge and positive integer spin multiplicity.",
+            "Stress availability does not establish training or suitability for NPT in every task.",
+            "Named checkpoints require access to the gated facebook/UMA Hugging Face repository.",
+        ],
+        "sources": [
+            "https://facebookresearch.github.io/fairchem/uma/",
+            "https://huggingface.co/facebook/UMA",
+        ],
+    }
 
 
 def _absolute_path(value: object, name: str) -> Path:
@@ -61,6 +97,14 @@ def _validate_options(options: Mapping[str, Any]) -> None:
     if "model" in options:
         if not isinstance(options["model"], str) or not options["model"]:
             raise ValueError("UMA model must name an official UMA checkpoint")
+        if task not in _TASKS:
+            raise ValueError(f"unknown named UMA task {task!r}; choose from {list(_TASKS)}")
+        supported = _MODEL_TASKS.get(options["model"])
+        if supported is not None and task not in supported:
+            raise ValueError(
+                f"UMA model {options['model']!r} was not trained for task {task!r}; "
+                f"choose from {list(supported)} or use a UMA 1.2 model"
+            )
         if {"atom_refs", "form_elem_refs"} & options.keys():
             raise ValueError("UMA local reference paths are only valid with checkpoint")
         if "revision" in options and (
@@ -223,4 +267,4 @@ def create_adapter(*, trajectory: TrajectorySpec, options: Mapping[str, Any]) ->
     return UMAAdapter(trajectory=trajectory, options=options)
 
 
-__all__ = ["UMAAdapter", "create_adapter", "prepare"]
+__all__ = ["UMAAdapter", "catalog", "create_adapter", "prepare"]

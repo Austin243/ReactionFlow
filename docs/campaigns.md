@@ -100,21 +100,24 @@ reactionflow plan campaign.json --gpus-per-node 4
 
 ## MLIP adapter
 
-### Built-in MACE, UMA, and ANI-1xnr
+### Built-in models
 
-MACE and UMA have built-in factories and explicit setup/download commands:
+MACE, MACE-FIELD, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, and NEP89 have built-in factories
+and explicit setup/download commands:
 
 ```bash
+reactionflow models
 reactionflow prepare campaign.json --install
 reactionflow run campaign.json --index 0
 ```
 
 `--install` optionally installs the selected backend in the current Python environment. Omit it
 when dependencies are already installed. Preparation supports `--index` and does not create any
-trajectory state. Normal MACE/UMA runs use only prepared local weights; `run --download` explicitly
+trajectory state. Normal runs use only prepared local weights; `run --download` explicitly
 allows preparation before the selected run. See [models and preparation](models.md) for profile
 examples, environment compatibility, UMA authentication, and exact-restart constraints. The pinned
-MACE/UMA dependency stacks need separate environments/campaigns; named profiles can mix models
+MACE/UMA dependency stacks need separate environments/campaigns, as does the MACE-FIELD fork;
+named profiles can mix models
 only when all their dependencies are compatible.
 
 ANI-1xnr retains its existing Perlmutter setup. `prepare` reports ANI and generic/custom adapters

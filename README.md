@@ -135,15 +135,20 @@ describing any failure, and the ReactionFlow version that produced it.
 
 ## Use another ASE-compatible MLIP
 
-ReactionFlow has built-in MACE and UMA adapters with optional model preparation:
+ReactionFlow can prepare MACE (including MH-1 heads and POLAR sizes), MACE-FIELD, UMA tasks,
+AIMNet2/RXN, OrbMol-v2, ORB-v3, MatterSim, CHGNet, SevenNet, and NEP89:
 
 ```bash
+reactionflow models
+reactionflow models --backend mace
 reactionflow prepare campaign.json --install
 reactionflow run campaign.json --index 0
 ```
 
 Configure the selected adapter first and use its own compatible Python environment. Preparation
-downloads weights before the run; normal MACE/UMA runs use local files. See the
+downloads weights before the run; normal runs use local files. MACE-POLAR supports NPT in float64
+using numerical stress from its full energy, with twelve extra energy evaluations per fresh stress.
+NEP89 uses a CPU backend and requires fully periodic structures. See the
 [model guide](docs/models.md) for profiles, optional package installation, local checkpoints,
 authentication, and restart constraints. The bundled Perlmutter example and setup scripts remain
 ANI-1xnr-specific.

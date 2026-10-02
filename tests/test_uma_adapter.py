@@ -192,7 +192,7 @@ class FakeCalculator(Calculator):
 
     def __init__(self, predictor, *, task_name):
         super().__init__()
-        if task_name not in {"omol", "omat"}:
+        if task_name not in predictor.dataset_to_tasks:
             raise ValueError("Invalid task_name")
         self.predictor = predictor
         self.task_name = task_name
@@ -218,7 +218,13 @@ def backend(monkeypatch, package):
 
     def load(path, **kwargs):
         loaded.append((path, kwargs))
-        return SimpleNamespace(**kwargs)
+        return SimpleNamespace(
+            **kwargs,
+            dataset_to_tasks={
+                task: []
+                for task in ("omol", "omat", "omc", "odac", "oc20", "oc22", "oc25", "custom")
+            },
+        )
 
     modules = {
         name: ModuleType(name)
@@ -333,3 +339,76 @@ def test_fake_uma_restart_matches_continuation_and_reference_change_is_rejected(
     changed = uma.create_adapter(trajectory=_trajectory(), options=options)
     with pytest.raises(ValueError, match="environment differs"), changed.restore(checkpoint):
         pass
+
+
+@pytest.mark.parametrize("task", ["omol", "omat", "omc", "odac", "oc20", "oc22", "oc25"])
+def test_all_uma_tasks_are_passed_as_strings_to_checkpoint_validation(tmp_path, backend, task):
+    adapter = uma.create_adapter(
+        trajectory=_trajectory(), options={**_local_options(tmp_path), "task": task}
+    )
+    with adapter.calculator("neb") as calculator:
+        assert calculator.task_name == task
+        assert np.isfinite(calculator.get_potential_energy(_atoms()))
+    assert adapter._contract.metadata["options"]["task"] == task
+
+
+def test_catalog_lists_seven_tasks_and_model_availability_without_backend_imports(monkeypatch):
+    def forbidden(*args):
+        pytest.fail("catalog must not inspect an optional package or download weights")
+
+    monkeypatch.setattr(uma, "require_package", forbidden)
+    monkeypatch.setattr(uma, "_registry", forbidden)
+    listing = json.loads(json.dumps(uma.catalog()))
+    all_tasks = {"omol", "omat", "omc", "odac", "oc20", "oc22", "oc25"}
+    assert set(listing["tasks"]) == all_tasks
+    models = {model["name"]: set(model["tasks"]) for model in listing["models"]}
+    assert models["uma-s-1p2p1"] == models["uma-s-1p2"] == all_tasks
+    assert models["uma-s-1p1"] == models["uma-m-1p1"] == all_tasks - {"oc22", "oc25"}
+
+
+@pytest.mark.parametrize("model", ["uma-s-1p1", "uma-m-1p1"])
+@pytest.mark.parametrize("task", ["oc22", "oc25"])
+def test_older_named_models_reject_untrained_tasks_before_setup(monkeypatch, model, task):
+    def forbidden(*args):
+        pytest.fail("invalid model/task must fail before package checks or downloads")
+
+    monkeypatch.setattr(uma, "require_package", forbidden)
+    with pytest.raises(ValueError, match="was not trained"):
+        uma.prepare({"model": model, "task": task})
+
+
+def test_named_task_typo_fails_early_but_custom_checkpoint_tasks_are_allowed(
+    tmp_path, backend, monkeypatch
+):
+    def forbidden(*args):
+        pytest.fail("invalid named task must fail before package checks or downloads")
+
+    with monkeypatch.context() as context:
+        context.setattr(uma, "require_package", forbidden)
+        with pytest.raises(ValueError, match="unknown named UMA task"):
+            uma.prepare({"model": "uma-s-1p2p1", "task": "omoll"})
+    adapter = uma.create_adapter(
+        trajectory=_trajectory(), options={**_local_options(tmp_path), "task": "custom"}
+    )
+    with adapter.calculator("neb") as calculator:
+        assert calculator.task_name == "custom"
+
+
+@pytest.mark.parametrize(
+    ("model", "task"),
+    [
+        ("uma-s-1p2p1", "oc22"),
+        ("uma-s-1p2p1", "oc25"),
+        ("uma-s-1p2", "oc22"),
+        ("uma-s-1p2", "oc25"),
+        ("uma-s-1p1", "omat"),
+        ("uma-m-1p1", "omol"),
+    ],
+)
+def test_named_model_task_matrix_prepares_one_revision(tmp_path, package, hub, model, task):
+    registry = json.loads(package.read_text())
+    registry[model] = registry["uma-new-registry-entry"]
+    package.write_text(json.dumps(registry))
+    files = uma.prepare(_named_options(tmp_path, model=model, task=task))
+    assert set(files) == {"checkpoint", "atom_refs", "form_elem_refs"}
+    assert [call["revision"] for call in hub.calls] == [None, "a" * 40, "a" * 40]
