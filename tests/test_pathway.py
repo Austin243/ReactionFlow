@@ -15,7 +15,7 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
-from reactionflow.pathway import FIRE, NEB, _classify_frequencies
+from reactionflow.pathway import FIRE, NEB, _check_connectivity, _classify_frequencies
 
 
 class DoubleWell(Calculator):
@@ -142,6 +142,9 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
     assert validation.imaginary_mode_indices == (0,)
     assert validation.frequencies_cm1[0] == pytest.approx(-521.3, abs=2)
     assert validation.primary_mode_index == 0
+    assert outcome.connectivity is not None
+    assert outcome.connectivity.status == "connects_endpoints"
+    assert set(outcome.connectivity.sides) == {"reactant", "product"}
     np.testing.assert_allclose(validation.primary_mode[0], 0, atol=1e-10)
     np.testing.assert_allclose(np.abs(validation.primary_mode[1]), [1, 0, 0], atol=1e-10)
     assert stages == ["relax_reactant", "relax_product", "neb"]
@@ -303,3 +306,59 @@ def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> Non
 def test_frequency_config_rejects_non_finite_controls(field, value) -> None:
     with pytest.raises(ValueError):
         PathwayConfig(**{field: value})
+
+
+class IndependentReactions(Calculator):
+    """Two distant double wells allow an unrelated spectator bond to break."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        q = self.atoms.positions[[1, 3], 0] - 1.1
+        forces = np.zeros((4, 3))
+        forces[[1, 3], 0] = -4 * q * (q * q - 0.25)
+        self.results = {"energy": float(np.sum((q * q - 0.25) ** 2)), "forces": forces}
+
+
+@pytest.mark.parametrize(
+    ("spectator_x", "expected_status", "expected_sides"),
+    [
+        (0.6, "connects_endpoints", ("reactant", "product")),
+        (1.11, "does_not_connect", ("other", "other")),
+    ],
+)
+def test_connectivity_checks_spectator_bonds(spectator_x, expected_status, expected_sides):
+    reactant = Atoms("H4", positions=[[0, 0, 0], [0.6, 0, 0], [0, 10, 0], [0.6, 10, 0]])
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1, 0] = 1.6
+    candidate = ReactionCandidate(
+        reactant=reactant,
+        product=product,
+        atom_ids=(0, 1),
+        reactant_bonds=frozenset({(0, 1)}),
+        product_bonds=frozenset(),
+        reactant_frame=0,
+        product_frame=1,
+        observed_frame=2,
+        resolved=True,
+    )
+    saddle = reactant.copy()
+    saddle.positions[1, 0] = 1.1
+    saddle.positions[3, 0] = spectator_x
+
+    check = _check_connectivity(
+        saddle,
+        ((1.0, 0.0, 0.0),),
+        (1,),
+        IndependentReactions(),
+        PathwayConfig(relax_fmax=1e-4),
+        None,
+        candidate,
+        BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.2)}),
+        endpoints=(reactant, product),
+    )
+
+    assert check.status == expected_status
+    assert check.sides == expected_sides

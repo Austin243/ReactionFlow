@@ -95,6 +95,10 @@ bond thresholds:
 - `no_step` when the displaced copy already meets the force tolerance, so the mode is too soft to
   test at this displacement.
 
+A side is labeled `reactant` or `product` only when its whole-cell bond topology matches the
+corresponding relaxed NEB endpoint. A bond change elsewhere in the cell makes that side `other`.
+Matching bond topology does not establish identical conformations.
+
 `connectivity.status` is `connects_endpoints` when one side reaches the reactant and the other the
 product. It is `inconclusive` when either side is `not_converged` or `no_step`,
 `does_not_connect` otherwise, and `failed` if the check raises. The check runs inside the NEB

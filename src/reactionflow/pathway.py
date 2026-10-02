@@ -463,12 +463,15 @@ def _check_connectivity(
     pressure_GPa: float | None,
     candidate: ReactionCandidate,
     detector_config: BondDetectorConfig,
+    *,
+    endpoints: tuple[Atoms, Atoms],
 ) -> ConnectivityCheck:
     """Relax the saddle displaced both ways along its imaginary mode and classify each side."""
 
     sides: list[str] = []
     try:
-        states, (reactant, product) = _bond_topology(candidate, saddle, detector_config)
+        states, _ = _bond_topology(candidate, saddle, detector_config)
+        reactant, product = (_bonded_pairs(endpoint, detector_config) for endpoint in endpoints)
         for sign in (-1.0, 1.0):
             side = saddle.copy()
             side.positions[list(active_indices)] += (
@@ -482,14 +485,14 @@ def _check_connectivity(
                 sides.append("no_step")
                 continue
             reached = states(side)
+            if None in reached:
+                sides.append("ambiguous")
+                continue
+            # Every atom is free during descent; spectator reactions must not count as
+            # reaching either of the actual relaxed NEB endpoints.
+            bonds = _bonded_pairs(side, detector_config)
             sides.append(
-                "ambiguous"
-                if None in reached
-                else "reactant"
-                if reached == reactant
-                else "product"
-                if reached == product
-                else "other"
+                "reactant" if bonds == reactant else "product" if bonds == product else "other"
             )
     except Exception as exc:
         return ConnectivityCheck(
@@ -659,6 +662,7 @@ def _refine_pathway(
                         pressure_GPa,
                         candidate,
                         detector_config,
+                        endpoints=(images[0], images[-1]),
                     )
                 return PathwayOutcome(
                     "ci_neb_converged",
