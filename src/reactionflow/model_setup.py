@@ -27,6 +27,7 @@ _PACKAGES = {
     "reactionflow.adapters.mace_field:create_adapter": _FIELD_PACKAGE,
     "reactionflow.adapters.sevennet:create_adapter": "sevenn==0.13.0",
     "reactionflow.adapters.nep:create_adapter": "calorine==4.0",
+    "reactionflow.adapters.ani1xnr:create_adapter": "torchani==2.8.4",
 }
 
 
@@ -111,6 +112,7 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
     orb = "orb-models==0.7.0" in packages
     mattersim = "mattersim==1.2.5" in packages
     sevennet = "sevenn==0.13.0" in packages
+    ani = "torchani==2.8.4" in packages
     if field and mace:
         raise ValueError(
             "MACE-FIELD and MACE/POLAR install different mace packages; "
@@ -126,7 +128,14 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
             "UMA/MatterSim and ORB use different tested nvalchemi dependency stacks; "
             "use --index to prepare each in a separate Python environment"
         )
+    if ani and uma:
+        raise ValueError(
+            "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13; "
+            "use --index to prepare each in a separate Python environment"
+        )
     conflicts = []
+    if ani:
+        conflicts.append(("fairchem-core", "2.23.0"))
     if uma:
         conflicts.extend(
             [("mace-torch", "0.3.16"), ("mace-torch", "0.3.15"), ("torchani", "2.8.4")]
@@ -172,6 +181,8 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
         packages.append(_POLAR_PACKAGE)
     if sevennet:
         packages.append("torch>=2.8,<3")
+    if ani:
+        packages.append("torch==2.11.0")
     if packages:
         installed = subprocess.run([sys.executable, "-m", "pip", "install", *packages], check=False)
         if installed.returncode:

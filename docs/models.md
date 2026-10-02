@@ -28,6 +28,7 @@ require different validation.
 | `chgnet` | MPtrj 0.3.0 and r2SCAN |
 | `sevennet` | SevenNet-0, L3i5, MF-0, MF-ompa, OMAT, and Omni/Omni-i8/Omni-i12, with explicit modalities |
 | `nep` | NEP89 (89 elements), double-precision CPU inference |
+| `ani1xnr` | ANI-1xnr reactive H/C/N/O potential; ensemble members 0–7 |
 
 ## Install and prepare
 
@@ -44,15 +45,16 @@ prepare the model files, because pip may have changed already imported dependenc
 or preparation failures return a failing exit status. It does not create an environment for you.
 
 The PyPI backend pins are `mace-torch==0.3.16`, `fairchem-core==2.23.0`, `aimnet[ase]==0.2.0`,
-`orb-models==0.7.0`, `mattersim==1.2.5`, `chgnet==0.4.2`, `sevenn==0.13.0`, and `calorine==4.0`.
-SevenNet setup also installs `torch>=2.8,<3`. POLAR additionally installs
+`orb-models==0.7.0`, `mattersim==1.2.5`, `chgnet==0.4.2`, `sevenn==0.13.0`, `calorine==4.0`, and
+`torchani==2.8.4`. SevenNet setup also installs `torch>=2.8,<3`, and ANI-1xnr setup installs
+`torch==2.11.0`. POLAR additionally installs
 `graph_longrange` 0.4.0 at commit `0e21d5546c482d08388a08eb4d948e833227ce47`; MACE-FIELD installs
 its fork at commit `136e4ef040d7c51a5b051a7a609ffb1f29307478`. Those two source dependencies
 require Git. They are installed by `prepare --install`, not embedded as direct Git dependencies
 in ReactionFlow's package metadata.
 
 Alternatively, install a PyPI backend extra yourself: `.[mace]`, `.[uma]`, `.[aimnet2]`, `.[orb]`,
-`.[mattersim]`, `.[chgnet]`, `.[sevennet]`, or `.[nep]`, then omit `--install`:
+`.[mattersim]`, `.[chgnet]`, `.[sevennet]`, `.[nep]`, or `.[ani1xnr]`, then omit `--install`:
 
 ```bash
 reactionflow prepare campaign.json
@@ -70,10 +72,11 @@ replaces the same `mace` Python namespace as official MACE; it must use a separa
 UMA and ORB require incompatible `nvalchemi-toolkit-ops` versions. The tested MatterSim setup
 also uses a newer version through TorchSim; setup keeps MatterSim and ORB separate too.
 UMA's
-FAIR-Chem version also requires Torch 2.13, while the ANI-1xnr setup pins Torch 2.11. Installing UMA
-into the ANI environment would change its dependencies and invalidate exact restarts. The bundled
-`setup-perlmutter-ani1xnr.sh` and Perlmutter job scripts configure that ANI environment; they are
-not setup scripts for MACE or UMA. Use your backend's environment in your own batch script.
+FAIR-Chem version also requires Torch 2.13, while ANI-1xnr pins Torch 2.11, so those two need
+separate environments as well. The bundled
+`setup-perlmutter-ani1xnr.sh` and Perlmutter job scripts configure an ANI-1xnr environment; they
+are not setup scripts for the other backends. Use your backend's environment in your own batch
+script.
 `--install` rejects these unsupported combinations before running pip; select one backend
 with `--index` in a fresh environment.
 
@@ -89,9 +92,9 @@ For an explicit download immediately before running the selected trajectory, use
 cluster, prepare on a network-enabled node first and make the cache visible to compute nodes.
 `validate`, `plan`, and `status` remain independent of optional model imports and downloads.
 
-ANI-1xnr and arbitrary ASE/custom adapters manage their own dependencies and files. `prepare`
-reports them as `external_setup` without executing their code; `run --download` rejects them with
-an unsupported-adapter error. The existing ANI setup workflow is unchanged.
+Arbitrary ASE and custom adapters manage their own dependencies and files. `prepare` reports them
+as `external_setup` without executing their code; `run --download` rejects them with an
+unsupported-adapter error.
 
 ## MACE profile
 
@@ -365,6 +368,25 @@ library binary, calculator source, and weight hashes are bound to exact restarts
 [the NEP89 release](https://github.com/brucefan1983/GPUMD/tree/v5.0/potentials/nep/nep89_20250409)
 and [Calorine's calculator documentation](https://calorine.materialsmodeling.org/get_started/ase_calculators.html).
 
+## ANI-1xnr
+
+```json
+{
+  "factory": "reactionflow.adapters.ani1xnr:create_adapter",
+  "options": {"device": "cuda", "dtype": "float32", "model_index": 0, "strategy": "pyaev"}
+}
+```
+
+ANI-1xnr is a reactive potential for H, C, N, and O trained at the BLYP/TZV2P level. The adapter
+always loads one pinned weight file, so it has no `model` or `checkpoint` option. Preparation
+downloads that file from a fixed revision of the
+[`roitberg-group/ani1xnr`](https://huggingface.co/roitberg-group/ani1xnr) repository and checks
+its SHA-256; runs check it again before every calculator is built. `model_index` selects one of
+the eight ensemble members, `dtype` is `float32` (default) or `float64`, and `strategy` is `pyaev`
+(default) or `cuaev`. The adapter requires `torch` 2.11.0 and `torchani` 2.8.4. See the
+[ANI-1xnr paper](https://www.nature.com/articles/s41557-023-01427-3) for the training data and
+scope.
+
 ## Local files and cache
 
 MACE, MACE-FIELD, UMA, AIMNet2, MatterSim, CHGNet, SevenNet, and NEP accept an absolute `checkpoint` path instead
@@ -390,8 +412,11 @@ reference files automatically.
 
 The default download cache is `~/.cache/reactionflow/models`, with separate backend directories.
 Set `REACTIONFLOW_MODEL_CACHE` to an absolute directory, or set an absolute `cache_dir` in the
-adapter options to override it for that profile. Keep the same cache/path configuration when
-resuming. Direct downloads verify cached file hashes; UMA uses the Hugging Face cache. CHGNet
+adapter options to override it for that profile. The bundled Perlmutter scripts set
+`REACTIONFLOW_MODEL_CACHE` to `.cache/models` inside the checkout unless it is already set. Keep
+the same cache/path configuration when
+resuming. Direct downloads verify cached file hashes; UMA uses the Hugging Face cache. ANI-1xnr
+keeps its weights in TorchANI's `StateDicts` layout inside its backend directory. CHGNet
 uses package-bundled files and has no `cache_dir` option. Exact checkpoints record hashes of
 every resolved weight/reference file for all adapters.
 

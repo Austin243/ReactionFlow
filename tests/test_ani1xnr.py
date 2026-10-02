@@ -178,12 +178,13 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
 def test_setup_uses_nersc_pytorch_module_and_pinned_weights() -> None:
     root = Path(__file__).parents[1]
     setup = (root / "scripts/setup-perlmutter-ani1xnr.sh").read_text(encoding="utf-8")
-    cache = (root / "scripts/cache_ani1xnr.py").read_text(encoding="utf-8")
+    adapter = (root / "src/reactionflow/adapters/ani1xnr.py").read_text(encoding="utf-8")
 
     assert "module load pytorch/2.11.0" in setup
     assert "PYTHONUSERBASE" in setup
-    assert "MODEL_REVISION" in cache
-    assert "MODEL_SHA256" in cache
+    assert 'reactionflow prepare "$campaign"' in setup
+    assert "revision=MODEL_REVISION" in adapter
+    assert "digest != MODEL_SHA256" in adapter
 
 
 def test_submitted_copy_resolves_checkout_from_slurm_submit_dir(tmp_path) -> None:
@@ -205,7 +206,8 @@ def test_submitted_copy_resolves_checkout_from_slurm_submit_dir(tmp_path) -> Non
     module.chmod(0o755)
     srun = fake_bin / "srun"
     srun.write_text(
-        '#!/bin/bash\nprintf \'%s\\n\' "$PYTHONUSERBASE" "$TORCHANI_DATA_DIR" "$*" > "$CAPTURE"\n',
+        "#!/bin/bash\n"
+        'printf \'%s\\n\' "$PYTHONUSERBASE" "$REACTIONFLOW_MODEL_CACHE" "$*" > "$CAPTURE"\n',
         encoding="utf-8",
     )
     srun.chmod(0o755)
@@ -221,7 +223,7 @@ def test_submitted_copy_resolves_checkout_from_slurm_submit_dir(tmp_path) -> Non
     for name in (
         "REACTIONFLOW_ROOT",
         "REACTIONFLOW_PYTHONUSERBASE",
-        "REACTIONFLOW_TORCHANI_DATA_DIR",
+        "REACTIONFLOW_MODEL_CACHE",
     ):
         environment.pop(name, None)
 
@@ -237,6 +239,6 @@ def test_submitted_copy_resolves_checkout_from_slurm_submit_dir(tmp_path) -> Non
     assert completed.returncode == 0, completed.stderr
     python_base, model_cache, command = capture.read_text(encoding="utf-8").splitlines()
     assert python_base == str(repository / ".perlmutter-python")
-    assert model_cache == str(repository / ".cache/torchani")
+    assert model_cache == str(repository / ".cache/models")
     assert str(executable) in command
     assert str(campaign) in command

@@ -101,8 +101,8 @@ reactionflow plan campaign.json --gpus-per-node 4
 
 ### Built-in models
 
-MACE, MACE-FIELD, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, and NEP89 have built-in factories
-and explicit setup/download commands:
+MACE, MACE-FIELD, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, NEP89, and ANI-1xnr
+have built-in factories and explicit setup/download commands:
 
 ```bash
 reactionflow models
@@ -119,8 +119,8 @@ MACE/UMA dependency stacks need separate environments/campaigns, as does the MAC
 named profiles can mix models
 only when all their dependencies are compatible.
 
-ANI-1xnr retains its existing Perlmutter setup. `prepare` reports ANI and generic/custom adapters
-as `external_setup`; those adapters do not support `run --download`.
+`prepare` reports generic and custom adapters as `external_setup`; those adapters do not support
+`run --download`.
 
 ### Use an ASE calculator directly
 
@@ -185,9 +185,8 @@ lets a user package an ANI, MACE, NequIP, Allegro, CHGNet, or other ASE-compatib
 adding that stack to ReactionFlow. Strict execution rejects an adapter that cannot supply exact
 dynamics and calculator state.
 
-The optional built-ins are `reactionflow.adapters.ani1xnr:create_adapter`,
-`reactionflow.adapters.mace:create_adapter`, and `reactionflow.adapters.uma:create_adapter`.
-Normal ReactionFlow installation and import remain independent of Torch. The complete four-GPU
+`reactionflow models` lists every built-in factory. Normal ReactionFlow installation and import
+remain independent of Torch. The complete four-GPU
 ANI-1xnr example is in
 [`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
 

@@ -198,7 +198,7 @@ def test_perlmutter_setup_keeps_torchani_as_the_default() -> None:
     assert "module load pytorch/2.11.0" in setup
     assert "PYTHONUSERBASE" in setup
     assert "perlmutter-ani1xnr.txt" in setup
-    assert "cache_ani1xnr.py" in setup
+    assert "reactionflow prepare" in setup
     assert "torchani==2.8.4" in requirements
     assert "setup-perlmutter-ani1xnr.sh" in guide
     assert "setup-perlmutter.sh" not in guide

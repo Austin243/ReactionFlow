@@ -17,6 +17,7 @@ from .._durable import file_digest
 from .._version import __version__
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState
+from ._model_files import model_cache, require_package
 from .ase import ASELangevinBAOABAdapter
 
 TORCH_VERSION = "2.11.0"
@@ -27,7 +28,79 @@ MODEL_FILENAME = "ani1xnr.pt"
 MODEL_SHA256 = "beef541802e4cb3d23b6cfdfdf9df1e42ddd3805399fb15f01e275aba4f099b3"
 
 _CALCULATOR_KIND = "reactionflow.ani1xnr"
-_ALLOWED_OPTIONS = {"device", "dtype", "model_index", "strategy"}
+_ALLOWED_OPTIONS = {"device", "dtype", "model_index", "strategy", "cache_dir"}
+
+
+def catalog() -> dict[str, Any]:
+    """Describe the pinned model without importing Torch or downloading weights."""
+
+    return {
+        "backend": "ani1xnr",
+        "factory": "reactionflow.adapters.ani1xnr:create_adapter",
+        "package": f"torchani=={TORCHANI_VERSION}",
+        "models": [
+            {
+                "name": "ani1xnr",
+                "description": "ANI-1xnr reactive potential for H, C, N and O; BLYP/TZV2P",
+            }
+        ],
+        "notes": [
+            "The adapter always loads the pinned weights; there is no model or checkpoint option.",
+            "The model is an ensemble of eight networks; model_index selects one (default 0).",
+            "dtype is float32 (default) or float64; strategy is pyaev (default) or cuaev.",
+            f"Requires torch {TORCH_VERSION}.",
+        ],
+        "sources": [
+            "https://www.nature.com/articles/s41557-023-01427-3",
+            f"https://huggingface.co/{MODEL_REPOSITORY}",
+        ],
+    }
+
+
+def _validate(options: Mapping[str, Any]) -> None:
+    unknown = set(options) - _ALLOWED_OPTIONS
+    if unknown:
+        raise ValueError(f"unknown ANI-1xnr adapter options: {sorted(unknown)}")
+    if options.get("device", "cuda") not in ("cpu", "cuda"):
+        raise ValueError("ANI-1xnr device must be 'cpu' or 'cuda'")
+    if options.get("dtype", "float32") not in ("float32", "float64"):
+        raise ValueError("ANI-1xnr dtype must be 'float32' or 'float64'")
+    model_index = options.get("model_index", 0)
+    if isinstance(model_index, bool) or not isinstance(model_index, int) or model_index < 0:
+        raise ValueError("ANI-1xnr model_index must be a non-negative integer")
+    if options.get("strategy", "pyaev") not in ("pyaev", "cuaev"):
+        raise ValueError("ANI-1xnr strategy must be 'pyaev' or 'cuaev'")
+
+
+def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, Path]:
+    """Resolve the pinned weights, downloading them only when allowed, and verify them."""
+
+    _validate(options)
+    require_package("torchani", TORCHANI_VERSION, "ani1xnr")
+    # TorchANI reads built-in state dicts from <data directory>/StateDicts.
+    path = model_cache(options, "ani1xnr") / "StateDicts" / MODEL_FILENAME
+    if not path.is_file():
+        if not download:
+            raise FileNotFoundError(
+                "ANI-1xnr weights are not cached; run 'reactionflow prepare campaign.json' "
+                "or 'reactionflow run campaign.json --download' first"
+            )
+        from huggingface_hub import hf_hub_download
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        hf_hub_download(
+            repo_id=MODEL_REPOSITORY,
+            filename=MODEL_FILENAME,
+            revision=MODEL_REVISION,
+            local_dir=path.parent,
+        )
+    digest = file_digest(path)
+    if digest != MODEL_SHA256:
+        raise ValueError(
+            f"ANI-1xnr weights failed SHA-256 verification: {path} has {digest}, "
+            f"expected {MODEL_SHA256}"
+        )
+    return {"checkpoint": path}
 
 
 def _source_sha256(path: Path) -> str:
@@ -52,42 +125,16 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
     """One pinned ANI-1xnr model with Langevin BAOAB NVT/NPT dynamics."""
 
     def __init__(self, *, trajectory: TrajectorySpec, options: Mapping[str, Any]) -> None:
-        unknown_options = set(options) - _ALLOWED_OPTIONS
-        if unknown_options:
-            raise ValueError(f"unknown ANI-1xnr adapter options: {sorted(unknown_options)}")
+        _validate(options)
         super().__init__(trajectory=trajectory)
-        self.device = str(options.get("device", "cuda"))
-        if self.device not in {"cpu", "cuda"}:
-            raise ValueError("ANI-1xnr device must be 'cpu' or 'cuda'")
-        self.dtype = str(options.get("dtype", "float32"))
-        if self.dtype not in {"float32", "float64"}:
-            raise ValueError("ANI-1xnr dtype must be 'float32' or 'float64'")
-        model_index = options.get("model_index", 0)
-        if isinstance(model_index, bool) or not isinstance(model_index, int) or model_index < 0:
-            raise ValueError("ANI-1xnr model_index must be a non-negative integer")
-        self.model_index = model_index
-        self.strategy = str(options.get("strategy", "pyaev"))
-        if self.strategy not in {"pyaev", "cuaev"}:
-            raise ValueError("ANI-1xnr strategy must be 'pyaev' or 'cuaev'")
+        self.options = dict(options)
+        self.device = options.get("device", "cuda")
+        self.dtype = options.get("dtype", "float32")
+        self.model_index = options.get("model_index", 0)
+        self.strategy = options.get("strategy", "pyaev")
 
     def _model_path(self) -> Path:
-        data_dir = os.environ.get("TORCHANI_DATA_DIR")
-        if not data_dir:
-            raise RuntimeError(
-                "TORCHANI_DATA_DIR must point to the pinned ANI-1xnr cache; "
-                "run scripts/setup-perlmutter-ani1xnr.sh"
-            )
-        path = Path(data_dir).expanduser().resolve() / "StateDicts" / MODEL_FILENAME
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"pinned ANI-1xnr weights are missing: {path}; run the setup script"
-            )
-        digest = file_digest(path)
-        if digest != MODEL_SHA256:
-            raise ValueError(
-                f"ANI-1xnr weights failed SHA-256 verification: {digest} != {MODEL_SHA256}"
-            )
-        return path
+        return prepare(self.options, download=False)["checkpoint"]
 
     def _load_backend(self) -> tuple[Any, Any]:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -99,7 +146,7 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
         except ImportError as error:
             raise RuntimeError(
                 "ANI-1xnr support requires torch 2.11.0 and torchani 2.8.4; "
-                "install the 'ani1xnr' extra or run the Perlmutter setup script"
+                "install the 'ani1xnr' extra or use 'reactionflow prepare campaign.json --install'"
             ) from error
         installed_torchani = version("torchani")
         if _base_version(torch.__version__) != TORCH_VERSION:
@@ -159,6 +206,9 @@ class ANI1xnrAdapter(ASELangevinBAOABAdapter):
         )
 
     def _new_calculator(self, torch: Any, factory: Any) -> Calculator:
+        # TorchANI loads the state dict from its data directory when the model is built, so
+        # point it at the verified weights rather than at whatever the process inherited.
+        os.environ["TORCHANI_DATA_DIR"] = str(self._model_path().parents[1])
         dtype = torch.float32 if self.dtype == "float32" else torch.float64
         model = factory(
             model_index=self.model_index,
@@ -196,5 +246,7 @@ __all__ = [
     "TORCHANI_VERSION",
     "TORCH_VERSION",
     "ANI1xnrAdapter",
+    "catalog",
     "create_adapter",
+    "prepare",
 ]

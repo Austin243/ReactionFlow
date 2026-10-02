@@ -74,12 +74,12 @@ def _fake_preparation(monkeypatch, tmp_path):
     prepared = []
 
     def import_module(module):
-        assert module in {MACE.split(":")[0], UMA.split(":")[0]}
+        assert module in {factory.split(":")[0] for factory in (MACE, UMA, ANI)}
 
         def prepare(options, *, download):
             assert download is True
             prepared.append((module, options))
-            return {"checkpoint": tmp_path / f"{options['model']}.pt"}
+            return {"checkpoint": tmp_path / f"{options.get('model', 'ani1xnr')}.pt"}
 
         return SimpleNamespace(prepare=prepare)
 
@@ -97,12 +97,13 @@ def test_prepare_deduplicates_referenced_adapters_without_creating_runs(tmp_path
         ("reactionflow.adapters.mace", {"model": "small", "device": "cpu"}),
         ("reactionflow.adapters.uma", {"model": "uma-s-1p2"}),
         ("reactionflow.adapters.mace", {"model": "large"}),
+        ("reactionflow.adapters.ani1xnr", {}),
     ]
     assert [item["status"] for item in reports] == [
         "prepared",
         "prepared",
         "prepared",
-        "external_setup",
+        "prepared",
         "external_setup",
     ]
     assert reports[0]["files"] == {"checkpoint": str(tmp_path / "small.pt")}
@@ -142,10 +143,8 @@ def test_prepare_invalid_index_fails_before_any_setup(tmp_path, monkeypatch):
     assert not campaign.output_root.exists()
 
 
-@pytest.mark.parametrize("factory", [CUSTOM, ANI])
-def test_external_setup_is_skipped_and_download_is_explicitly_unsupported(
-    tmp_path, monkeypatch, factory
-):
+def test_external_setup_is_skipped_and_download_is_explicitly_unsupported(tmp_path, monkeypatch):
+    factory = CUSTOM
     campaign = _campaign(tmp_path, {"external": {"factory": factory}}, ["external"])
 
     def unexpected_import(_module):
@@ -390,6 +389,8 @@ def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
     original = builtins.__import__
     optional = {
         "torch",
+        "torchani",
+        "huggingface_hub",
         "mace",
         "fairchem",
         "aimnet",
@@ -419,6 +420,7 @@ def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
         "chgnet",
         "sevennet",
         "nep",
+        "ani1xnr",
     }
 
 

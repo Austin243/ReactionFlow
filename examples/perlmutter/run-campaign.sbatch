@@ -19,7 +19,7 @@ repo_root="$(cd "$repo_root" && pwd -P)"
 module load pytorch/2.11.0
 
 export PYTHONUSERBASE=${REACTIONFLOW_PYTHONUSERBASE:-"$repo_root/.perlmutter-python"}
-export TORCHANI_DATA_DIR=${REACTIONFLOW_TORCHANI_DATA_DIR:-"$repo_root/.cache/torchani"}
+export REACTIONFLOW_MODEL_CACHE=${REACTIONFLOW_MODEL_CACHE:-"$repo_root/.cache/models"}
 export PATH="$PYTHONUSERBASE/bin:$PATH"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export OMP_NUM_THREADS=16
