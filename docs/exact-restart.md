@@ -67,9 +67,12 @@ snapshot together with the detector and reaction-tracker state. Reopening a run 
 an in-progress persistence window instead of forgetting a provisional bond event. When a stable
 reaction candidate is emitted, the exact checkpoint is bound to the segment resume token and the
 MD provider is released before endpoint and pathway calculators are acquired. The same runtime
-state is restored after refinement. The checkpoint files and `state.json` are flushed to disk
-before the checkpoint that `state.json` previously named is removed, so each run keeps a single
-runtime checkpoint.
+state is restored after refinement. The checkpoint files and their directory entries are flushed
+before publication. The rename of `state.json` is then synchronized in its parent directory before
+the previous runtime checkpoint is removed. A synchronization failure stops publication without
+pruning the previous checkpoint. This ordering requires a POSIX filesystem that honors file and
+directory `fsync`; shared HPC filesystems still need validation on the target system. A successful
+run keeps a single runtime checkpoint.
 
 ```python
 run = ReactionRun.create("trajectory-000", config=config)

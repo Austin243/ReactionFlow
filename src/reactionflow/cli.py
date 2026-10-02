@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from ase.io import read
 
-from ._durable import flush_to_disk
+from ._durable import ensure_directory, publish, sync_directory
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .run import ReactionRun, RunSummary
@@ -62,6 +62,7 @@ def _bind_trajectory_contract(root: Path, contract: dict[str, object]) -> None:
     if path.is_file():
         stored = json.loads(path.read_text(encoding="utf-8"))
         if stored == contract:
+            sync_directory(root)
             return
         if (root / "state.json").exists():
             raise ValueError(
@@ -69,15 +70,14 @@ def _bind_trajectory_contract(root: Path, contract: dict[str, object]) -> None:
             )
     if (root / "state.json").exists():
         raise ValueError("existing trajectory is missing its campaign contract")
-    root.mkdir(parents=True, exist_ok=True)
+    ensure_directory(root)
     temporary = root / f".trajectory-contract-{uuid4().hex}.tmp"
     try:
         temporary.write_text(
             json.dumps(contract, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        flush_to_disk(temporary)
-        os.replace(temporary, path)
+        publish(temporary, path)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise

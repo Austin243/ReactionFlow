@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
+import reactionflow._durable as durable
 import reactionflow.store as store_module
 from reactionflow import BondDetectorConfig, ReactionCandidate, atom_ids
 from reactionflow.store import OccurrenceStore
@@ -144,3 +145,42 @@ def test_store_is_idempotent_and_recovers_atomic_publication(tmp_path, monkeypat
     record.directory.rename(tmp_path / "removed-bundle")
     with pytest.raises(FileNotFoundError):
         recovered.register("same-id", first, detector_config=config)
+
+
+@pytest.mark.parametrize("reopen", [False, True])
+def test_retry_syncs_orphan_bundle_before_database_commit(tmp_path, monkeypatch, reopen) -> None:
+    store = OccurrenceStore(tmp_path)
+    first = candidate((1, 2, 3))
+    config = BondDetectorConfig()
+    sync_directory = durable.sync_directory
+
+    def fail_after_rename(path):
+        if path == store.candidates:
+            raise OSError("injected parent sync failure")
+        sync_directory(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(durable, "sync_directory", fail_after_rename)
+        with pytest.raises(OSError, match="parent sync failure"):
+            store.register("orphan", first, detector_config=config)
+    assert (store.candidates / "orphan").is_dir()
+    assert store.records() == ()
+
+    synced = []
+    insert = OccurrenceStore._insert
+
+    def record_sync(path):
+        sync_directory(path)
+        synced.append(path)
+
+    def check_insert(self, *args, **kwargs):
+        assert self.candidates in synced
+        return insert(self, *args, **kwargs)
+
+    monkeypatch.setattr(store_module, "sync_directory", record_sync)
+    monkeypatch.setattr(OccurrenceStore, "_insert", check_insert)
+    if reopen:
+        store = OccurrenceStore(tmp_path)
+    else:
+        store.register("orphan", first, detector_config=config)
+    assert [record.occurrence_id for record in store.records()] == ["orphan"]

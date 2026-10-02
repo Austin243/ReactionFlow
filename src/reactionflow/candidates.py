@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ import networkx as nx
 from ase import Atoms
 from ase.io import read, write
 
+from ._durable import ensure_directory, publish
 from .detection import Bond, assign_atom_ids, atom_ids
 
 
@@ -291,7 +291,7 @@ class ReactionTracker:
         final = Path(path).resolve()
         if final.exists():
             raise FileExistsError(final)
-        final.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(final.parent)
         temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
         temporary.mkdir()
         try:
@@ -339,7 +339,7 @@ class ReactionTracker:
                 json.dumps(value, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            os.replace(temporary, final)
+            publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
