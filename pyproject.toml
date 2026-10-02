@@ -21,6 +21,14 @@ dependencies = [
 reactionflow = "reactionflow.cli:main"
 
 [project.optional-dependencies]
+mace = ["mace-torch==0.3.16"]
+uma = ["fairchem-core==2.23.0"]
+aimnet2 = ["aimnet[ase]==0.2.0"]
+orb = ["orb-models==0.7.0"]
+mattersim = ["mattersim==1.2.5"]
+chgnet = ["chgnet==0.4.2"]
+sevennet = ["sevenn==0.13.0", "torch>=2.8,<3"]
+nep = ["calorine==4.0"]
 ani1xnr = [
   "torch==2.11.0",
   "torchani==2.8.4",

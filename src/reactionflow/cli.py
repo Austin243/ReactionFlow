@@ -20,6 +20,7 @@ from ase.io import read
 from ._durable import ensure_directory, publish, sync_directory
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
+from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .run import ReactionRun, RunSummary
 from .status import campaign_status, format_status
 
@@ -150,6 +151,7 @@ def run_selected_trajectory(
     *,
     index: int,
     environment: Mapping[str, str] | None = None,
+    download: bool = False,
 ) -> RunSummary:
     """Run or exactly resume one selected trajectory without spawning workers."""
 
@@ -157,6 +159,8 @@ def run_selected_trajectory(
     adapter_spec = campaign.adapter_for(index)
     if campaign.require_gpu:
         visible_gpu(environment)
+    if download:
+        prepare_adapter(adapter_spec)
     root = campaign.output_root / trajectory.id
     state_path = root / "state.json"
     if state_path.is_file():
@@ -167,6 +171,9 @@ def run_selected_trajectory(
     else:
         atoms = read(campaign.structure)
         adapter = load_mlip_adapter(adapter_spec, trajectory)
+        preflight = getattr(adapter, "preflight", None)
+        if callable(preflight):
+            preflight(atoms)
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         run = ReactionRun.create(root, config=campaign.reaction_run)
     return run.run_exact(
@@ -182,6 +189,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reactionflow")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    models = commands.add_parser("models", help="list built-in models, heads and tasks offline")
+    models.add_argument("--backend", help="show only one backend, for example mace or uma")
+
     validate = commands.add_parser(
         "validate", help="validate a campaign without importing its MLIP"
     )
@@ -194,6 +204,18 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="run one campaign trajectory in this process")
     run.add_argument("campaign", type=Path)
     run.add_argument("--index", type=int)
+    run.add_argument(
+        "--download", action="store_true", help="prepare the selected built-in model before MD"
+    )
+
+    prepare = commands.add_parser(
+        "prepare", help="download built-in model files without creating a trajectory"
+    )
+    prepare.add_argument("campaign", type=Path)
+    prepare.add_argument("--index", type=int, help="prepare only this trajectory's adapter")
+    prepare.add_argument(
+        "--install", action="store_true", help="install the selected optional backend packages"
+    )
 
     status = commands.add_parser(
         "status", help="summarize trajectories and reactions without changing any run"
@@ -206,7 +228,20 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "models":
+        try:
+            catalog = model_catalog(arguments.backend)
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps({"backends": catalog}, indent=2, sort_keys=True))
+        return 0
     campaign = CampaignConfig.load(arguments.campaign)
+    if arguments.command == "prepare":
+        if arguments.install:
+            return install_and_prepare(campaign, index=arguments.index)
+        models = prepare_campaign(campaign, index=arguments.index)
+        print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
+        return 0
     if arguments.command == "status":
         report = campaign_status(campaign)
         print(
@@ -254,7 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with suppress(OSError):
         error_path.unlink()
     try:
-        summary = run_selected_trajectory(campaign, index=index)
+        summary = run_selected_trajectory(campaign, index=index, download=arguments.download)
     except Exception as error:
         payload["error"] = f"{type(error).__name__}: {error}"
         print(json.dumps(payload, sort_keys=True))
