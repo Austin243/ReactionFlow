@@ -13,8 +13,7 @@ from pathlib import Path
 from urllib.request import urlopen
 from uuid import uuid4
 
-from .._durable import ensure_directory, publish, sync_directory
-from .ase import _sha256
+from .._durable import ensure_directory, file_digest, publish, sync_directory
 
 
 def require_package(name: str, expected: str, extra: str) -> None:
@@ -46,7 +45,7 @@ def _cached_file(root: Path, url: str) -> Path:
     try:
         manifest = json.loads((root / "source.json").read_text(encoding="utf-8"))
         path = root / "model"
-        if manifest["url"] != url or _sha256(path) != manifest["sha256"]:
+        if manifest["url"] != url or file_digest(path) != manifest["sha256"]:
             raise ValueError("model source or checksum differs")
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"cached model failed integrity verification: {root}") from error
@@ -88,7 +87,7 @@ def cached_download(url: str, cache_dir: Path, *, download: bool) -> Path:
             if path.stat().st_size == 0:
                 raise ValueError("model download returned an empty file")
             (temporary / "source.json").write_text(
-                json.dumps({"url": url, "sha256": _sha256(path)}, sort_keys=True) + "\n",
+                json.dumps({"url": url, "sha256": file_digest(path)}, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             publish(temporary, final)

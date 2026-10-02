@@ -14,10 +14,11 @@ import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
+from .._durable import file_digest
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState
 from ._model_files import cached_download, model_cache, require_package
-from .ase import ASELangevinBAOABAdapter, _sha256
+from .ase import ASELangevinBAOABAdapter
 
 VERSION = "4.0"
 _RELEASE = "05982941c85b257fdf5a5c69fb7922ce7d7a5c80"
@@ -99,7 +100,7 @@ class NEPAdapter(ASELangevinBAOABAdapter):
         import _nepy
         from calorine.calculators import CPUNEP
 
-        before = _sha256(self.path)
+        before = file_digest(self.path)
         checkpoint = self.path
 
         class PeriodicCPUNEP(CPUNEP):
@@ -107,10 +108,10 @@ class NEPAdapter(ASELangevinBAOABAdapter):
                 # The native backend reads weights lazily, and rereads them when atom
                 # counts change. Bind every such load to this lease's checkpoint bytes.
                 try:
-                    if _sha256(checkpoint) != before:
+                    if file_digest(checkpoint) != before:
                         raise ValueError("NEP checkpoint changed before native model loading")
                     super()._setup_nepy()
-                    if _sha256(checkpoint) != before:
+                    if file_digest(checkpoint) != before:
                         raise ValueError("NEP checkpoint changed during native model loading")
                 except Exception:
                     # A failed post-load check must not leave a usable native model.
@@ -131,7 +132,7 @@ class NEPAdapter(ASELangevinBAOABAdapter):
         if calculator.model_type != "potential":
             raise ValueError("ReactionFlow requires a NEP energy model, not a tensor/charge model")
         calculator.implemented_properties = [*calculator.implemented_properties, "free_energy"]
-        if _sha256(self.path) != before:
+        if file_digest(self.path) != before:
             raise ValueError("NEP checkpoint changed during calculator construction")
         state = ComponentState(
             kind="reactionflow.nep",
@@ -139,11 +140,11 @@ class NEPAdapter(ASELangevinBAOABAdapter):
                 "options": self.options,
                 "model_files": {str(self.path): before},
                 "calorine_version": VERSION,
-                "native_library_sha256": _sha256(Path(_nepy.__file__)),
-                "calculator_source_sha256": _sha256(Path(inspect.getfile(CPUNEP))),
-                "adapter_source_sha256": _sha256(Path(__file__)),
-                "runtime_source_sha256": _sha256(Path(__file__).with_name("ase.py")),
-                "integrator_source_sha256": _sha256(Path(__file__).parents[1] / "ase_npt.py"),
+                "native_library_sha256": file_digest(Path(_nepy.__file__)),
+                "calculator_source_sha256": file_digest(Path(inspect.getfile(CPUNEP))),
+                "adapter_source_sha256": file_digest(Path(__file__)),
+                "runtime_source_sha256": file_digest(Path(__file__).with_name("ase.py")),
+                "integrator_source_sha256": file_digest(Path(__file__).parents[1] / "ase_npt.py"),
                 "python_version": platform.python_version(),
                 "ase_version": ase.__version__,
                 "numpy_version": np.__version__,

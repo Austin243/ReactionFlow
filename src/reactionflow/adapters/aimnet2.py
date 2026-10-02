@@ -12,10 +12,10 @@ import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
+from .._durable import file_digest
 from ..campaign import TrajectorySpec
 from ._model_files import cached_download, model_cache, require_package
 from ._torch import TorchModelAdapter
-from .ase import _sha256
 
 AIMNET_VERSION = "0.2.0"
 _FAMILIES = {
@@ -114,7 +114,7 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
         checkpoint = cached_download(
             spec["url"], model_cache(options, "aimnet2"), download=download
         )
-        if spec.get("sha256") and _sha256(checkpoint) != spec["sha256"]:
+        if spec.get("sha256") and file_digest(checkpoint) != spec["sha256"]:
             raise ValueError(f"AIMNet2 checkpoint differs from the published SHA-256 for {key}")
     files = {"checkpoint": checkpoint, "dftd3": _package_file("dftd3_data.pt")}
     for name, path in files.items():

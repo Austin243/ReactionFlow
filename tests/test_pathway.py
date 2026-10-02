@@ -15,6 +15,7 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
+from reactionflow.detection import classify_bonds
 from reactionflow.pathway import FIRE, NEB, _check_connectivity, _classify_frequencies
 
 
@@ -404,13 +405,11 @@ def test_connectivity_rejects_spectator_hysteresis_gaps(
         assert "endpoint" in check.message and "hysteresis gap" in check.message
 
 
-def test_whole_cell_topology_uses_minimum_images_and_inclusive_formation_threshold():
-    from reactionflow.pathway import _whole_cell_topology
-
+def test_bond_classification_uses_minimum_images_and_inclusive_formation_threshold():
     atoms = Atoms("H2", positions=[[0, 0, 0], [0.8, 0, 0]], cell=[2, 10, 10], pbc=True)
     atoms.set_array("atom_id", np.array([10, 20]))
     detector_config = BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.6)})
     # The image at 1.2 A is in the gap, but the minimum image is bonded at the boundary.
-    assert _whole_cell_topology(atoms, detector_config) == ({(10, 20)}, set())
+    assert classify_bonds(atoms, detector_config) == ({(10, 20)}, set())
     atoms.positions[1, 0] = 0.9
-    assert _whole_cell_topology(atoms, detector_config) == (set(), {(10, 20)})
+    assert classify_bonds(atoms, detector_config) == (set(), {(10, 20)})

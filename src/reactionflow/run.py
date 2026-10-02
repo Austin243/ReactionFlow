@@ -19,7 +19,7 @@ from ase.io.trajectory import Trajectory
 from ._durable import ensure_directory, publish, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
-from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
+from .detection import BondChangeDetector, BondDetectorConfig, canonical_copy, transport_copy
 from .pathway import CalculatorProvider, PathwayConfig, PathwayOutcome, refine_pathway
 from .restart import ExactRestartSnapshot
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
@@ -73,13 +73,6 @@ class RunSummary:
     global_frame: int
     occurrences: int
     pathways: int
-
-
-def _transport(atoms: Atoms) -> Atoms:
-    snapshot = atoms.copy()
-    snapshot.calc = None
-    snapshot.info["atom_ids"] = list(atom_ids(snapshot))
-    return snapshot
 
 
 def _last_frame(path: Path) -> int:
@@ -286,9 +279,7 @@ class ReactionRun:
         """Assign stable IDs and seed the detector/tracker baseline."""
 
         with self._fatal("start"):
-            initial = assign_atom_ids(atoms.copy())
-            initial.calc = None
-            initial.info.pop("atom_ids", None)
+            initial = canonical_copy(atoms)
             self._detector = BondChangeDetector(self.config.detector)
             self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
             self._detector.process(initial, frame=0)
@@ -352,7 +343,7 @@ class ReactionRun:
 
         if self._global_frame <= written:
             return
-        frame = _transport(atoms)
+        frame = transport_copy(atoms)
         frame.info["reactionflow_global_step"] = self._global_step
         frame.info["reactionflow_global_frame"] = self._global_frame
         trajectory.write(frame)
@@ -400,7 +391,7 @@ class ReactionRun:
         try:
             with Trajectory(temporary / "images.traj", "w") as trajectory:
                 for image in outcome.images:
-                    trajectory.write(_transport(image))
+                    trajectory.write(transport_copy(image))
             result = {
                 "schema_version": 1,
                 "occurrence_id": occurrence_id,

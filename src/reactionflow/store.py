@@ -16,8 +16,8 @@ from ase import Atoms
 from ase.io import read, write
 
 from ._durable import ensure_directory, publish, sync_directory
-from .candidates import ReactionCandidate, same_reaction
-from .detection import BondDetectorConfig, assign_atom_ids, atom_ids
+from .candidates import ReactionCandidate, ReactionClasses
+from .detection import BondDetectorConfig, atom_ids, canonical_copy, transport_copy
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +36,11 @@ def _canonical_bonds(values: frozenset[tuple[int, int]]) -> list[list[int]]:
 
 def _structure_digest(atoms: Atoms) -> str:
     ids = atom_ids(atoms)
+    symbols = atoms.get_chemical_symbols()
     order = sorted(range(len(ids)), key=ids.__getitem__)
     data = {
         "atom_ids": [ids[index] for index in order],
-        "symbols": [atoms[index].symbol for index in order],
+        "symbols": [symbols[index] for index in order],
         "positions": [atoms.positions[index].tolist() for index in order],
         "cell": atoms.cell.array.tolist(),
         "pbc": atoms.pbc.tolist(),
@@ -62,19 +63,13 @@ def _candidate_data(candidate: ReactionCandidate) -> dict[str, object]:
     }
 
 
-def _write_endpoint(path: Path, atoms: Atoms) -> None:
-    snapshot = atoms.copy()
-    snapshot.info["atom_ids"] = list(atom_ids(snapshot))
-    write(path, snapshot)
-
-
 def _read_bundle(directory: Path) -> tuple[dict[str, object], ReactionCandidate]:
     metadata = json.loads((directory / "candidate.json").read_text(encoding="utf-8"))
     if metadata.get("schema_version") != 1:
         raise ValueError(f"unsupported candidate bundle in {directory}")
     data = metadata["candidate"]
-    reactant = assign_atom_ids(read(directory / "reactant.traj"))
-    product = assign_atom_ids(read(directory / "product.traj"))
+    reactant = canonical_copy(read(directory / "reactant.traj"))
+    product = canonical_copy(read(directory / "product.traj"))
     if data["reactant_sha256"] != _structure_digest(reactant) or data[
         "product_sha256"
     ] != _structure_digest(product):
@@ -99,6 +94,7 @@ class OccurrenceStore:
         self.root = Path(root)
         self.database = self.root / "reactions.sqlite3"
         self.candidates = self.root / "candidates"
+        self._classes: ReactionClasses | None = None
         ensure_directory(self.candidates)
         with closing(self._connect()) as db, db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -134,30 +130,37 @@ class OccurrenceStore:
             directory=self.root / row["bundle"],
         )
 
+    def _row(self, db: sqlite3.Connection, occurrence_id: str) -> sqlite3.Row | None:
+        return db.execute(
+            "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
+        ).fetchone()
+
+    def _class_id(self, db: sqlite3.Connection, candidate: ReactionCandidate) -> str:
+        """Return the class of an equivalent stored reaction, or name a new class."""
+
+        if self._classes is None:
+            # One bundle per class is read once; later lookups compare graphs in memory.
+            self._classes = ReactionClasses()
+            for row in db.execute(
+                "SELECT class_id, bundle, MIN(sequence) FROM occurrences GROUP BY class_id"
+            ):
+                self._classes.add(row["class_id"], _read_bundle(self.root / row["bundle"])[1])
+        class_id = self._classes.find(candidate)
+        if class_id is None:
+            class_id = f"reaction-{uuid4().hex}"
+            self._classes.add(class_id, candidate)
+        return class_id
+
     def _insert(
         self,
         db: sqlite3.Connection,
         occurrence_id: str,
-        bundle: str,
         candidate: ReactionCandidate,
     ) -> tuple[OccurrenceRecord, bool]:
-        existing = db.execute(
-            "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
-        ).fetchone()
+        existing = self._row(db, occurrence_id)
         if existing is not None:
             return self._record(existing), False
-
-        class_id = ""
-        seen_classes: set[str] = set()
-        for row in db.execute("SELECT * FROM occurrences ORDER BY sequence"):
-            if row["class_id"] in seen_classes:
-                continue
-            seen_classes.add(row["class_id"])
-            stored = _read_bundle(self.root / row["bundle"])[1]
-            if same_reaction(candidate, stored):
-                class_id = row["class_id"]
-                break
-        class_id = class_id or f"reaction-{uuid4().hex}"
+        class_id = self._class_id(db, candidate)
         has_representative = db.execute(
             "SELECT 1 FROM occurrences WHERE class_id = ? AND representative = 1", (class_id,)
         ).fetchone()
@@ -166,34 +169,31 @@ class OccurrenceStore:
             """INSERT INTO occurrences
                (occurrence_id, class_id, representative, bundle)
                VALUES (?, ?, ?, ?)""",
-            (occurrence_id, class_id, int(representative), bundle),
+            (occurrence_id, class_id, int(representative), f"candidates/{occurrence_id}"),
         )
-        row = db.execute(
-            "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
-        ).fetchone()
+        row = self._row(db, occurrence_id)
         assert row is not None
         return self._record(row), True
 
     def _recover(self) -> None:
         # An interrupted publication may have renamed a bundle without syncing its parent.
         sync_directory(self.candidates)
-        bundles: list[tuple[str, str, ReactionCandidate]] = []
-        for directory in sorted(self.candidates.iterdir()):
-            if not directory.is_dir() or directory.name.startswith("."):
-                continue
-            metadata, candidate = _read_bundle(directory)
-            occurrence_id = metadata.get("occurrence_id")
-            if occurrence_id != directory.name:
-                raise ValueError(f"candidate bundle ID conflicts with {directory}")
-            bundles.append((occurrence_id, str(Path("candidates") / occurrence_id), candidate))
-
+        bundles = {
+            path.name
+            for path in self.candidates.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        }
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            for row in db.execute("SELECT bundle FROM occurrences"):
-                if not (self.root / row["bundle"]).is_dir():
-                    raise FileNotFoundError(self.root / row["bundle"])
-            for occurrence_id, bundle, candidate in bundles:
-                self._insert(db, occurrence_id, bundle, candidate)
+            registered = {row["occurrence_id"] for row in db.execute("SELECT * FROM occurrences")}
+            for occurrence_id in sorted(registered - bundles):
+                raise FileNotFoundError(self.candidates / occurrence_id)
+            # A complete bundle left before its row was committed is registered now.
+            for occurrence_id in sorted(bundles - registered):
+                metadata, candidate = _read_bundle(self.candidates / occurrence_id)
+                if metadata.get("occurrence_id") != occurrence_id:
+                    raise ValueError(f"candidate bundle ID conflicts with {occurrence_id}")
+                self._insert(db, occurrence_id, candidate)
             db.commit()
 
     def _publish(
@@ -215,8 +215,8 @@ class OccurrenceStore:
             shutil.rmtree(temporary)
         temporary.mkdir()
         try:
-            _write_endpoint(temporary / "reactant.traj", candidate.reactant)
-            _write_endpoint(temporary / "product.traj", candidate.product)
+            write(temporary / "reactant.traj", transport_copy(candidate.reactant))
+            write(temporary / "product.traj", transport_copy(candidate.product))
             (temporary / "candidate.json").write_text(
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -238,34 +238,26 @@ class OccurrenceStore:
 
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", occurrence_id):
             raise ValueError("occurrence_id must be a filesystem-safe name")
-        candidate_data = _candidate_data(candidate)
         metadata = {
             "schema_version": 1,
             "occurrence_id": occurrence_id,
-            "candidate": candidate_data,
+            "candidate": _candidate_data(candidate),
             "detector_config": detector_config.to_dict(),
         }
-        bundle = str(Path("candidates") / occurrence_id)
-        expected_directory = self.root / bundle
         with closing(self._connect()) as db:
-            existing = db.execute(
-                "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
-            ).fetchone()
+            existing = self._row(db, occurrence_id)
         if existing is not None:
             record = self._record(existing)
-            if record.directory != expected_directory:
-                raise ValueError(f"occurrence ID {occurrence_id!r} has an invalid bundle path")
             if not record.directory.is_dir():
                 raise FileNotFoundError(record.directory)
-            stored_metadata, _ = _read_bundle(record.directory)
-            if stored_metadata != metadata:
+            if _read_bundle(record.directory)[0] != metadata:
                 raise ValueError(f"occurrence ID {occurrence_id!r} has conflicting data")
             return record, False
 
         published = self._publish(occurrence_id, candidate, metadata)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            result = self._insert(db, occurrence_id, bundle, published)
+            result = self._insert(db, occurrence_id, published)
             db.commit()
             return result
 
@@ -273,9 +265,7 @@ class OccurrenceStore:
         """Return one occurrence's registry assignment."""
 
         with closing(self._connect()) as db:
-            row = db.execute(
-                "SELECT * FROM occurrences WHERE occurrence_id = ?", (occurrence_id,)
-            ).fetchone()
+            row = self._row(db, occurrence_id)
         if row is None:
             raise KeyError(occurrence_id)
         return self._record(row)

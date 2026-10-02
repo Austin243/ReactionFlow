@@ -16,9 +16,10 @@ import ase
 import numpy as np
 from ase.calculators.calculator import Calculator
 
+from .._durable import file_digest
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState
-from .ase import ASELangevinBAOABAdapter, _sha256
+from .ase import ASELangevinBAOABAdapter
 
 
 def _load_torch(device: str) -> Any:
@@ -137,14 +138,15 @@ class TorchModelAdapter(ASELangevinBAOABAdapter):
         # Rehash before every new calculator: replacing a local checkpoint mid-run must
         # not let MD and refinement use different potentials under one recorded identity.
         files = {
-            name: {"path": str(path), "sha256": _sha256(path)} for name, path in self.files.items()
+            name: {"path": str(path), "sha256": file_digest(path)}
+            for name, path in self.files.items()
         }
         with _preserve_rng(torch):
             calculator = self._new_calculator()
         if not isinstance(calculator, Calculator):
             raise TypeError("model backend must return an ASE Calculator")
         try:
-            if any(_sha256(path) != files[name]["sha256"] for name, path in self.files.items()):
+            if any(file_digest(path) != files[name]["sha256"] for name, path in self.files.items()):
                 raise ValueError("model files changed while the calculator was being constructed")
             state = ComponentState(
                 kind=self.kind,
@@ -155,10 +157,12 @@ class TorchModelAdapter(ASELangevinBAOABAdapter):
                     "python_version": platform.python_version(),
                     "ase_version": ase.__version__,
                     "numpy_version": np.__version__,
-                    "adapter_source_sha256": _sha256(Path(inspect.getfile(type(self)))),
-                    "torch_adapter_source_sha256": _sha256(Path(__file__)),
-                    "ase_runtime_source_sha256": _sha256(Path(__file__).with_name("ase.py")),
-                    "integrator_source_sha256": _sha256(Path(__file__).parents[1] / "ase_npt.py"),
+                    "adapter_source_sha256": file_digest(Path(inspect.getfile(type(self)))),
+                    "torch_adapter_source_sha256": file_digest(Path(__file__)),
+                    "ase_runtime_source_sha256": file_digest(Path(__file__).with_name("ase.py")),
+                    "integrator_source_sha256": file_digest(
+                        Path(__file__).parents[1] / "ase_npt.py"
+                    ),
                     **_torch_environment(torch, self.device),
                     **self._extra_metadata(calculator),
                 },

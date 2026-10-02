@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import platform
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
@@ -18,6 +17,7 @@ from ase.calculators.calculator import Calculator
 from ase.md.langevinbaoab import LangevinBAOAB
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 
+from .._durable import file_digest
 from ..ase_npt import restore_langevin_baoab, snapshot_langevin_baoab
 from ..campaign import TrajectorySpec
 from ..restart import ComponentState, ExactRestartSnapshot
@@ -37,14 +37,6 @@ _ALLOWED_CONDITIONS = {
     "thermostat_tau_fs",
     "zero_total_momentum",
 }
-
-
-def _sha256(path: Path) -> str:
-    checksum = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
 
 
 def _positive_float(value: object, name: str) -> float:
@@ -230,7 +222,7 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
         for path in self.model_files:
             if not path.is_file():
                 raise FileNotFoundError(f"MLIP model file is missing: {path}")
-            hashes[str(path)] = _sha256(path)
+            hashes[str(path)] = file_digest(path)
         self._model_hashes = hashes
         return self._model_hashes
 
@@ -256,7 +248,7 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
         module_file = getattr(module, "__file__", None)
         source_path = None if module_file is None else Path(module_file).resolve()
         source_sha256 = (
-            None if source_path is None or not source_path.is_file() else _sha256(source_path)
+            None if source_path is None or not source_path.is_file() else file_digest(source_path)
         )
         self._contract = ComponentState(
             kind=_CALCULATOR_KIND,

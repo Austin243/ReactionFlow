@@ -64,6 +64,28 @@ def assign_atom_ids(atoms: Atoms) -> Atoms:
     return atoms
 
 
+def canonical_copy(atoms: Atoms) -> Atoms:
+    """Calculator-free copy whose stable IDs live only in the canonical array."""
+
+    copy = assign_atom_ids(atoms.copy())
+    copy.calc = None
+    copy.info.pop("atom_ids", None)
+    return copy
+
+
+def transport_copy(atoms: Atoms) -> Atoms:
+    """Calculator-free copy that also carries its IDs in ``info``.
+
+    ASE trajectory files do not store custom arrays; ``canonical_copy`` restores a frame read
+    back from one.
+    """
+
+    copy = atoms.copy()
+    copy.calc = None
+    copy.info["atom_ids"] = list(atom_ids(copy))
+    return copy
+
+
 def _threshold(value: object) -> tuple[float, float]:
     if not isinstance(value, Sequence) or isinstance(value, str) or len(value) != 2:
         raise TypeError("a pair threshold must be (form_distance, break_distance)")
@@ -127,6 +149,38 @@ class BondDetectorConfig:
             persistence_frames=value.get("persistence_frames", 3),
             pair_thresholds=value.get("pair_thresholds", {}),
         )
+
+
+def bond_distances(atoms: Atoms, config: BondDetectorConfig) -> dict[Bond, float]:
+    """Minimum-image distance of every atom-ID pair within the largest break distance."""
+
+    if len(atoms) < 2:
+        return {}
+    ids = atom_ids(atoms)
+    symbols = set(atoms.get_chemical_symbols())
+    cutoff = max(config.threshold_for(first, second)[1] for first in symbols for second in symbols)
+    distances: dict[Bond, float] = {}
+    for i, j, distance in zip(*neighbor_list("ijd", atoms, cutoff), strict=True):
+        if i == j:
+            continue
+        bond = _bond(ids[i], ids[j])
+        distances[bond] = min(float(distance), distances.get(bond, float("inf")))
+    return distances
+
+
+def classify_bonds(atoms: Atoms, config: BondDetectorConfig) -> tuple[set[Bond], set[Bond]]:
+    """Return the pairs within their formation distance and those inside the hysteresis gap."""
+
+    symbols = dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
+    bonded: set[Bond] = set()
+    ambiguous: set[Bond] = set()
+    for bond, distance in bond_distances(atoms, config).items():
+        form, breaking = config.threshold_for(symbols[bond[0]], symbols[bond[1]])
+        if distance <= form:
+            bonded.add(bond)
+        elif distance < breaking:
+            ambiguous.add(bond)
+    return bonded, ambiguous
 
 
 @dataclass(frozen=True)
@@ -201,20 +255,8 @@ class BondChangeDetector:
         )
 
     def _distances(self, atoms: Atoms, ids: tuple[int, ...]) -> dict[Bond, float]:
-        if len(atoms) < 2:
-            return {}
-        symbols = set(atoms.get_chemical_symbols())
-        cutoff = max(
-            self.config.threshold_for(first, second)[1] for first in symbols for second in symbols
-        )
-        first, second, values = neighbor_list("ijd", atoms, cutoff)
-        distances: dict[Bond, float] = {}
-        for i, j, distance in zip(first, second, values, strict=True):
-            if i == j:
-                continue
-            bond = _bond(ids[int(i)], ids[int(j)])
-            distances[bond] = min(float(distance), distances.get(bond, float("inf")))
-
+        distances = bond_distances(atoms, self.config)
+        # A stable bond stays monitored after it leaves the neighbor cutoff, so it can break.
         indices = {atom_id: index for index, atom_id in enumerate(ids)}
         for bond in self._stable - distances.keys():
             distances[bond] = float(
@@ -352,4 +394,8 @@ __all__ = [
     "BondEvent",
     "assign_atom_ids",
     "atom_ids",
+    "bond_distances",
+    "canonical_copy",
+    "classify_bonds",
+    "transport_copy",
 ]
