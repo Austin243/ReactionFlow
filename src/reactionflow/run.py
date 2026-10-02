@@ -285,7 +285,7 @@ class ReactionRun:
                     run.root / f"segments/{run._generation - 1:04d}/checkpoint/resume.json"
                 )
                 run._segment = run.segments.resume(token, recover_empty=True)
-                run._restore_observers(run._segment.atoms)
+                run._restore_observers(run._segment.atoms, token=token)
                 _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, run._generation)
         return run
 
@@ -456,9 +456,18 @@ class ReactionRun:
             pending_bonds=self._detector.pending_bonds,
         )
 
-    def _restore_observers(self, atoms: Atoms) -> None:
+    def _restore_observers(self, atoms: Atoms, *, token: ResumeToken) -> None:
         if self._detector is None or self._detector.last_frame != self._global_frame:
             raise ValueError("the detector checkpoint does not match the resume boundary")
+        if token.has_tracker:
+            self._tracker = ReactionTracker.read_checkpoint(
+                token.path.parent / "tracker",
+                stability_frames=self.config.candidate_stability_frames,
+            )
+            if self._tracker.last_frame != self._global_frame:
+                raise ValueError("the tracker checkpoint does not match the resume boundary")
+            return
+        # Legacy checkpoints were created only after the whole system settled.
         if self._detector.pending_bonds is not None:
             raise ValueError("cannot resume from a detector with pending changes")
         self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
@@ -584,6 +593,7 @@ class ReactionRun:
                     global_step=self._global_step,
                     global_frame=self._global_frame,
                     exact_restart=exact_restart,
+                    tracker=self._tracker,
                 )
             self._phase = "refining"
             self._write_state()
@@ -724,7 +734,7 @@ class ReactionRun:
             self._generation = self._segment.generation
             self._global_step = self._segment.global_step
             self._global_frame = self._segment.global_frame
-            self._restore_observers(self._segment.atoms)
+            self._restore_observers(self._segment.atoms, token=token)
             self._phase = "running"
             self._write_state()
             _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, self._generation)
@@ -747,7 +757,7 @@ class ReactionRun:
             self._generation = self._segment.generation
             self._global_step = self._segment.global_step
             self._global_frame = self._segment.global_frame
-            self._restore_observers(self._segment.atoms)
+            self._restore_observers(self._segment.atoms, token=token)
             self._phase = "running"
             # Make the restored state this generation's exact checkpoint before the MD runtime
             # is rebuilt, so an interruption while it loads still resumes exactly.
@@ -764,12 +774,17 @@ class ReactionRun:
         if self._phase == "completed":
             return self.summary()
         try:
-            if self._phase == "running":
-                assert self._tracker is not None
-                self._register(
-                    self._tracker.finish(),
-                    label=f"{self._global_frame:08d}-terminal",
+            if self._tracker is None and self._phase == "resume_ready":
+                token = ResumeToken.read(self._token_path)
+                self._restore_observers(
+                    assign_atom_ids(read(token.checkpoint_path)),
+                    token=token,
                 )
+            assert self._tracker is not None
+            self._register(
+                self._tracker.finish(),
+                label=f"{self._global_frame:08d}-terminal",
+            )
             self._phase = "completed"
             self._write_state()
             return self.summary()

@@ -198,7 +198,10 @@ def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -
     assert leases.live == 0 and leases.max_live == 1
 
 
-def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_path, caplog) -> None:
+@pytest.mark.parametrize("legacy_tracker", [False, True])
+def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(
+    tmp_path, caplog, legacy_tracker
+) -> None:
     leases = LeaseCounter()
     run = ReactionRun.create(tmp_path, config=run_config(observation_interval=1))
     caplog.set_level(logging.WARNING, logger="reactionflow.run")
@@ -212,6 +215,13 @@ def test_manual_reopen_suppresses_reverse_duplicate_and_serializes_leases(tmp_pa
         broken.calc = None
     token = run.checkpoint(broken)
     assert token.path.is_file() and run.phase == "refining"
+    if legacy_tracker:
+        import shutil
+
+        shutil.rmtree(token.path.parent / "tracker")
+        value = json.loads(token.path.read_text())
+        value.pop("has_tracker")
+        token.path.write_text(json.dumps(value))
 
     reopened = ReactionRun.open(tmp_path)
     assert reopened.phase == "refining"
@@ -390,3 +400,136 @@ def test_run_exact_restores_pending_monitor_then_refines_and_continues(tmp_path,
     if pressure is not None:
         expected_stages = ["md", "md", "relax_reactant", "md"]
     assert leases.stages == expected_stages
+
+
+def independent_run_config() -> ReactionRunConfig:
+    return ReactionRunConfig(
+        observation_interval=1,
+        detector=BondDetectorConfig(
+            persistence_frames=2,
+            pair_thresholds={"H-H": (0.8, 1.2), "C-O": (0.8, 1.2)},
+        ),
+        candidate_stability_frames=2,
+    )
+
+
+def independent_pairs() -> Atoms:
+    return Atoms("H2CO", positions=[[0, 0, 0], [0.6, 0, 0], [10, 0, 0], [10.6, 0, 0]])
+
+
+def skipped_refinement(candidate, **_kwargs):
+    from reactionflow import PathwayOutcome
+
+    return PathwayOutcome(status="failed", images=(candidate.reactant, candidate.product))
+
+
+def test_exact_reopen_after_local_confirmation_preserves_other_pending_region(
+    tmp_path, monkeypatch
+):
+    original_run = ScriptedExactRuntime.run
+
+    def run_both_pairs(runtime, steps):
+        original_run(runtime, steps)
+        if runtime.nsteps >= 3:
+            runtime.atoms.positions[3, 0] = 11.55
+
+    monkeypatch.setattr(ScriptedExactRuntime, "run", run_both_pairs)
+
+    def interrupt_refinement(*_args, **_kwargs):
+        raise KeyboardInterrupt("interrupted while another region is pending")
+
+    monkeypatch.setattr("reactionflow.run.refine_pathway", interrupt_refinement)
+    leases = LeaseCounter()
+    initial = independent_pairs()
+    run = ReactionRun.create(tmp_path, config=independent_run_config())
+    with pytest.raises(KeyboardInterrupt, match="another region is pending"):
+        run.run_exact(
+            initial,
+            runtime_provider=ScriptedRuntimeProvider(leases),
+            pathway_calculator_provider=leases,
+            total_steps=5,
+        )
+    assert run.phase == "refining" and run.global_frame == 3
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["detector_state"]["pending"]
+    monkeypatch.setattr("reactionflow.run.refine_pathway", skipped_refinement)
+    reopened = ReactionRun.open(tmp_path)
+    summary = reopened.run_exact(
+        runtime_provider=ScriptedRuntimeProvider(leases),
+        pathway_calculator_provider=leases,
+        total_steps=5,
+    )
+    assert (summary.phase, summary.occurrences, summary.pathways) == ("completed", 2, 2)
+    candidates = [
+        reopened.occurrences.load(record.occurrence_id) for record in reopened.occurrences.records()
+    ]
+    assert [
+        (item.atom_ids, item.reactant_frame, item.product_frame, item.observed_frame)
+        for item in candidates
+    ] == [((0, 1), 0, 1, 3), ((2, 3), 2, 3, 5)]
+    assert all(item.resolved for item in candidates)
+    final_state = json.loads((tmp_path / "state.json").read_text())
+    final_snapshot = ExactRestartSnapshot.read(
+        tmp_path / final_state["active_checkpoint"] / "exact-restart"
+    )
+    control = ScriptedExactRuntime(assign_atom_ids(initial.copy()))
+    control.run(5)
+    assert final_snapshot.dynamics.metadata == control.snapshot().dynamics.metadata
+    np.testing.assert_array_equal(final_snapshot.atoms.positions, control.atoms.positions)
+
+
+@pytest.mark.parametrize("finish_at_boundary", [False, True])
+def test_structural_reopen_retains_other_region_or_drains_it_at_completion(
+    tmp_path, monkeypatch, finish_at_boundary
+):
+    monkeypatch.setattr("reactionflow.run.refine_pathway", skipped_refinement)
+    run = ReactionRun.create(tmp_path, config=independent_run_config())
+    atoms = run.start(independent_pairs()).atoms
+    for frame in (1, 2, 3):
+        atoms.positions[1, 0] = 1.55
+        if frame == 3:
+            atoms.positions[3, 0] = 11.55
+        run.observe(atoms, global_step=frame, global_frame=frame)
+    run.checkpoint(atoms)
+    reopened = ReactionRun.open(tmp_path)
+    reopened.refine_pending(LeaseCounter())
+    reopened = ReactionRun.open(tmp_path)
+    if finish_at_boundary:
+        summary = reopened.complete()
+        assert summary.phase == "completed" and summary.occurrences == 2
+        unresolved = [
+            reopened.occurrences.load(record.occurrence_id)
+            for record in reopened.occurrences.records()
+            if not record.is_representative
+        ]
+        assert len(unresolved) == 1
+        assert unresolved[0].atom_ids == (2, 3) and not unresolved[0].resolved
+        assert (unresolved[0].reactant_frame, unresolved[0].product_frame) == (2, 3)
+        assert reopened.complete() == summary
+    else:
+        reopened.resume_segment()
+        # Exercise another interruption in the empty-generation handoff.
+        reopened = ReactionRun.open(tmp_path)
+        for frame in (4, 5):
+            records = reopened.observe(atoms, global_step=frame, global_frame=frame)
+            assert len(records) == (1 if frame == 5 else 0)
+        second = reopened.occurrences.load(records[0].occurrence_id)
+        assert second.atom_ids == (2, 3) and second.resolved
+        assert (second.reactant_frame, second.product_frame, second.observed_frame) == (2, 3, 5)
+
+
+def test_missing_new_tracker_checkpoint_does_not_reset_pending_history(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr("reactionflow.run.refine_pathway", skipped_refinement)
+    run = ReactionRun.create(tmp_path, config=run_config(observation_interval=1))
+    atoms = run.start(pair(0.6)).atoms
+    atoms.positions[1, 0] = 1.55
+    run.observe(atoms, global_step=1, global_frame=1)
+    token = run.checkpoint(atoms)
+    assert token.has_tracker
+    shutil.rmtree(token.path.parent / "tracker")
+    reopened = ReactionRun.open(tmp_path)
+    reopened.refine_pending(LeaseCounter())
+    with pytest.raises(FileNotFoundError):
+        reopened.resume_segment()
