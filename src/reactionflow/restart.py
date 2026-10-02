@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import json
-import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import numpy as np
 from ase import Atoms
 from ase.io import read, write
-
-from ._durable import ensure_directory, publish
 
 _TYPE_MARKER = "__reactionflow_type__"
 
@@ -128,64 +124,55 @@ class ExactRestartSnapshot:
         object.__setattr__(self, "atoms", atoms)
 
     def write(self, path: str | Path) -> Path:
-        """Atomically publish a new restart directory."""
+        """Write a new restart directory; a caller that needs crash safety publishes it."""
 
         final = Path(path).resolve()
-        if final.exists():
-            raise FileExistsError(final)
-        ensure_directory(final.parent)
-        temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
-        temporary.mkdir()
-        try:
-            atoms_path = temporary / "atoms.traj"
-            arrays_path = temporary / "arrays.npz"
-            state_path = temporary / "restart.json"
-            write(atoms_path, self.atoms, format="traj")
+        final.mkdir(parents=True)
+        atoms_path = final / "atoms.traj"
+        arrays_path = final / "arrays.npz"
+        state_path = final / "restart.json"
+        write(atoms_path, self.atoms, format="traj")
 
-            archive: dict[str, np.ndarray] = {}
-            atom_arrays: dict[str, str] = {}
-            for index, (name, array) in enumerate(sorted(self.atoms.arrays.items())):
-                array = np.asarray(array)
-                if array.dtype.hasobject:
-                    raise TypeError("atom arrays cannot use object dtype")
-                archive_name = f"atoms_{index:04d}"
+        archive: dict[str, np.ndarray] = {}
+        atom_arrays: dict[str, str] = {}
+        for index, (name, array) in enumerate(sorted(self.atoms.arrays.items())):
+            array = np.asarray(array)
+            if array.dtype.hasobject:
+                raise TypeError("atom arrays cannot use object dtype")
+            archive_name = f"atoms_{index:04d}"
+            archive[archive_name] = array
+            atom_arrays[name] = archive_name
+        components: dict[str, dict[str, Any]] = {}
+        for label, component in (
+            ("dynamics", self.dynamics),
+            ("calculator", self.calculator),
+        ):
+            names: dict[str, str] = {}
+            for index, (name, array) in enumerate(sorted(component.arrays.items())):
+                archive_name = f"{label}_{index:04d}"
                 archive[archive_name] = array
-                atom_arrays[name] = archive_name
-            components: dict[str, dict[str, Any]] = {}
-            for label, component in (
-                ("dynamics", self.dynamics),
-                ("calculator", self.calculator),
-            ):
-                names: dict[str, str] = {}
-                for index, (name, array) in enumerate(sorted(component.arrays.items())):
-                    archive_name = f"{label}_{index:04d}"
-                    archive[archive_name] = array
-                    names[name] = archive_name
-                components[label] = {
-                    "kind": component.kind,
-                    "version": component.version,
-                    "exact": component.exact,
-                    "metadata": _encode_json(component.metadata),
-                    "arrays": names,
-                }
-            np.savez_compressed(arrays_path, **archive)
-            manifest = {
-                "schema_version": 1,
-                "atom_arrays": atom_arrays,
-                "components": components,
-                "files": {
-                    "atoms.traj": _digest(atoms_path),
-                    "arrays.npz": _digest(arrays_path),
-                },
+                names[name] = archive_name
+            components[label] = {
+                "kind": component.kind,
+                "version": component.version,
+                "exact": component.exact,
+                "metadata": _encode_json(component.metadata),
+                "arrays": names,
             }
-            state_path.write_text(
-                json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
-                encoding="utf-8",
-            )
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
+        np.savez_compressed(arrays_path, **archive)
+        manifest = {
+            "schema_version": 1,
+            "atom_arrays": atom_arrays,
+            "components": components,
+            "files": {
+                "atoms.traj": _digest(atoms_path),
+                "arrays.npz": _digest(arrays_path),
+            },
+        }
+        state_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
         return final
 
     @classmethod

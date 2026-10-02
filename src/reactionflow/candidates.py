@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import json
-import shutil
 from collections.abc import Collection
 from dataclasses import dataclass
 from hashlib import sha256
 from numbers import Integral
 from pathlib import Path
-from uuid import uuid4
 
 import networkx as nx
 from ase import Atoms
 from ase.io import read, write
 
-from ._durable import ensure_directory, publish
 from .detection import Bond, assign_atom_ids, atom_ids
 
 
@@ -358,73 +355,67 @@ class ReactionTracker:
         return tuple(result)
 
     def write_checkpoint(self, path: str | Path) -> Path:
-        """Atomically persist independent windows and their endpoint snapshots."""
+        """Write independent windows and their endpoint snapshots to a new directory.
+
+        A caller that needs crash safety publishes the directory, as ReactionRun does.
+        """
 
         final = Path(path).resolve()
-        if final.exists():
-            raise FileExistsError(final)
-        ensure_directory(final.parent)
-        temporary = final.parent / f".{final.name}-{uuid4().hex}.tmp"
-        temporary.mkdir()
-        try:
-            snapshots = {"accepted.traj": self._accepted}
-            origin_names = {}
-            pending_data = []
-            for index, item in enumerate(self._pending):
-                product_name = f"product-{index}.traj"
-                snapshots[product_name] = item.product
-                origins = []
-                for origin in item.origins:
-                    if origin.frame not in origin_names:
-                        name = f"reactant-origin-{len(origin_names)}.traj"
-                        origin_names[origin.frame] = name
-                        snapshots[name] = origin.atoms
-                    origins.append(
-                        {
-                            "atom_ids": list(origin.atom_ids),
-                            "snapshot": origin_names[origin.frame],
-                            "bonds": _checkpoint_bonds(origin.bonds),
-                            "frame": origin.frame,
-                        }
-                    )
-                pending_data.append(
+        final.mkdir(parents=True)
+        snapshots = {"accepted.traj": self._accepted}
+        origin_names = {}
+        pending_data = []
+        for index, item in enumerate(self._pending):
+            product_name = f"product-{index}.traj"
+            snapshots[product_name] = item.product
+            origins = []
+            for origin in item.origins:
+                if origin.frame not in origin_names:
+                    name = f"reactant-origin-{len(origin_names)}.traj"
+                    origin_names[origin.frame] = name
+                    snapshots[name] = origin.atoms
+                origins.append(
                     {
-                        "atom_ids": list(item.atom_ids),
-                        "product": product_name,
-                        "origins": origins,
-                        "bonds": _checkpoint_bonds(item.bonds),
-                        "product_frame": item.product_frame,
-                        "count": item.count,
+                        "atom_ids": list(origin.atom_ids),
+                        "snapshot": origin_names[origin.frame],
+                        "bonds": _checkpoint_bonds(origin.bonds),
+                        "frame": origin.frame,
                     }
                 )
-            files: dict[str, str] = {}
-            for filename, atoms in snapshots.items():
-                if atoms is None:
-                    continue
-                snapshot = atoms.copy()
-                snapshot.calc = None
-                snapshot.info["atom_ids"] = list(atom_ids(snapshot))
-                destination = temporary / filename
-                write(destination, snapshot, format="traj")
-                files[filename] = _file_digest(destination)
-            value = {
-                "schema_version": 2,
-                "stability_frames": self.stability_frames,
-                "symbols": None if self._symbols is None else list(self._symbols.items()),
-                "accepted_bonds": _checkpoint_bonds(self._accepted_bonds),
-                "accepted_frame": self._accepted_frame,
-                "last_bonds": _checkpoint_bonds(self._last_bonds),
-                "pending": pending_data,
-                "last_frame": self._last_frame,
-                "files": files,
-            }
-            (temporary / "tracker.json").write_text(
-                json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            pending_data.append(
+                {
+                    "atom_ids": list(item.atom_ids),
+                    "product": product_name,
+                    "origins": origins,
+                    "bonds": _checkpoint_bonds(item.bonds),
+                    "product_frame": item.product_frame,
+                    "count": item.count,
+                }
             )
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
+        files: dict[str, str] = {}
+        for filename, atoms in snapshots.items():
+            if atoms is None:
+                continue
+            snapshot = atoms.copy()
+            snapshot.calc = None
+            snapshot.info["atom_ids"] = list(atom_ids(snapshot))
+            destination = final / filename
+            write(destination, snapshot, format="traj")
+            files[filename] = _file_digest(destination)
+        value = {
+            "schema_version": 2,
+            "stability_frames": self.stability_frames,
+            "symbols": None if self._symbols is None else list(self._symbols.items()),
+            "accepted_bonds": _checkpoint_bonds(self._accepted_bonds),
+            "accepted_frame": self._accepted_frame,
+            "last_bonds": _checkpoint_bonds(self._last_bonds),
+            "pending": pending_data,
+            "last_frame": self._last_frame,
+            "files": files,
+        }
+        (final / "tracker.json").write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return final
 
     @classmethod

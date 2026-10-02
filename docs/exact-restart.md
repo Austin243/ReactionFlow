@@ -24,9 +24,9 @@ snapshot.write("restart-000001")
 
 The directory contains a versioned JSON manifest, calculator-free `atoms.traj`, and a compressed
 NumPy array archive. Every ASE atom array is stored explicitly because ASE trajectory files do not
-retain arbitrary custom arrays. SHA-256 digests detect partial or damaged artifacts, object arrays
-and pickle loading are forbidden, and publication uses an atomic rename. Existing checkpoints are
-never overwritten.
+retain arbitrary custom arrays. SHA-256 digests detect partial or damaged artifacts, and object
+arrays and pickle loading are forbidden. Existing checkpoints are never overwritten; `ReactionRun`
+publishes each complete checkpoint directory with one atomic rename.
 
 ## Langevin BAOAB NPT
 
