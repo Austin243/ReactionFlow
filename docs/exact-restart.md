@@ -48,13 +48,12 @@ calculator factory and kwargs, model-file SHA-256 values, calculator source, and
 package versions to the checkpoint. Calculators with mutable inference state or their own RNG must
 use a custom adapter that snapshots that state explicitly.
 
-The built-in ANI-1xnr adapter uses deterministic PyTorch execution, disables TF32, fixes the
-cuBLAS workspace configuration, verifies the model file SHA-256, and records the Torch, TorchANI,
-CUDA, GPU-architecture, model, adapter-source, and Langevin-codec identities. Restore refuses any
-change to that calculator contract; it also binds the installed ReactionFlow version and complete
-Python source tree. A refused restore names each changed field with its checkpoint and installed
-values. The ASE/NumPy codec checks above protect the remaining integrator, thermostat, barostat,
-and RNG state.
+The built-in Torch adapters, ANI-1xnr included, use deterministic PyTorch execution, disable TF32,
+and fix the cuBLAS workspace configuration. They record the model-file SHA-256 values, options,
+package versions, the Torch, CUDA, GPU, and platform environment, and hashes of the adapter,
+runtime, and integrator source. Restore refuses any change to that calculator contract. A refused
+restore names each changed field with its checkpoint and installed values. The ASE/NumPy codec
+checks above protect the remaining integrator, thermostat, barostat, and RNG state.
 
 ## Exact ReactionRun execution
 
@@ -103,7 +102,7 @@ A run interrupted before its first checkpoint reopens in phase `new`; pass the i
 `run()` again, as the CLI does.
 
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
-boundary; there is no inexact fallback. The ANI-1xnr provider is
-optional and lazy-loaded so its model identity and calculator-state contract can be tested without
-making Torch part of the core installation. The generic ASE calculator provider likewise imports a
+boundary; there is no inexact fallback. The built-in model providers are optional and
+lazy-loaded so their model identity and calculator-state contract can be tested without making
+Torch part of the core installation. The generic ASE calculator provider likewise imports a
 user-selected MLIP only when a worker starts.

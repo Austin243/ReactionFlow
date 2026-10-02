@@ -381,7 +381,7 @@ ANI-1xnr is a reactive potential for H, C, N, and O trained at the BLYP/TZV2P le
 always loads one pinned weight file, so it has no `model` or `checkpoint` option. Preparation
 downloads that file from a fixed revision of the
 [`roitberg-group/ani1xnr`](https://huggingface.co/roitberg-group/ani1xnr) repository and checks
-its SHA-256; runs check it again before every calculator is built. `model_index` selects one of
+its SHA-256; the adapter checks it again when a worker starts. `model_index` selects one of
 the eight ensemble members, `dtype` is `float32` (default) or `float64`, and `strategy` is `pyaev`
 (default) or `cuaev`. The adapter requires `torch` 2.11.0 and `torchani` 2.8.4. See the
 [ANI-1xnr paper](https://www.nature.com/articles/s41557-023-01427-3) for the training data and

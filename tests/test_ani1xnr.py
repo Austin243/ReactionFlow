@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from typing import ClassVar
 
@@ -12,7 +14,7 @@ import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
-from reactionflow import ComponentState
+from reactionflow.adapters import _torch, ani1xnr
 from reactionflow.adapters.ani1xnr import ANI1xnrAdapter
 from reactionflow.campaign import CampaignConfig, TrajectorySpec
 
@@ -57,36 +59,44 @@ def _atoms() -> Atoms:
     )
 
 
-def _fake_backend(monkeypatch) -> None:
-    state = ComponentState(kind="reactionflow.ani1xnr", metadata={"fake": True})
-    monkeypatch.setattr(ANI1xnrAdapter, "_load_backend", lambda self: (object(), object()))
-    monkeypatch.setattr(ANI1xnrAdapter, "_calculator_state", lambda self: state)
-    monkeypatch.setattr(
-        ANI1xnrAdapter,
-        "_new_calculator",
-        lambda self, torch, factory: HarmonicSolid(),
-    )
+def _fake_backend(monkeypatch, tmp_path) -> dict[str, object]:
+    """Cache stand-in weights and replace Torch and TorchANI; return matching adapter options."""
+
+    weights = tmp_path / "ani1xnr/StateDicts/ani1xnr.pt"
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(b"weights")
+    monkeypatch.setattr(ani1xnr, "MODEL_SHA256", hashlib.sha256(b"weights").hexdigest())
+    monkeypatch.setattr(ani1xnr, "require_package", lambda *args: None)
+    monkeypatch.setattr(_torch, "_load_torch", lambda device: None)
+    monkeypatch.setattr(_torch, "_preserve_rng", lambda torch: nullcontext())
+    monkeypatch.setattr(_torch, "_torch_environment", lambda torch, device: {"device": device})
+    monkeypatch.setattr(_torch, "version", lambda name: "test-version")
+    monkeypatch.setattr(ANI1xnrAdapter, "_new_calculator", lambda self: HarmonicSolid())
+    return {"device": "cpu", "cache_dir": str(tmp_path)}
 
 
-def test_adapter_validates_configuration_without_importing_optional_backend() -> None:
+def test_adapter_validates_configuration_without_importing_optional_backend(
+    monkeypatch, tmp_path
+) -> None:
+    options = _fake_backend(monkeypatch, tmp_path)
     adapter = ANI1xnrAdapter(
         trajectory=_trajectory(),
-        options={"device": "cuda", "model_index": 0, "dtype": "float32"},
+        options={**options, "device": "cuda", "model_index": 0, "dtype": "float32"},
     )
     assert (adapter.device, adapter.model_index, adapter.dtype) == ("cuda", 0, "float32")
 
     with pytest.raises(ValueError, match="unknown ANI-1xnr adapter options"):
-        ANI1xnrAdapter(trajectory=_trajectory(), options={"mystery": True})
+        ANI1xnrAdapter(trajectory=_trajectory(), options={**options, "mystery": True})
     with pytest.raises(ValueError, match="unknown ASE trajectory conditions"):
         ANI1xnrAdapter(
             trajectory=_trajectory(conditions={"unknown": True}),
-            options={},
+            options=options,
         )
 
 
-def test_adapter_restart_matches_uninterrupted_npt_exactly(monkeypatch) -> None:
-    _fake_backend(monkeypatch)
-    adapter = ANI1xnrAdapter(trajectory=_trajectory(), options={"device": "cpu"})
+def test_adapter_restart_matches_uninterrupted_npt_exactly(monkeypatch, tmp_path) -> None:
+    options = _fake_backend(monkeypatch, tmp_path)
+    adapter = ANI1xnrAdapter(trajectory=_trajectory(), options=options)
 
     uninterrupted_atoms = _atoms()
     with adapter.start(uninterrupted_atoms) as uninterrupted:
@@ -119,18 +129,17 @@ def test_adapter_restart_matches_uninterrupted_npt_exactly(monkeypatch) -> None:
         )
 
 
-def test_adapter_rejects_changed_calculator_contract(monkeypatch) -> None:
-    _fake_backend(monkeypatch)
-    adapter = ANI1xnrAdapter(trajectory=_trajectory(), options={"device": "cpu"})
+def test_adapter_rejects_changed_calculator_contract(monkeypatch, tmp_path) -> None:
+    options = _fake_backend(monkeypatch, tmp_path)
+    adapter = ANI1xnrAdapter(trajectory=_trajectory(), options=options)
     with adapter.start(_atoms()) as runtime:
         checkpoint = runtime.snapshot()
 
     monkeypatch.setattr(
-        ANI1xnrAdapter,
-        "_calculator_state",
-        lambda self: ComponentState(kind="reactionflow.ani1xnr", metadata={"fake": False}),
+        _torch, "_torch_environment", lambda torch, device: {"device": device, "changed": True}
     )
-    with pytest.raises(ValueError, match="environment differs"), adapter.restore(checkpoint):
+    resubmitted = ANI1xnrAdapter(trajectory=_trajectory(), options=options)
+    with pytest.raises(ValueError, match="environment differs"), resubmitted.restore(checkpoint):
         pass
 
 
