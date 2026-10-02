@@ -46,6 +46,8 @@ validation during [pathway refinement](pathway-refinement.md).
 Equivalent occurrences use [`same_reaction()`](reaction-identity.md) and share an opaque class ID.
 Every occurrence still has its own row and bundle. An unresolved terminal candidate is retained
 but is not a representative; the first later resolved match becomes the class representative.
+That assignment never changes. `ReactionRun` may refine a later resolved occurrence after a failed
+attempt, without replacing the representative or overwriting any candidate or pathway outcome.
 
 Directories are written beside their final destination and renamed only after all three files are
 complete. If interruption leaves a complete directory before its SQLite row is committed, opening
