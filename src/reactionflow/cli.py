@@ -8,6 +8,7 @@ import json
 import math
 import os
 import socket
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict
@@ -176,7 +177,7 @@ def run_selected_trajectory(
             preflight(atoms)
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         run = ReactionRun.create(root, config=campaign.reaction_run)
-    return run.run_exact(
+    return run.run(
         atoms,
         runtime_provider=adapter,
         pathway_calculator_provider=adapter.calculator,
@@ -257,14 +258,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "trajectories": len(campaign.trajectories),
             "require_gpu": campaign.require_gpu,
             "atoms": len(atoms),
+            "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
-        adapter_profile_counts: dict[str, int] = {}
-        for index in range(len(campaign.trajectories)):
-            profile = campaign.adapter_profile_for(index)
-            if profile is not None:
-                adapter_profile_counts[profile] = adapter_profile_counts.get(profile, 0) + 1
-        if adapter_profile_counts:
-            payload["adapter_profile_counts"] = adapter_profile_counts
         if arguments.command == "plan":
             if arguments.gpus_per_node < 1:
                 parser.error("--gpus-per-node must be positive")

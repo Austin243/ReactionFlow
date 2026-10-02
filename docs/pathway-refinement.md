@@ -118,7 +118,7 @@ apply to the combined atomic/cell gradient, with the cell scaling documented in 
 
 Results identify `method`, `pressure_GPa`, and `barrier_quantity`. `energies_eV` remains potential
 energy; NPT adds `enthalpies_eV` and `volumes_A3`, and `barrier_eV` uses enthalpy. Saved images retain
-their individual cells. Older results load as fixed-cell NEB and are not recalculated.
+their individual cells.
 
 ## Current limits
 

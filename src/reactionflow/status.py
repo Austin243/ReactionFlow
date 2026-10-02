@@ -160,7 +160,7 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
     ]
     reactions.sort(
         key=lambda item: (
-            item["model"] or "",
+            item["model"],
             item["pressure_GPa"] is not None,
             item["pressure_GPa"] or 0.0,
             -item["events"],
@@ -198,7 +198,7 @@ def format_status(report: dict[str, Any]) -> str:
     trajectory_rows = [
         [
             row["trajectory"],
-            row["model"] or "-",
+            row["model"],
             _pressure(row["pressure_GPa"]),
             row["phase"],
             f"{row['global_step']}/{row['total_steps']}",
@@ -228,7 +228,7 @@ def format_status(report: dict[str, Any]) -> str:
         reaction_rows.append(
             [
                 entry["reaction"],
-                entry["model"] or "-",
+                entry["model"],
                 _pressure(entry["pressure_GPa"]),
                 str(len(entry["trajectories"])),
                 str(entry["events"]),

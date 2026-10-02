@@ -1,10 +1,9 @@
 # Independent trajectory campaigns
 
 A campaign is a JSON file containing one starting structure and any number of independently
-parameterized trajectories. Each trajectory uses exactly one MLIP adapter configuration. A schema
-version 1 campaign shares one adapter across every trajectory; schema version 2 defines named
-adapter profiles and makes the assignment explicit on each trajectory. ReactionFlow does not
-create a central scheduler or a monitor service. Each process owns exactly one trajectory,
+parameterized trajectories. Each trajectory uses exactly one MLIP adapter configuration: the
+campaign defines named adapter profiles and assigns one explicitly to each trajectory. ReactionFlow
+does not create a central scheduler or a monitor service. Each process owns exactly one trajectory,
 propagates MD on its one visible GPU, and runs that trajectory's bond monitor on CPU cores local to
 the same node at each observation boundary.
 
@@ -14,9 +13,9 @@ use the same mapping until they reach the allocation limits imposed by the site 
 
 ## Multiple models in one submission
 
-Use schema version 2 when trajectories in one submission should use different models. Define each
-complete adapter configuration once under `adapter_profiles`, then set `adapter_profile` on every
-trajectory:
+Define each complete adapter configuration once under `adapter_profiles`, then set
+`adapter_profile` on every trajectory. A single-model campaign defines one profile; trajectories in
+one submission may also use different models:
 
 ```json
 {
@@ -76,13 +75,13 @@ GPU number. This keeps generated campaign files easy to audit and prevents inser
 a trajectory from silently changing its model. `reactionflow plan` reports the trajectory count,
 resource estimate, and assignment counts under `adapter_profile_counts` before submission.
 
-Schema version 2 has no profile inheritance or per-trajectory option merging: every named profile
-is a complete adapter specification. All profiles in one submission must be usable in the same
+There is no profile inheritance or per-trajectory option merging: every named profile is a
+complete adapter specification. All profiles in one submission must be usable in the same
 software environment and fit the requested per-task resources. Use separate campaigns when models
 need incompatible environments or different GPU shapes.
 
-The bundled ANI-1xnr campaign remains a schema version 1 example. Its top-level `adapter` applies
-to all trajectories and continues to be supported unchanged for single-model work.
+The bundled ANI-1xnr campaign defines one `ani1xnr` profile and assigns it to all four
+trajectories.
 
 The structure and output paths are relative to the campaign file; built-in model checkpoint and
 cache paths must be absolute. Trajectory IDs are unique output-directory names. The
@@ -126,22 +125,20 @@ as `external_setup`; those adapters do not support `run --download`.
 ### Use an ASE calculator directly
 
 For a deterministic, stateless MLIP that already exposes an ASE `Calculator`, use the built-in
-generic adapter. No ReactionFlow-specific Python class is required. This schema version 1 block can
-also be used unchanged as the value of a named schema version 2 adapter profile:
+generic adapter. No ReactionFlow-specific Python class is required. Use this block as the value of
+a named adapter profile:
 
 ```json
 {
-  "adapter": {
-    "factory": "reactionflow.adapters.ase:create_adapter",
-    "options": {
-      "calculator_factory": "my_mlip.calculator:create_calculator",
-      "calculator_kwargs": {
-        "checkpoint": "/absolute/path/to/model.ckpt",
-        "device": "cuda"
-      },
-      "model_files": ["/absolute/path/to/model.ckpt"],
-      "packages": ["my-mlip-package", "torch"]
-    }
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "my_mlip.calculator:create_calculator",
+    "calculator_kwargs": {
+      "checkpoint": "/absolute/path/to/model.ckpt",
+      "device": "cuda"
+    },
+    "model_files": ["/absolute/path/to/model.ckpt"],
+    "packages": ["my-mlip-package", "torch"]
   }
 }
 ```
@@ -168,8 +165,8 @@ state can be captured explicitly.
 
 ### Write a custom adapter
 
-Each profile's `factory` (or `adapter.factory` in schema version 1) is an explicit
-`module:callable` reference. ReactionFlow calls the selected factory once in each worker:
+Each profile's `factory` is an explicit `module:callable` reference. ReactionFlow calls the
+selected factory once in each worker:
 
 ```python
 def create_adapter(*, trajectory, options):

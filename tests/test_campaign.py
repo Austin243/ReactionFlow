@@ -74,18 +74,21 @@ def _campaign(tmp_path, *, count: int = 1, require_gpu: bool = False):
     structure.set_array("source_marker", np.asarray([7]))
     write(tmp_path / "structure.extxyz", structure)
     value = {
-        "schema_version": 1,
+        "schema_version": 2,
         "structure": "structure.extxyz",
         "output_root": "runs",
         "require_gpu": require_gpu,
-        "adapter": {
-            "factory": f"{__name__}:create_test_adapter",
-            "options": {"model": "test-model"},
+        "adapter_profiles": {
+            "test": {
+                "factory": f"{__name__}:create_test_adapter",
+                "options": {"model": "test-model"},
+            }
         },
         "reaction_run": {"observation_interval": 1},
         "trajectories": [
             {
                 "id": f"trajectory-{index:04d}",
+                "adapter_profile": "test",
                 "total_steps": 2,
                 "timestep_fs": 1.0,
                 "temperature_K": 100.0 + index,
@@ -104,8 +107,7 @@ def _campaign(tmp_path, *, count: int = 1, require_gpu: bool = False):
 def _profile_campaign(tmp_path, assignments: list[str]):
     path = _campaign(tmp_path, count=len(assignments))
     value = json.loads(path.read_text(encoding="utf-8"))
-    adapter = value.pop("adapter")
-    value["schema_version"] = 2
+    adapter = value["adapter_profiles"]["test"]
     value["adapter_profiles"] = {
         name: {
             **adapter,
@@ -128,16 +130,15 @@ def test_campaign_loads_relative_paths_and_arbitrary_trajectory_count(tmp_path) 
     assert campaign.trajectory(129).temperature_K == 229.0
     assert campaign.trajectory(129).conditions == {"integrator": "npt"}
     assert campaign.reaction_run.observation_interval == 1
-    assert campaign.adapter_for(129) == campaign.adapter
-    assert campaign.adapter_profile_for(129) is None
+    assert campaign.adapter_for(129) == campaign.adapter_profiles["test"]
+    assert campaign.adapter_profile_for(129) == "test"
 
 
-def test_v2_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
+def test_campaign_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
     assignments = ["model-a"] * 4 + ["model-b"] * 2 + ["model-c"] * 2
     path = _profile_campaign(tmp_path, assignments)
     campaign = CampaignConfig.load(path)
 
-    assert campaign.adapter is None
     assert [campaign.adapter_profile_for(index) for index in range(8)] == assignments
     assert [campaign.adapter_for(index).options["model"] for index in range(8)] == assignments
 
@@ -160,7 +161,7 @@ def test_v2_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
     assert FACTORY_CALLS == [("trajectory-0004", {"model": "model-b"})]
 
 
-def test_v2_rejects_invalid_profile_configuration(tmp_path) -> None:
+def test_campaign_rejects_invalid_profile_configuration(tmp_path) -> None:
     path = _profile_campaign(tmp_path, ["model-a"])
     valid = json.loads(path.read_text(encoding="utf-8"))
 
@@ -173,16 +174,16 @@ def test_v2_rejects_invalid_profile_configuration(tmp_path) -> None:
     unsafe_profile["adapter_profiles"]["not safe"] = unsafe_profile["adapter_profiles"].pop(
         "model-a"
     )
-    schema_one_with_profiles = {**valid, "schema_version": 1}
-    schema_two_with_adapter = {**valid, "adapter": valid["adapter_profiles"]["model-a"]}
+    single_adapter_schema = {**valid, "schema_version": 1}
+    top_level_adapter = {**valid, "adapter": valid["adapter_profiles"]["model-a"]}
 
     cases = [
         (missing_assignment, "must name an adapter profile"),
         (unknown_assignment, "references unknown adapter profile: 'missing'"),
         (empty_profiles, "must be a non-empty object"),
         (unsafe_profile, "profile name must be a safe non-empty identifier"),
-        (schema_one_with_profiles, "unknown campaign keys"),
-        (schema_two_with_adapter, "unknown campaign keys"),
+        (single_adapter_schema, "unsupported campaign schema"),
+        (top_level_adapter, "unknown campaign keys"),
     ]
     for value, message in cases:
         path.write_text(json.dumps(value), encoding="utf-8")
@@ -190,7 +191,7 @@ def test_v2_rejects_invalid_profile_configuration(tmp_path) -> None:
             CampaignConfig.load(path)
 
 
-def test_v2_contract_uses_resolved_adapter_not_profile_name(tmp_path) -> None:
+def test_contract_uses_resolved_adapter_not_profile_name(tmp_path) -> None:
     path = _profile_campaign(tmp_path, ["model-a"])
     first = run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -241,13 +242,13 @@ def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path, monkeypat
     path = _campaign(tmp_path)
     campaign = CampaignConfig.load(path)
     received = []
-    original = ReactionRun.run_exact
+    original = ReactionRun.run
 
     def capture(self, *args, **kwargs):
         received.append(kwargs["pressure_GPa"])
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ReactionRun, "run_exact", capture)
+    monkeypatch.setattr(ReactionRun, "run", capture)
 
     first = run_selected_trajectory(campaign, index=0, environment={})
     second = run_selected_trajectory(campaign, index=0, environment={})
@@ -277,6 +278,7 @@ def test_cli_plan_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:
     assert main(["plan", str(path), "--gpus-per-node", "4"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan == {
+        "adapter_profile_counts": {"test": 130},
         "atoms": 1,
         "campaign": str(path),
         "gpus": 130,

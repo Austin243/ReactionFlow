@@ -3,8 +3,7 @@
 ReactionFlow includes optional MACE, MACE-FIELD, UMA, AIMNet2, ORB, MatterSim, CHGNet, SevenNet,
 NEP89, and ANI-1xnr adapters. Other models can use the
 [generic ASE calculator adapter or a custom adapter](campaigns.md#mlip-adapter). Model selection
-uses the existing campaign format: one `adapter` in schema version 1, or named `adapter_profiles`
-assigned to trajectories in schema version 2. No new campaign fields are required.
+uses the campaign's named `adapter_profiles`, each assigned to trajectories by name.
 
 List supported models, heads, tasks, and their intended domains without installing any backend:
 
@@ -96,8 +95,7 @@ an unsupported-adapter error. The existing ANI setup workflow is unchanged.
 
 ## MACE profile
 
-This is a profile block to include in a schema version 2 campaign; the inner factory/options
-object also works as the schema version 1 `adapter`:
+This is a profile block to include in a campaign's `adapter_profiles`:
 
 ```json
 {

@@ -429,39 +429,3 @@ def test_merge_retains_independent_origins_after_provisional_cancellation(
         assert candidate.reactant.get_distance(*pair) > 1.2
         assert candidate.product.get_distance(*pair) == pytest.approx(0.6)
     assert tracker.finish() == ()
-
-
-def test_legacy_tracker_checkpoint_continues_each_pending_region(tmp_path) -> None:
-    import hashlib
-    import json
-
-    from ase.io import write
-
-    ids = (0, 1, 2, 3)
-    root = tmp_path / "legacy"
-    root.mkdir()
-    files = {}
-    for name, frame in (("accepted.traj", 0), ("reactant.traj", 0), ("pending_product.traj", 1)):
-        atoms = tracked_frame("H4", frame, ids)
-        atoms.info["atom_ids"] = list(ids)
-        write(root / name, atoms)
-        files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
-    value = {
-        "schema_version": 1,
-        "stability_frames": 2,
-        "symbols": [[key, "H"] for key in ids],
-        "accepted_bonds": [],
-        "accepted_frame": 0,
-        "reactant_frame": 0,
-        "pending": {"bonds": [[0, 1], [2, 3]], "product_frame": 1, "count": 1},
-        "last_frame": 1,
-        "files": files,
-    }
-    (root / "tracker.json").write_text(json.dumps(value))
-    tracker = ReactionTracker.read_checkpoint(root)
-    candidates = tracker.process(
-        tracked_frame("H4", 2, ids), frame=2, stable_bonds=[(0, 1), (2, 3)], pending_bonds=None
-    )
-    assert [item.atom_ids for item in candidates] == [(0, 1), (2, 3)]
-    assert all(item.resolved and item.reactant_frame == 0 for item in candidates)
-    assert tracker.finish() == ()

@@ -292,9 +292,9 @@ def test_run_prepares_before_adapter_loading_and_trajectory_creation(
 
     def create(root, *, config):
         events.append("create")
-        return SimpleNamespace(run_exact=run_exact)
+        return SimpleNamespace(run=run)
 
-    def run_exact(atoms, **kwargs):
+    def run(atoms, **kwargs):
         assert kwargs["runtime_provider"] is adapter
         assert kwargs["pathway_calculator_provider"] is adapter.calculator
         events.append("run")

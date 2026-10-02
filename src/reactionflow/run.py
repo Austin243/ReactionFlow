@@ -1,11 +1,11 @@
-"""Minimal scheduler-neutral reaction run and synchronous ASE executor."""
+"""One trajectory: exact MD, live bond monitoring, and serial pathway refinement."""
 
 from __future__ import annotations
 
 import json
-import logging
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from numbers import Integral
 from pathlib import Path
@@ -14,39 +14,23 @@ from uuid import uuid4
 
 import numpy as np
 from ase import Atoms
-from ase.io import read
 from ase.io.trajectory import Trajectory
 
 from ._durable import ensure_directory, publish, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, assign_atom_ids, atom_ids
-from .pathway import (
-    CalculatorProvider,
-    ConnectivityCheck,
-    FrequencyValidation,
-    PathwayConfig,
-    PathwayOutcome,
-    refine_pathway,
-)
+from .pathway import CalculatorProvider, PathwayConfig, PathwayOutcome, refine_pathway
 from .restart import ExactRestartSnapshot
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
-from .segments import ResumeToken, SegmentGeneration, SegmentStore
 from .store import OccurrenceRecord, OccurrenceStore
 
-DynamicsFactory = Callable[[Atoms], Any]
-
-_LOGGER = logging.getLogger(__name__)
-_STRUCTURAL_RESTART_NOTICE = (
-    "Exact ASE dynamics state was not restored; continuing generation %d from a structural "
-    "checkpoint. The caller will provide fresh RNG, thermostat, barostat, integrator, and "
-    "calculator runtime state."
-)
+_PHASES = {"new", "running", "refining", "completed", "failed"}
 
 
 @dataclass(frozen=True, slots=True)
 class ReactionRunConfig:
-    """Controls shared by manual and synchronous ReactionRun execution."""
+    """Observation cadence, detector, candidate stability, and pathway controls."""
 
     observation_interval: int = 100
     detector: BondDetectorConfig = field(default_factory=BondDetectorConfig)
@@ -81,7 +65,7 @@ class ReactionRunConfig:
 
 @dataclass(frozen=True, slots=True)
 class RunSummary:
-    """Small durable-run summary returned by ``run_ase``."""
+    """Small durable-run summary returned by ``ReactionRun.run``."""
 
     phase: str
     generation: int
@@ -98,73 +82,15 @@ def _transport(atoms: Atoms) -> Atoms:
     return snapshot
 
 
-def _frequency_validation_to_dict(
-    validation: FrequencyValidation | None,
-) -> dict[str, object] | None:
-    if validation is None:
-        return None
-    return {
-        "status": validation.status,
-        "transition_state_index": validation.transition_state_index,
-        "active_atom_ids": list(validation.active_atom_ids),
-        "displacement_A": validation.displacement_A,
-        "imaginary_cutoff_cm1": validation.imaginary_cutoff_cm1,
-        "scope": validation.scope,
-        "active_max_force_eV_A": validation.active_max_force_eV_A,
-        "frequencies_cm1": list(validation.frequencies_cm1),
-        "imaginary_mode_indices": list(validation.imaginary_mode_indices),
-        "primary_mode_index": validation.primary_mode_index,
-        "primary_mode": [list(vector) for vector in validation.primary_mode],
-        "message": validation.message,
-    }
+def _last_frame(path: Path) -> int:
+    """Global frame of the last trajectory entry, or -1 when none has been written."""
 
-
-def _frequency_validation_from_dict(
-    value: Mapping[str, Any] | None,
-) -> FrequencyValidation | None:
-    if value is None:
-        return None
-    active_max_force = value.get("active_max_force_eV_A")
-    primary_mode_index = value.get("primary_mode_index")
-    transition_state_index = value.get("transition_state_index")
-    return FrequencyValidation(
-        status=str(value["status"]),
-        transition_state_index=(
-            None if transition_state_index is None else int(transition_state_index)
-        ),
-        active_atom_ids=tuple(map(int, value["active_atom_ids"])),
-        displacement_A=float(value["displacement_A"]),
-        imaginary_cutoff_cm1=float(value["imaginary_cutoff_cm1"]),
-        scope=str(value.get("scope", "active_atoms_fixed_environment")),
-        active_max_force_eV_A=(None if active_max_force is None else float(active_max_force)),
-        frequencies_cm1=tuple(map(float, value.get("frequencies_cm1", []))),
-        imaginary_mode_indices=tuple(map(int, value.get("imaginary_mode_indices", []))),
-        primary_mode_index=(None if primary_mode_index is None else int(primary_mode_index)),
-        primary_mode=tuple(tuple(map(float, vector)) for vector in value.get("primary_mode", [])),
-        message=str(value.get("message", "")),
-    )
-
-
-def _connectivity_to_dict(check: ConnectivityCheck | None) -> dict[str, object] | None:
-    if check is None:
-        return None
-    return {
-        "status": check.status,
-        "displacement_A": check.displacement_A,
-        "sides": list(check.sides),
-        "message": check.message,
-    }
-
-
-def _connectivity_from_dict(value: Mapping[str, Any] | None) -> ConnectivityCheck | None:
-    if value is None:
-        return None
-    return ConnectivityCheck(
-        status=str(value["status"]),
-        displacement_A=float(value["displacement_A"]),
-        sides=tuple(map(str, value.get("sides", []))),
-        message=str(value.get("message", "")),
-    )
+    if not path.exists() or path.stat().st_size == 0:
+        return -1
+    with Trajectory(path) as trajectory:
+        if len(trajectory) == 0:
+            return -1
+        return int(trajectory[-1].info["reactionflow_global_frame"])
 
 
 def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
@@ -177,7 +103,13 @@ def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
 
 
 class ReactionRun:
-    """Connect detection, candidate storage, pathways, and segment checkpoints."""
+    """Connect detection, candidate storage, pathways, and exact MD checkpoints.
+
+    Every observation publishes one exact checkpoint: the dynamics and calculator snapshot plus
+    the reaction tracker, named by ``state.json`` together with the detector state. A confirmed
+    reaction releases the MD runtime, refines the queued pathways, and restores that same
+    checkpoint into the next trajectory generation, exactly as a resubmitted job does.
+    """
 
     def __init__(self, root: Path, config: ReactionRunConfig) -> None:
         self.root = root.resolve()
@@ -188,18 +120,17 @@ class ReactionRun:
         ensure_directory(self.pathways)
         ensure_directory(self.runtime_checkpoints)
         self.occurrences = OccurrenceStore(self.root)
-        self.segments = SegmentStore(self.root)
         self._phase = "new"
         self._generation = 0
         self._global_step = 0
         self._global_frame = 0
         self._pending: list[str] = []
         self._failure: dict[str, str] | None = None
-        self._segment: SegmentGeneration | None = None
+        self._initial: Atoms | None = None
         self._detector: BondChangeDetector | None = None
         self._tracker: ReactionTracker | None = None
         self._active_checkpoint: Path | None = None
-        self._exact_snapshot: ExactRestartSnapshot | None = None
+        self._snapshot: ExactRestartSnapshot | None = None
         self._created_with: str | None = __version__
 
     @classmethod
@@ -221,71 +152,29 @@ class ReactionRun:
 
     @classmethod
     def open(cls, root: str | Path) -> ReactionRun:
-        """Open a run, including one interrupted after a complete checkpoint."""
+        """Open a run at its last durable observation boundary."""
 
         path = Path(root).resolve()
         value = json.loads((path / "state.json").read_text(encoding="utf-8"))
-        if value.get("schema_version") not in {1, 2}:
+        if value.get("schema_version") != 2 or value["phase"] not in _PHASES:
             raise ValueError("unsupported ReactionRun state")
         run = cls(path, ReactionRunConfig.from_dict(value["config"]))
-        run._phase = str(value["phase"])
+        run._phase = value["phase"]
         run._generation = int(value["generation"])
         run._global_step = int(value["global_step"])
         run._global_frame = int(value["global_frame"])
         run._pending = list(map(str, value["pending_pathway_ids"]))
         run._created_with = value.get("created_with_reactionflow")
-        failure = value.get("failure")
-        run._failure = None if failure is None else dict(failure)
-        detector_state = value.get("detector_state")
-        if detector_state is not None:
+        run._failure = value.get("failure")
+        if value.get("detector_state") is not None:
             run._detector = BondChangeDetector.from_state(
-                detector_state,
+                value["detector_state"],
                 config=run.config.detector,
             )
-        active_checkpoint = value.get("active_checkpoint")
-        if active_checkpoint is not None:
-            if not isinstance(active_checkpoint, str):
-                raise ValueError("active runtime checkpoint path must be a string")
-            candidate = (run.root / active_checkpoint).resolve()
-            if not candidate.is_relative_to(run.runtime_checkpoints):
-                raise ValueError("active runtime checkpoint escapes the run directory")
-            run._active_checkpoint = candidate
-
-        token_path = run._token_path
-        if run._phase == "checkpoint_pending" and token_path.is_file():
-            ResumeToken.read(token_path)
-            sync_directory(token_path.parent.parent)
-            run._phase = "refining"
-            run._write_state()
-        if run._phase == "refining" and not run._pending:
-            run._phase = "resume_ready"
-            run._write_state()
-        if (
-            run._phase == "running"
-            and run._generation == 0
-            and run._active_checkpoint is None
-            and not (run.root / "segments/0000/trajectory.traj").exists()
-        ):
-            # Interrupted before the first MD step; start again from the initial structure.
-            run._phase = "new"
-        if run._phase == "running":
-            # Recover registrations newer than the durable observation boundary, including
-            # retries. Older duplicates skipped while an attempt was pending stay skipped.
-            for record in run.occurrences.records():
-                candidate = run.occurrences.load(record.occurrence_id)
-                if record.is_representative or candidate.observed_frame > run._global_frame:
-                    run._queue_pathway(record, candidate)
-        if run._phase == "running" and run._active_checkpoint is not None:
-            run._load_runtime_checkpoint()
-        elif run._phase == "running" and run._generation > 0:
-            trajectory = run.root / f"segments/{run._generation:04d}/trajectory.traj"
-            if not trajectory.exists():
-                token = ResumeToken.read(
-                    run.root / f"segments/{run._generation - 1:04d}/checkpoint/resume.json"
-                )
-                run._segment = run.segments.resume(token, recover_empty=True)
-                run._restore_observers(run._segment.atoms, token=token)
-                _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, run._generation)
+        if value.get("active_checkpoint") is not None:
+            run._active_checkpoint = run.root / value["active_checkpoint"]
+        if run._phase in {"running", "refining"}:
+            run._load_checkpoint()
         return run
 
     @property
@@ -312,16 +201,8 @@ class ReactionRun:
     def failure(self) -> Mapping[str, str] | None:
         return None if self._failure is None else dict(self._failure)
 
-    @property
-    def current_segment(self) -> SegmentGeneration | None:
-        return self._segment
-
-    @property
-    def _token_path(self) -> Path:
-        return self.root / f"segments/{self._generation:04d}/checkpoint/resume.json"
-
-    def _state(self) -> dict[str, object]:
-        return {
+    def _write_state(self) -> None:
+        state = {
             "schema_version": 2,
             "created_with_reactionflow": self._created_with,
             "phase": self._phase,
@@ -331,18 +212,15 @@ class ReactionRun:
             "pending_pathway_ids": list(self._pending),
             "failure": self._failure,
             "config": self.config.to_dict(),
-            "detector_state": (None if self._detector is None else self._detector.export_state()),
+            "detector_state": None if self._detector is None else self._detector.export_state(),
             "active_checkpoint": (
                 None
                 if self._active_checkpoint is None
                 else str(self._active_checkpoint.relative_to(self.root))
             ),
         }
-
-    def _write_state(self) -> None:
         temporary = self.state_path.with_suffix(".json.tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(self._state(), indent=2, sort_keys=True) + "\n")
+        temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         publish(temporary, self.state_path)
         # Prune only after both the new state and its directory entry are durable.
         # A failed publication must leave the previous checkpoint available for recovery.
@@ -351,16 +229,15 @@ class ReactionRun:
             if path.name != keep:
                 shutil.rmtree(path, ignore_errors=True)
 
-    def _publish_runtime_checkpoint(
-        self,
-        snapshot: ExactRestartSnapshot,
-        *,
-        write_state: bool,
-    ) -> Path:
-        if self._segment is None or self._detector is None or self._tracker is None:
-            raise RuntimeError("an active segment and monitor are required for an exact checkpoint")
-        if not _same_atomic_state(self._segment.atoms, snapshot.atoms):
-            raise ValueError("exact snapshot atoms do not match the active trajectory")
+    def _checkpoint(self, runtime: ExactDynamicsRuntime) -> None:
+        """Publish the exact runtime and tracker at this boundary, then the state naming them."""
+
+        assert self._tracker is not None
+        if int(runtime.nsteps) != self._global_step:
+            raise ValueError("exact runtime step counter does not match the durable run")
+        snapshot = runtime.snapshot()
+        if not _same_atomic_state(runtime.atoms, snapshot.atoms):
+            raise ValueError("exact runtime snapshot does not match its live atoms")
         name = (
             f"g{self._generation:04d}-s{self._global_step:012d}-"
             f"f{self._global_frame:012d}-{uuid4().hex}"
@@ -371,17 +248,6 @@ class ReactionRun:
         try:
             snapshot.write(temporary / "exact-restart")
             self._tracker.write_checkpoint(temporary / "tracker")
-            manifest = {
-                "schema_version": 1,
-                "generation": self._generation,
-                "global_step": self._global_step,
-                "global_frame": self._global_frame,
-                "detector_state": self._detector.export_state(),
-            }
-            (temporary / "checkpoint.json").write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
             # The previous checkpoint is removed once state.json names this one, so this one must
             # already be on disk if the node fails.
             publish(temporary, final)
@@ -389,110 +255,51 @@ class ReactionRun:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
         self._active_checkpoint = final
-        self._exact_snapshot = snapshot
-        if write_state:
-            self._write_state()
-        return final
+        self._snapshot = snapshot
+        self._write_state()
 
-    def _load_runtime_checkpoint(self) -> None:
-        assert self._active_checkpoint is not None
-        manifest = json.loads(
-            (self._active_checkpoint / "checkpoint.json").read_text(encoding="utf-8")
-        )
-        expected = {
-            "schema_version": 1,
-            "generation": self._generation,
-            "global_step": self._global_step,
-            "global_frame": self._global_frame,
-        }
-        if any(manifest.get(key) != value for key, value in expected.items()):
-            raise ValueError("active runtime checkpoint does not match the durable run state")
-        detector = BondChangeDetector.from_state(
-            manifest["detector_state"],
-            config=self.config.detector,
-        )
-        if self._detector is not None and detector.export_state() != self._detector.export_state():
-            raise ValueError("runtime checkpoint detector conflicts with the run state")
+    def _load_checkpoint(self) -> None:
+        if self._active_checkpoint is None or self._detector is None:
+            raise ValueError("the run has no exact checkpoint to resume from")
         tracker = ReactionTracker.read_checkpoint(
             self._active_checkpoint / "tracker",
             stability_frames=self.config.candidate_stability_frames,
         )
-        if detector.last_frame != self._global_frame or tracker.last_frame != self._global_frame:
+        if not self._detector.last_frame == tracker.last_frame == self._global_frame:
             raise ValueError("runtime checkpoint monitor does not match the resume boundary")
-        snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
-        self._detector = detector
         self._tracker = tracker
-        self._exact_snapshot = snapshot
-        self._segment = self.segments.attach(
-            self._generation,
-            snapshot.atoms,
-            global_step=self._global_step,
-            global_frame=self._global_frame,
-        )
+        self._snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
 
-    def _record_failure(self, stage: str, error: Exception) -> None:
-        self._phase = "failed"
-        self._failure = {
-            "stage": stage,
-            "type": type(error).__name__,
-            "message": str(error),
-        }
-        self._write_state()
+    @contextmanager
+    def _fatal(self, stage: str) -> Iterator[None]:
+        """Mark the run failed when its durable record cannot be maintained."""
 
-    def _require(self, *phases: str) -> None:
-        if self._phase not in phases:
-            expected = " or ".join(phases)
-            raise RuntimeError(f"ReactionRun phase is {self._phase!r}, expected {expected}")
-
-    def _seed_observers(self, atoms: Atoms) -> None:
-        self._detector = BondChangeDetector(self.config.detector)
-        self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
-        self._detector.process(atoms, frame=self._global_frame)
-        self._tracker.process(
-            atoms,
-            frame=self._global_frame,
-            stable_bonds=self._detector.stable_bonds,
-            pending_bonds=self._detector.pending_bonds,
-        )
-
-    def _restore_observers(self, atoms: Atoms, *, token: ResumeToken) -> None:
-        if self._detector is None or self._detector.last_frame != self._global_frame:
-            raise ValueError("the detector checkpoint does not match the resume boundary")
-        if token.has_tracker:
-            self._tracker = ReactionTracker.read_checkpoint(
-                token.path.parent / "tracker",
-                stability_frames=self.config.candidate_stability_frames,
-            )
-            if self._tracker.last_frame != self._global_frame:
-                raise ValueError("the tracker checkpoint does not match the resume boundary")
-            return
-        # Legacy checkpoints were created only after the whole system settled.
-        if self._detector.pending_bonds is not None:
-            raise ValueError("cannot resume from a detector with pending changes")
-        self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
-        self._tracker.process(
-            atoms,
-            frame=self._global_frame,
-            stable_bonds=self._detector.stable_bonds,
-            pending_bonds=None,
-        )
-
-    def start(self, atoms: Atoms) -> SegmentGeneration:
-        """Start generation zero and seed its detector/tracker baseline."""
-
-        self._require("new")
         try:
-            self._segment = self.segments.start(atoms)
-            self._generation = self._segment.generation
-            self._global_step = self._segment.global_step
-            self._global_frame = self._segment.global_frame
-            self._seed_observers(self._segment.atoms)
-            self._phase = "running"
-            self._write_state()
-            return self._segment
+            yield
         except Exception as error:
-            self._record_failure("start", error)
+            self._phase = "failed"
+            self._failure = {"stage": stage, "type": type(error).__name__, "message": str(error)}
+            self._write_state()
             raise
+
+    def _start(self, atoms: Atoms) -> None:
+        """Assign stable IDs and seed the detector/tracker baseline."""
+
+        with self._fatal("start"):
+            initial = assign_atom_ids(atoms.copy())
+            initial.calc = None
+            initial.info.pop("atom_ids", None)
+            self._detector = BondChangeDetector(self.config.detector)
+            self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
+            self._detector.process(initial, frame=0)
+            self._tracker.process(
+                initial,
+                frame=0,
+                stable_bonds=self._detector.stable_bonds,
+                pending_bonds=self._detector.pending_bonds,
+            )
+            self._initial = initial
+            self._phase = "running"
 
     def _queue_pathway(self, record: OccurrenceRecord, candidate: ReactionCandidate) -> None:
         if not candidate.resolved or (self.pathways / record.occurrence_id).is_dir():
@@ -509,146 +316,96 @@ class ReactionRun:
                     return
         self._pending.append(record.occurrence_id)
 
-    def _register(
-        self,
-        candidates: tuple[ReactionCandidate, ...],
-        *,
-        label: str,
-    ) -> tuple[OccurrenceRecord, ...]:
-        records: list[OccurrenceRecord] = []
+    def _register(self, candidates: tuple[ReactionCandidate, ...], *, label: str) -> None:
+        # Registration is idempotent, so an exact replay of an observation that was interrupted
+        # before its checkpoint queues the same pathways again.
         for index, candidate in enumerate(candidates):
             occurrence_id = f"segment-{self._generation:04d}-frame-{label}-{index:04d}"
-            record, inserted = self.occurrences.register(
+            record, _ = self.occurrences.register(
                 occurrence_id,
                 candidate,
                 detector_config=self.config.detector,
             )
-            records.append(record)
-            if inserted:
-                self._queue_pathway(record, candidate)
-        return tuple(records)
+            self._queue_pathway(record, candidate)
 
-    def observe(
-        self,
-        atoms: Atoms,
-        *,
-        global_step: int,
-        global_frame: int,
-    ) -> tuple[OccurrenceRecord, ...]:
-        """Observe one safe boundary and register every completed occurrence."""
+    def _observe(self, atoms: Atoms, global_step: int) -> None:
+        """Advance the monitor one frame and register every completed occurrence."""
 
-        return self._observe(
-            atoms,
-            global_step=global_step,
-            global_frame=global_frame,
-            persist=True,
-        )
-
-    def _observe(
-        self,
-        atoms: Atoms,
-        *,
-        global_step: int,
-        global_frame: int,
-        persist: bool,
-    ) -> tuple[OccurrenceRecord, ...]:
-        """Update the monitor, optionally deferring state publication to a checkpoint."""
-
-        self._require("running")
-        if global_step < self._global_step or global_frame <= self._global_frame:
-            raise ValueError("observation counters must move forward")
         assert self._detector is not None and self._tracker is not None
-        try:
-            self._detector.process(atoms, frame=global_frame)
+        frame = self._global_frame + 1
+        with self._fatal("observe"):
+            self._detector.process(atoms, frame=frame)
             candidates = self._tracker.process(
                 atoms,
-                frame=global_frame,
+                frame=frame,
                 stable_bonds=self._detector.stable_bonds,
                 pending_bonds=self._detector.pending_bonds,
             )
-            records = self._register(candidates, label=f"{global_frame:08d}")
-            self._global_step = int(global_step)
-            self._global_frame = int(global_frame)
+            self._register(candidates, label=f"{frame:08d}")
+            self._global_step = global_step
+            self._global_frame = frame
             if self._pending:
-                self._phase = "checkpoint_pending"
-            if persist:
-                self._write_state()
-            return records
-        except Exception as error:
-            self._record_failure("observe", error)
-            raise
+                self._phase = "refining"
 
-    def checkpoint(
-        self,
-        atoms: Atoms,
-        *,
-        exact_restart: ExactRestartSnapshot | None = None,
-    ) -> ResumeToken:
-        """Publish the current structural or exact checkpoint before pathway work."""
+    def _write_frame(self, trajectory: Trajectory, atoms: Atoms, written: int) -> None:
+        """Append this boundary's frame unless an interrupted attempt already wrote it."""
 
-        self._require("checkpoint_pending")
-        if self._segment is None:
-            raise RuntimeError("the live segment is unavailable; reopen only after checkpointing")
-        try:
-            if self._token_path.is_file():
-                # Published by an attempt that stopped before recording it; an exact replay
-                # reaches the same boundary.
-                token = ResumeToken.read(self._token_path)
-                if (token.global_step, token.global_frame) != (
-                    self._global_step,
-                    self._global_frame,
-                ):
-                    raise ValueError("generation is already checkpointed at another boundary")
-                sync_directory(self._token_path.parent.parent)
-            else:
-                token = self.segments.checkpoint(
-                    self._segment,
-                    atoms,
-                    global_step=self._global_step,
-                    global_frame=self._global_frame,
-                    exact_restart=exact_restart,
-                    tracker=self._tracker,
-                )
-            self._phase = "refining"
-            self._write_state()
-            return token
-        except Exception as error:
-            self._record_failure("checkpoint", error)
-            raise
-
-    def _record_for(self, occurrence_id: str) -> OccurrenceRecord:
-        for record in self.occurrences.records():
-            if record.occurrence_id == occurrence_id:
-                return record
-        raise KeyError(occurrence_id)
-
-    def _write_images(self, path: Path, images: tuple[Atoms, ...]) -> None:
-        trajectory = Trajectory(path, "w")
-        try:
-            for image in images:
-                trajectory.write(_transport(image))
-        finally:
-            trajectory.close()
-
-    def _publish_outcome(
-        self,
-        occurrence_id: str,
-        outcome: PathwayOutcome,
-    ) -> None:
-        final = self.pathways / occurrence_id
-        if final.exists():
-            sync_directory(self.pathways)
+        if self._global_frame <= written:
             return
-        record = self._record_for(occurrence_id)
+        frame = _transport(atoms)
+        frame.info["reactionflow_global_step"] = self._global_step
+        frame.info["reactionflow_global_frame"] = self._global_frame
+        trajectory.write(frame)
+
+    def _run_segment(self, total_steps: int, runtime_provider: ExactRuntimeProvider) -> None:
+        """Run MD from the current checkpoint until a reaction is confirmed or the run ends."""
+
+        manager = (
+            runtime_provider.start(self._initial)
+            if self._snapshot is None
+            else runtime_provider.restore(self._snapshot)
+        )
+        with manager as runtime:
+            if self._snapshot is None:
+                self._checkpoint(runtime)
+            elif int(runtime.nsteps) != self._global_step:
+                raise ValueError("exact runtime step counter does not match the durable run")
+
+            path = self.root / f"segments/{self._generation:04d}/trajectory.traj"
+            ensure_directory(path.parent)
+            # Each frame is written before its checkpoint, so an interrupted attempt may already
+            # hold this boundary's frame or the next one, which the exact replay reproduces.
+            written = _last_frame(path)
+            if written > self._global_frame + 1:
+                raise ValueError("trajectory is ahead of its exact runtime checkpoint")
+            with Trajectory(path, "w" if written < 0 else "a") as trajectory:
+                self._write_frame(trajectory, runtime.atoms, written)
+                while self._global_step < total_steps and self._phase == "running":
+                    steps = min(self.config.observation_interval, total_steps - self._global_step)
+                    before = int(runtime.nsteps)
+                    runtime.run(steps)
+                    advanced = int(runtime.nsteps) - before
+                    if advanced != steps:
+                        raise RuntimeError(
+                            f"exact runtime advanced {advanced} steps; expected {steps}"
+                        )
+                    self._observe(runtime.atoms, self._global_step + steps)
+                    self._write_frame(trajectory, runtime.atoms, written)
+                    self._checkpoint(runtime)
+
+    def _publish_outcome(self, occurrence_id: str, outcome: PathwayOutcome) -> None:
+        final = self.pathways / occurrence_id
         temporary = self.pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
         temporary.mkdir()
         try:
-            self._write_images(temporary / "images.traj", outcome.images)
+            with Trajectory(temporary / "images.traj", "w") as trajectory:
+                for image in outcome.images:
+                    trajectory.write(_transport(image))
             result = {
                 "schema_version": 1,
                 "occurrence_id": occurrence_id,
                 "reactionflow_version": __version__,
-                "class_id": record.class_id,
+                "class_id": self.occurrences.record(occurrence_id).class_id,
                 "status": outcome.status,
                 "barrier_eV": outcome.barrier,
                 "energies_eV": list(outcome.energies),
@@ -658,8 +415,14 @@ class ReactionRun:
                 "enthalpies_eV": list(outcome.enthalpies),
                 "volumes_A3": list(outcome.volumes),
                 "message": outcome.message,
-                "frequency_validation": _frequency_validation_to_dict(outcome.frequency_validation),
-                "connectivity": _connectivity_to_dict(outcome.connectivity),
+                "frequency_validation": (
+                    None
+                    if outcome.frequency_validation is None
+                    else asdict(outcome.frequency_validation)
+                ),
+                "connectivity": (
+                    None if outcome.connectivity is None else asdict(outcome.connectivity)
+                ),
             }
             (temporary / "result.json").write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
@@ -670,52 +433,18 @@ class ReactionRun:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
-    def _load_outcome(self, occurrence_id: str) -> PathwayOutcome:
-        directory = self.pathways / occurrence_id
-        result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
-        if result.get("schema_version") != 1 or result.get("occurrence_id") != occurrence_id:
-            raise ValueError(f"unsupported pathway result for {occurrence_id!r}")
-        images = read(directory / "images.traj", ":")
-        for image in images:
-            atom_ids(image)
-            assign_atom_ids(image)
-            image.info.pop("atom_ids", None)
-            image.calc = None
-        barrier = result.get("barrier_eV")
-        return PathwayOutcome(
-            status=str(result["status"]),
-            barrier=None if barrier is None else float(barrier),
-            energies=tuple(map(float, result.get("energies_eV", []))),
-            method=str(result.get("method", "neb")),
-            pressure_GPa=result.get("pressure_GPa"),
-            enthalpies=tuple(map(float, result.get("enthalpies_eV", []))),
-            volumes=tuple(map(float, result.get("volumes_A3", []))),
-            images=tuple(images),
-            message=str(result.get("message", "")),
-            frequency_validation=_frequency_validation_from_dict(
-                result.get("frequency_validation")
-            ),
-            connectivity=_connectivity_from_dict(result.get("connectivity")),
-        )
-
-    def refine_pending(
+    def _refine_pending(
         self,
         calculator_provider: CalculatorProvider,
-        *,
-        pressure_GPa: float | None = None,
-    ) -> tuple[PathwayOutcome, ...]:
+        pressure_GPa: float | None,
+    ) -> None:
         """Refine each queued occurrence serially and publish its immutable result."""
 
-        self._require("refining", "resume_ready")
-        if self._phase == "resume_ready":
-            return ()
-        outcomes: list[PathwayOutcome] = []
-        try:
+        with self._fatal("refine"):
             while self._pending:
                 occurrence_id = self._pending[0]
-                directory = self.pathways / occurrence_id
-                if directory.is_dir():
-                    outcome = self._load_outcome(occurrence_id)
+                if (self.pathways / occurrence_id).is_dir():
+                    # Published before an interruption; make its name durable and move on.
                     sync_directory(self.pathways)
                 else:
                     outcome = refine_pathway(
@@ -726,85 +455,17 @@ class ReactionRun:
                         pressure_GPa=pressure_GPa,
                     )
                     self._publish_outcome(occurrence_id, outcome)
-                outcomes.append(outcome)
                 self._pending.pop(0)
                 self._write_state()
-            self._phase = "resume_ready"
-            self._write_state()
-            return tuple(outcomes)
-        except Exception as error:
-            self._record_failure("refine", error)
-            raise
 
-    def resume_segment(self) -> SegmentGeneration:
-        """Resume the completed checkpoint into a fresh trajectory generation."""
-
-        self._require("resume_ready")
-        if self._pending:
-            raise RuntimeError("pathways remain pending")
-        try:
-            token = ResumeToken.read(self._token_path)
-            self._segment = self.segments.resume(token, recover_empty=True)
-            self._generation = self._segment.generation
-            self._global_step = self._segment.global_step
-            self._global_frame = self._segment.global_frame
-            self._restore_observers(self._segment.atoms, token=token)
-            self._phase = "running"
-            self._write_state()
-            _LOGGER.warning(_STRUCTURAL_RESTART_NOTICE, self._generation)
-            return self._segment
-        except Exception as error:
-            self._record_failure("resume", error)
-            raise
-
-    def resume_exact_segment(self) -> SegmentGeneration:
-        """Resume an exact checkpoint into a fresh trajectory generation."""
-
-        self._require("resume_ready")
-        if self._pending:
-            raise RuntimeError("pathways remain pending")
-        try:
-            token = ResumeToken.read(self._token_path)
-            snapshot = self.segments.read_exact(token)
-            self._segment = self.segments.resume(token, recover_empty=True)
-            self._segment = self.segments.bind(self._segment, snapshot.atoms)
-            self._generation = self._segment.generation
-            self._global_step = self._segment.global_step
-            self._global_frame = self._segment.global_frame
-            self._restore_observers(self._segment.atoms, token=token)
-            self._phase = "running"
-            # Make the restored state this generation's exact checkpoint before the MD runtime
-            # is rebuilt, so an interruption while it loads still resumes exactly.
-            self._publish_runtime_checkpoint(snapshot, write_state=True)
-            return self._segment
-        except Exception as error:
-            self._record_failure("resume_exact", error)
-            raise
-
-    def complete(self) -> RunSummary:
+    def _complete(self) -> None:
         """Drain unresolved terminal candidates and mark the run complete."""
 
-        self._require("running", "resume_ready", "completed")
-        if self._phase == "completed":
-            return self.summary()
-        try:
-            if self._tracker is None and self._phase == "resume_ready":
-                token = ResumeToken.read(self._token_path)
-                self._restore_observers(
-                    assign_atom_ids(read(token.checkpoint_path)),
-                    token=token,
-                )
-            assert self._tracker is not None
-            self._register(
-                self._tracker.finish(),
-                label=f"{self._global_frame:08d}-terminal",
-            )
+        assert self._tracker is not None
+        with self._fatal("complete"):
+            self._register(self._tracker.finish(), label=f"{self._global_frame:08d}-terminal")
             self._phase = "completed"
             self._write_state()
-            return self.summary()
-        except Exception as error:
-            self._record_failure("complete", error)
-            raise
 
     def summary(self) -> RunSummary:
         return RunSummary(
@@ -820,125 +481,7 @@ class ReactionRun:
             ),
         )
 
-    def _run_segment(
-        self,
-        *,
-        total_steps: int,
-        md_calculator_provider: CalculatorProvider,
-        dynamics_factory: DynamicsFactory,
-    ) -> None:
-        assert self._segment is not None
-        atoms = self._segment.atoms
-        trajectory = Trajectory(self._segment.trajectory_path, "w")
-        try:
-            trajectory.write(_transport(atoms))
-            with md_calculator_provider("md") as calculator:
-                atoms.calc = calculator
-                try:
-                    dynamics = dynamics_factory(atoms)
-                    while self._global_step < total_steps and self._phase == "running":
-                        requested = min(
-                            self.config.observation_interval,
-                            total_steps - self._global_step,
-                        )
-                        before = int(dynamics.nsteps)
-                        dynamics.run(steps=requested)
-                        advanced = int(dynamics.nsteps) - before
-                        if advanced < 1:
-                            raise RuntimeError("ASE dynamics did not advance")
-                        next_step = self._global_step + advanced
-                        next_frame = self._global_frame + 1
-                        trajectory.write(_transport(atoms))
-                        self.observe(
-                            atoms,
-                            global_step=next_step,
-                            global_frame=next_frame,
-                        )
-                finally:
-                    atoms.calc = None
-        finally:
-            atoms.calc = None
-            trajectory.close()
-
-    def _snapshot_runtime(self, runtime: ExactDynamicsRuntime) -> ExactRestartSnapshot:
-        if isinstance(runtime.nsteps, bool) or not isinstance(runtime.nsteps, Integral):
-            raise TypeError("exact runtime nsteps must be an integer")
-        if int(runtime.nsteps) != self._global_step:
-            raise ValueError("exact runtime step counter does not match the durable run")
-        snapshot = runtime.snapshot()
-        if not _same_atomic_state(runtime.atoms, snapshot.atoms):
-            raise ValueError("exact runtime snapshot does not match its live atoms")
-        return snapshot
-
-    def _write_exact_boundary(self, trajectory: Trajectory, atoms: Atoms) -> None:
-        snapshot = _transport(atoms)
-        snapshot.info["reactionflow_global_step"] = self._global_step
-        snapshot.info["reactionflow_global_frame"] = self._global_frame
-        trajectory.write(snapshot)
-
-    def _run_exact_segment(
-        self,
-        *,
-        total_steps: int,
-        runtime_provider: ExactRuntimeProvider,
-    ) -> None:
-        assert self._segment is not None
-        manager = (
-            runtime_provider.start(self._segment.atoms)
-            if self._exact_snapshot is None
-            else runtime_provider.restore(self._exact_snapshot)
-        )
-        with manager as runtime:
-            self._segment = self.segments.bind(self._segment, runtime.atoms)
-            initial = self._snapshot_runtime(runtime)
-            if self._active_checkpoint is None:
-                self._publish_runtime_checkpoint(initial, write_state=True)
-
-            trajectory_exists = self._segment.trajectory_path.exists()
-            write_initial = True
-            if trajectory_exists:
-                last = read(self._segment.trajectory_path, -1)
-                marker = last.info.get("reactionflow_global_frame")
-                write_initial = marker is None or int(marker) < self._global_frame
-                if marker is not None and int(marker) > self._global_frame:
-                    raise ValueError("trajectory is ahead of its exact runtime checkpoint")
-            mode = "a" if trajectory_exists else "w"
-            trajectory = Trajectory(self._segment.trajectory_path, mode)
-            try:
-                if write_initial:
-                    self._write_exact_boundary(trajectory, runtime.atoms)
-
-                while self._global_step < total_steps and self._phase == "running":
-                    requested = min(
-                        self.config.observation_interval,
-                        total_steps - self._global_step,
-                    )
-                    before = int(runtime.nsteps)
-                    runtime.run(requested)
-                    advanced = int(runtime.nsteps) - before
-                    if advanced != requested:
-                        raise RuntimeError(
-                            f"exact runtime advanced {advanced} steps; expected {requested}"
-                        )
-                    next_step = self._global_step + advanced
-                    next_frame = self._global_frame + 1
-                    self._observe(
-                        runtime.atoms,
-                        global_step=next_step,
-                        global_frame=next_frame,
-                        persist=False,
-                    )
-                    snapshot = self._snapshot_runtime(runtime)
-                    self._publish_runtime_checkpoint(snapshot, write_state=False)
-                    if self._phase == "checkpoint_pending":
-                        self.checkpoint(runtime.atoms, exact_restart=snapshot)
-                    else:
-                        self._write_state()
-                    self._write_exact_boundary(trajectory, runtime.atoms)
-            finally:
-                trajectory.close()
-
-    def run_exact(
+    def run(
         self,
         atoms: Atoms | None = None,
         *,
@@ -947,7 +490,7 @@ class ReactionRun:
         total_steps: int,
         pressure_GPa: float | None = None,
     ) -> RunSummary:
-        """Run live detection, serial NEB/CI-NEB, and exact MD continuation."""
+        """Run or resume live detection, serial NEB/CI-NEB, and exact MD to a step target."""
 
         if isinstance(total_steps, bool) or not isinstance(total_steps, Integral):
             raise ValueError("total_steps must be a non-negative integer")
@@ -956,7 +499,7 @@ class ReactionRun:
         if self._phase == "new":
             if atoms is None:
                 raise ValueError("initial atoms are required for a new run")
-            self.start(atoms)
+            self._start(atoms)
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
 
@@ -964,110 +507,29 @@ class ReactionRun:
             # A reopened adapter has not checked its model against the saved MD state yet.
             # Verify before any pathway result can be published, including terminal work
             # that will never resume MD. Read a separate snapshot so validation cannot
-            # mutate the run's checkpoint, and leave failures retryable in this phase.
-            token = ResumeToken.read(self._token_path)
-            with runtime_provider.restore(self.segments.read_exact(token)):
+            # mutate the run's checkpoint.
+            assert self._active_checkpoint is not None
+            snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
+            with runtime_provider.restore(snapshot):
                 pass
 
-        # The durable-state methods record their own failures. Any other error, such as a
-        # runtime that this environment refuses to restore, leaves the last exact checkpoint in
-        # place, so the run is not marked failed and resumes once the cause is fixed.
+        # Only failures to maintain the durable record mark the run failed. Any other error, such
+        # as a runtime that this environment refuses to restore, leaves the last exact checkpoint
+        # in place, so the run resumes once the cause is fixed.
         while self._phase != "completed":
             if self._phase == "failed":
                 raise RuntimeError(f"ReactionRun failed: {self._failure}")
-            if self._phase == "checkpoint_pending":
-                raise RuntimeError(
-                    "exact runtime was interrupted before its reaction checkpoint completed"
-                )
-            if self._phase == "refining":
-                self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
-                continue
-            if self._phase == "resume_ready":
-                if self._global_step >= total_steps:
-                    self.complete()
-                else:
-                    self.resume_exact_segment()
-                continue
-            if self._phase == "running":
-                if self._global_step >= total_steps:
-                    self.complete()
-                    continue
-                if self._segment is None:
-                    raise RuntimeError("active exact runtime checkpoint is unavailable")
-                self._run_exact_segment(
-                    total_steps=int(total_steps),
-                    runtime_provider=runtime_provider,
-                )
-                continue
-            raise RuntimeError(f"unsupported ReactionRun phase {self._phase!r}")
+            if self._pending:
+                self._refine_pending(pathway_calculator_provider, pressure_GPa)
+            elif self._global_step >= total_steps:
+                self._complete()
+            else:
+                if self._phase == "refining":
+                    # Refinement is finished; MD continues in a new trajectory generation.
+                    self._generation += 1
+                    self._phase = "running"
+                self._run_segment(int(total_steps), runtime_provider)
         return self.summary()
 
-    def run_ase(
-        self,
-        atoms: Atoms | None = None,
-        *,
-        md_calculator_provider: CalculatorProvider,
-        pathway_calculator_provider: CalculatorProvider,
-        dynamics_factory: DynamicsFactory,
-        total_steps: int,
-        pressure_GPa: float | None = None,
-    ) -> RunSummary:
-        """Run synchronous ASE MD, refinement, and structural resume to a step target."""
 
-        if isinstance(total_steps, bool) or not isinstance(total_steps, Integral):
-            raise ValueError("total_steps must be a non-negative integer")
-        if total_steps < self._global_step:
-            raise ValueError("total_steps cannot precede the durable run counter")
-        if self._phase == "new":
-            if atoms is None:
-                raise ValueError("initial atoms are required for a new run")
-            self.start(atoms)
-        elif atoms is not None:
-            raise ValueError("initial atoms may only be supplied to a new run")
-
-        try:
-            while self._phase != "completed":
-                if self._phase == "failed":
-                    raise RuntimeError(f"ReactionRun failed: {self._failure}")
-                if self._phase == "checkpoint_pending":
-                    if self._segment is None:
-                        raise RuntimeError("checkpoint was not completed before interruption")
-                    self.checkpoint(self._segment.atoms)
-                    continue
-                if self._phase == "refining":
-                    self.refine_pending(pathway_calculator_provider, pressure_GPa=pressure_GPa)
-                    continue
-                if self._phase == "resume_ready":
-                    if self._global_step >= total_steps:
-                        self.complete()
-                    else:
-                        self.resume_segment()
-                    continue
-                if self._phase == "running":
-                    if self._global_step >= total_steps:
-                        self.complete()
-                        continue
-                    if self._segment is None:
-                        raise RuntimeError(
-                            "active MD cannot be structurally recovered without a checkpoint"
-                        )
-                    self._run_segment(
-                        total_steps=int(total_steps),
-                        md_calculator_provider=md_calculator_provider,
-                        dynamics_factory=dynamics_factory,
-                    )
-                    continue
-                raise RuntimeError(f"unsupported ReactionRun phase {self._phase!r}")
-            return self.summary()
-        except Exception as error:
-            if self._phase != "failed":
-                self._record_failure("run_ase", error)
-            raise
-
-
-__all__ = [
-    "DynamicsFactory",
-    "ReactionRun",
-    "ReactionRunConfig",
-    "RunSummary",
-]
+__all__ = ["ReactionRun", "ReactionRunConfig", "RunSummary"]

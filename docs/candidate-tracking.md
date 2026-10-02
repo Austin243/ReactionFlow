@@ -53,12 +53,9 @@ observation that confirmed or drained it.
 The stability window counts processed frames, not MD steps or physical time. It is uniform across
 elements: hydrogen, metals, solvents, and other atoms receive no special transition policy.
 
-Tracker checkpoints use schema version 2 to retain every independent window, endpoint, origin, and
-count. The reader also accepts version 1 and splits its global window into connected regions,
-retaining the original reactant snapshot; it cannot reconstruct alternative snapshots discarded
-by the older tracker.
-ReactionRun includes the tracker in reaction checkpoints, so structural and exact continuation both
-retain other unfinished regions when a confirmed reaction pauses MD for refinement.
+Tracker checkpoints retain every independent window, endpoint, origin, and count. ReactionRun
+includes the tracker in every exact checkpoint, so continuation retains other unfinished regions
+when a confirmed reaction pauses MD for refinement.
 
 ## Current limits
 
