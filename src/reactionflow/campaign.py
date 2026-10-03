@@ -154,15 +154,15 @@ def _run_config(value: object) -> ReactionRunConfig:
 
 @dataclass(frozen=True, slots=True)
 class CampaignConfig:
-    """One structure, named adapter profiles, and independently parameterized trajectories."""
+    """Starting structures, named adapter profiles, and independently parameterized trajectories."""
 
     source: Path
-    structure: Path
     output_root: Path
     reaction_run: ReactionRunConfig
     trajectories: tuple[TrajectorySpec, ...]
     adapter_profiles: Mapping[str, AdapterSpec]
     trajectory_profiles: tuple[str, ...]
+    trajectory_structures: tuple[Path, ...]
     require_gpu: bool = True
 
     @classmethod
@@ -182,15 +182,24 @@ class CampaignConfig:
         }
         if unknown:
             raise ValueError(f"unknown campaign keys: {sorted(unknown)}")
-        structure_value = value.get("structure")
         output_value = value.get("output_root")
-        if not isinstance(structure_value, str) or not structure_value:
-            raise ValueError("campaign.structure must be a path string")
         if not isinstance(output_value, str) or not output_value:
             raise ValueError("campaign.output_root must be a path string")
-        structure = (source.parent / structure_value).resolve()
-        if not structure.is_file():
-            raise FileNotFoundError(structure)
+
+        def structure_path(raw: object, name: str) -> Path:
+            if not isinstance(raw, str) or not raw:
+                raise ValueError(f"{name} must be a path string")
+            path = (source.parent / raw).resolve()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            return path
+
+        # A trajectory's own structure overrides the campaign-wide one.
+        default_structure = (
+            structure_path(value["structure"], "campaign.structure")
+            if "structure" in value
+            else None
+        )
 
         raw_profiles = _mapping(value.get("adapter_profiles"), "campaign.adapter_profiles")
         if not raw_profiles:
@@ -212,6 +221,7 @@ class CampaignConfig:
             raise ValueError("campaign.trajectories must be a non-empty array")
         trajectories: list[TrajectorySpec] = []
         trajectory_profiles: list[str] = []
+        trajectory_structures: list[Path] = []
         for raw_trajectory in raw_trajectories:
             trajectory = dict(_mapping(raw_trajectory, "trajectory"))
             profile = trajectory.pop("adapter_profile", None)
@@ -221,8 +231,15 @@ class CampaignConfig:
                 raise ValueError(
                     f"trajectory.adapter_profile references unknown adapter profile: {profile!r}"
                 )
+            if "structure" in trajectory:
+                structure = structure_path(trajectory.pop("structure"), "trajectory.structure")
+            elif default_structure is not None:
+                structure = default_structure
+            else:
+                raise ValueError("set campaign.structure or a structure for every trajectory")
             trajectories.append(TrajectorySpec.from_dict(trajectory))
             trajectory_profiles.append(profile)
+            trajectory_structures.append(structure)
         identifiers = [trajectory.id for trajectory in trajectories]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("trajectory IDs must be unique")
@@ -231,12 +248,12 @@ class CampaignConfig:
             raise TypeError("campaign.require_gpu must be a boolean")
         return cls(
             source=source,
-            structure=structure,
             output_root=(source.parent / output_value).resolve(),
             reaction_run=_run_config(value.get("reaction_run", {})),
             trajectories=tuple(trajectories),
             adapter_profiles=adapter_profiles,
             trajectory_profiles=tuple(trajectory_profiles),
+            trajectory_structures=tuple(trajectory_structures),
             require_gpu=require_gpu,
         )
 
@@ -257,6 +274,12 @@ class CampaignConfig:
         """Return the adapter configuration assigned to one trajectory."""
 
         return self.adapter_profiles[self.adapter_profile_for(index)]
+
+    def structure_for(self, index: int) -> Path:
+        """Return the starting structure of one trajectory."""
+
+        self.trajectory(index)
+        return self.trajectory_structures[index]
 
 
 __all__ = ["AdapterSpec", "CampaignConfig", "TrajectorySpec"]

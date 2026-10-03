@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Iterable
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
@@ -99,10 +100,40 @@ def prepare_campaign(campaign: CampaignConfig, *, index: int | None = None) -> l
     return results
 
 
+def backend_conflict(factories: Iterable[str]) -> str | None:
+    """Return why these built-in backends cannot share one Python environment, or None."""
+
+    packages = {_PACKAGES[factory] for factory in factories if factory in _PACKAGES}
+    mace = "mace-torch==0.3.16" in packages
+    field = _FIELD_PACKAGE in packages
+    uma = "fairchem-core==2.23.0" in packages
+    orb = "orb-models==0.7.0" in packages
+    mattersim = "mattersim==1.2.5" in packages
+    sevennet = "sevenn==0.13.0" in packages
+    ani = "torchani==2.8.4" in packages
+    if field and mace:
+        return "MACE-FIELD and MACE/POLAR install different mace packages"
+    if (mace or field) and (uma or mattersim or sevennet):
+        return (
+            "MACE and MACE-FIELD require e3nn==0.4.4, "
+            "but UMA, MatterSim and SevenNet require e3nn>=0.5"
+        )
+    if orb and (uma or mattersim):
+        return "UMA/MatterSim and ORB use different tested nvalchemi dependency stacks"
+    if ani and uma:
+        return "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13"
+    return None
+
+
 def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -> int:
     """Install selected optional packages, then prepare models in a fresh interpreter."""
 
     selected = _selected_adapters(campaign, index)
+    conflict = backend_conflict(spec.factory for spec in selected)
+    if conflict:
+        raise ValueError(
+            f"{conflict}; use --index to prepare each in a separate Python environment"
+        )
     packages = list(
         dict.fromkeys(_PACKAGES[spec.factory] for spec in selected if spec.factory in _PACKAGES)
     )
@@ -113,26 +144,6 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
     mattersim = "mattersim==1.2.5" in packages
     sevennet = "sevenn==0.13.0" in packages
     ani = "torchani==2.8.4" in packages
-    if field and mace:
-        raise ValueError(
-            "MACE-FIELD and MACE/POLAR install different mace packages; "
-            "use --index in separate environments"
-        )
-    if (mace or field) and (uma or mattersim or sevennet):
-        raise ValueError(
-            "MACE and MACE-FIELD require e3nn==0.4.4, but UMA, MatterSim and SevenNet require "
-            "e3nn>=0.5; use --index to prepare each in a separate Python environment"
-        )
-    if orb and (uma or mattersim):
-        raise ValueError(
-            "UMA/MatterSim and ORB use different tested nvalchemi dependency stacks; "
-            "use --index to prepare each in a separate Python environment"
-        )
-    if ani and uma:
-        raise ValueError(
-            "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13; "
-            "use --index to prepare each in a separate Python environment"
-        )
     conflicts = []
     if ani:
         conflicts.append(("fairchem-core", "2.23.0"))
@@ -195,4 +206,10 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
     return subprocess.run(command, check=False).returncode
 
 
-__all__ = ["install_and_prepare", "model_catalog", "prepare_adapter", "prepare_campaign"]
+__all__ = [
+    "backend_conflict",
+    "install_and_prepare",
+    "model_catalog",
+    "prepare_adapter",
+    "prepare_campaign",
+]

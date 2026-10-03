@@ -41,8 +41,10 @@ other packages and need separate environments ([which ones](docs/models.md#insta
 
 ## Run a campaign
 
-A campaign is one JSON file with a starting structure, the models to use, and a list of
-trajectories:
+A campaign is one JSON file with the starting structure, the models to use, and a list of
+trajectories. `reactionflow init` writes it for you after asking about the structures, models,
+temperatures, pressures, and number of runs. Written by hand, a one-trajectory campaign looks like
+this:
 
 ```json
 {
@@ -71,13 +73,15 @@ trajectories:
 }
 ```
 
-Paths are relative to the campaign file. Each trajectory names one entry in `adapter_profiles`;
+Paths are relative to the campaign file, and a trajectory can name its own `structure` in place
+of the campaign-wide one. Each trajectory names one entry in `adapter_profiles`;
 this one uses the MACE-MH-1 `omol` head, and any other model fits in the same place (see
 [Models](#models)). With `require_gpu`, every trajectory needs exactly one visible GPU. To run on a
 CPU, set it to `false` and the model's `device` to `cpu`. Anything left out of `reaction_run`
 keeps its default; the [campaign guide](docs/campaigns.md) lists every field.
 
 ```bash
+reactionflow init campaign.json       # write the file by answering questions
 reactionflow validate campaign.json   # check the file without loading the model
 reactionflow prepare campaign.json    # download the model weights
 reactionflow run campaign.json        # run the trajectory

@@ -161,7 +161,7 @@ def test_checked_in_acn_campaign_and_slurm_shape() -> None:
     assert {campaign.adapter_for(index).factory for index in range(4)} == {
         "reactionflow.adapters.ani1xnr:create_adapter"
     }
-    assert len(campaign.structure.read_text(encoding="utf-8").splitlines()) == 194
+    assert len(campaign.structure_for(0).read_text(encoding="utf-8").splitlines()) == 194
 
     script = (example / "submit.sbatch").read_text(encoding="utf-8")
     for directive in (

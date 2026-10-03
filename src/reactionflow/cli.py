@@ -24,6 +24,7 @@ from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .run import ReactionRun, RunSummary
 from .status import campaign_status, format_status
+from .wizard import create_campaign
 
 
 def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, object]:
@@ -47,7 +48,7 @@ def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, obje
         "schema_version": 1,
         "trajectory_id": trajectory.id,
         "configuration_sha256": hashlib.sha256(encoded).hexdigest(),
-        "structure_sha256": file_digest(campaign.structure),
+        "structure_sha256": file_digest(campaign.structure_for(index)),
     }
 
 
@@ -160,9 +161,9 @@ def run_selected_trajectory(
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         run = ReactionRun.open(root)
-        atoms = read(campaign.structure) if run.phase == "new" else None
+        atoms = read(campaign.structure_for(index)) if run.phase == "new" else None
     else:
-        atoms = read(campaign.structure)
+        atoms = read(campaign.structure_for(index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         preflight = getattr(adapter, "preflight", None)
         if callable(preflight):
@@ -181,6 +182,9 @@ def run_selected_trajectory(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reactionflow")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    init = commands.add_parser("init", help="write a campaign file by answering questions")
+    init.add_argument("campaign", type=Path, nargs="?", default=Path("campaign.json"))
 
     models = commands.add_parser("models", help="list built-in models, heads and tasks offline")
     models.add_argument("--backend", help="show only one backend, for example mace or uma")
@@ -221,6 +225,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "init":
+        return create_campaign(arguments.campaign)
     if arguments.command == "models":
         try:
             catalog = model_catalog(arguments.backend)
@@ -244,12 +250,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     if arguments.command in {"validate", "plan"}:
-        atoms = read(campaign.structure)
         payload = {
             "campaign": str(campaign.source),
             "trajectories": len(campaign.trajectories),
             "require_gpu": campaign.require_gpu,
-            "atoms": len(atoms),
+            "structure_atoms": {
+                os.path.relpath(path, campaign.source.parent): len(read(path))
+                for path in dict.fromkeys(campaign.trajectory_structures)
+            },
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
         if arguments.command == "plan":

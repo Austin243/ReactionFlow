@@ -124,7 +124,7 @@ def _profile_campaign(tmp_path, assignments: list[str]):
 def test_campaign_loads_relative_paths_and_arbitrary_trajectory_count(tmp_path) -> None:
     campaign = CampaignConfig.load(_campaign(tmp_path, count=130))
 
-    assert campaign.structure == tmp_path / "structure.extxyz"
+    assert set(campaign.trajectory_structures) == {tmp_path / "structure.extxyz"}
     assert campaign.output_root == tmp_path / "runs"
     assert len(campaign.trajectories) == 130
     assert campaign.trajectory(129).temperature_K == 229.0
@@ -279,7 +279,7 @@ def test_cli_plan_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:
     plan = json.loads(capsys.readouterr().out)
     assert plan == {
         "adapter_profile_counts": {"test": 130},
-        "atoms": 1,
+        "structure_atoms": {"structure.extxyz": 1},
         "campaign": str(path),
         "gpus": 130,
         "gpus_per_node": 4,
