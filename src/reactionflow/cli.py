@@ -202,7 +202,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("campaign", type=Path)
     run.add_argument("--index", type=int)
     run.add_argument(
-        "--download", action="store_true", help="prepare the selected built-in model before MD"
+        "--download", action="store_true", help="prepare the selected built-in model before running"
     )
 
     prepare = commands.add_parser(
@@ -234,6 +234,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(error))
         print(json.dumps({"backends": catalog}, indent=2, sort_keys=True))
         return 0
+    raw = json.loads(arguments.campaign.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("campaign must be a JSON object")
+    mode = raw.get("mode", "md")
+    if mode == "eon":
+        from .search.cli import handle_command
+
+        return handle_command(arguments)
+    if mode != "md":
+        raise ValueError("campaign.mode must be 'md' or 'eon'")
     campaign = CampaignConfig.load(arguments.campaign)
     if arguments.command == "prepare":
         if arguments.install:

@@ -125,7 +125,12 @@ def backend_conflict(factories: Iterable[str]) -> str | None:
     return None
 
 
-def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -> int:
+def install_and_prepare(
+    campaign: CampaignConfig,
+    *,
+    index: int | None = None,
+    extra_packages: Iterable[str] = (),
+) -> int:
     """Install selected optional packages, then prepare models in a fresh interpreter."""
 
     selected = _selected_adapters(campaign, index)
@@ -194,6 +199,7 @@ def install_and_prepare(campaign: CampaignConfig, *, index: int | None = None) -
         packages.append("torch>=2.8,<3")
     if ani:
         packages.append("torch==2.11.0")
+    packages.extend(extra_packages)
     if packages:
         installed = subprocess.run([sys.executable, "-m", "pip", "install", *packages], check=False)
         if installed.returncode:
