@@ -10,6 +10,10 @@ NEB and climbing-image NEB, and the trajectory continues from the same state. Th
 refinement use the same machine-learned interatomic potential (MLIP), which can come from any of
 ten built-in model families or from any ASE calculator.
 
+For reactions too rare to see in MD, ReactionFlow can instead run adaptive kinetic Monte Carlo
+with EON: it finds the saddles leading out of each state and steps between states by their
+harmonic transition-state rates, with the same models as MD.
+
 ## How it works
 
 <picture>
@@ -92,6 +96,25 @@ A campaign with several trajectories needs `run --index N` outside Slurm. `statu
 output and is safe to run while trajectories are still going. It prints one row per trajectory
 and one per reaction class, with the barrier range of each class; `--json` prints the same data
 for scripts.
+
+## Rare events with EON
+
+The optional EON mode runs adaptive kinetic Monte Carlo in a fixed cell. Try the CPU example on
+Linux x86_64 from the repository root:
+
+```bash
+python -m pip install -e '.[eon]'
+PYTHONPATH=examples/eon reactionflow validate examples/eon/campaign.json
+PYTHONPATH=examples/eon reactionflow run examples/eon/campaign.json
+reactionflow status examples/eon/campaign.json
+```
+
+An EON campaign selects `"mode": "eon"`; existing campaigns default to MD. Its `adapter` block
+takes the same form as an MD adapter profile, so any built-in model works, and `prepare` and
+`run --download` work as they do for MD. `reactionflow init` writes either kind of campaign.
+Rerun the same command to resume. The [EON guide](docs/eon-search.md) lists the settings and
+their defaults, the saved results, and the scope of the method. The example uses an analytic
+potential and needs no model weights.
 
 ## Models
 
