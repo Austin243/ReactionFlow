@@ -1,6 +1,6 @@
 # Independent trajectory campaigns
 
-A campaign is a JSON file containing one starting structure and any number of independently
+A campaign is a JSON file containing starting structures and any number of independently
 parameterized trajectories. Each trajectory uses exactly one MLIP adapter configuration: the
 campaign defines named adapter profiles and assigns one explicitly to each trajectory. ReactionFlow
 does not create a central scheduler or a monitor service. Each process owns exactly one trajectory,
@@ -10,6 +10,28 @@ the same node at each observation boundary.
 There is no ReactionFlow campaign-size ceiling. On Perlmutter, four workers fit on each four-GPU
 node. A 4-trajectory campaign uses one node, 32 trajectories use eight nodes, and larger campaigns
 use the same mapping until they reach the allocation limits imposed by the site or queue.
+
+## Write a campaign by answering questions
+
+`reactionflow init campaign.json` asks about the trajectories and writes the file. Trajectories
+come in groups. A group runs every combination of its starting structures, models, temperatures,
+and pressures, as many times as you ask: one structure, two models, four temperatures, and eight
+runs make 64 trajectories. Add another group for the part of a campaign that differs, such as 16
+runs with one model and 8 with another, or a second structure at other pressures. Each new group
+offers the previous group's answers as defaults.
+
+Answers are checked as they are given. Structure files are read and their atom counts printed, and
+wildcards such as `structures/*.extxyz` work. Temperatures and pressures take lists or
+`start:stop:step` ranges, and `none` as a pressure means constant volume. Models that need separate
+Python environments are refused together, and constant pressure or a periodic-only model (MatterSim,
+CHGNet, NEP89) needs a periodic cell. AIMNet2, UMA `omol`, OrbMol, and MACE-POLAR read the charge
+and spin multiplicity from the structure, so `init` warns when a file has none.
+
+Trajectory IDs name the structure and the model when a campaign has several, then the temperature,
+the pressure, and the run number, for example `acn-0300K-20GPa-01`. Every trajectory gets its own
+seed. The file is written only after it passes the same checks as `reactionflow validate`, and
+Ctrl-C leaves nothing behind. Detection and refinement settings other than the observation
+interval keep their defaults; change them under `reaction_run` afterwards.
 
 ## Multiple models in one submission
 
@@ -84,7 +106,8 @@ The bundled ANI-1xnr campaign defines one `ani1xnr` profile and assigns it to al
 trajectories.
 
 The structure and output paths are relative to the campaign file; built-in model checkpoint and
-cache paths must be absolute. Trajectory IDs are unique output-directory names. The
+cache paths must be absolute. The top-level `structure` applies to every trajectory that does not
+name its own `structure`, and can be left out when every trajectory names one. Trajectory IDs are unique output-directory names. The
 standard temperature, pressure, time-step, seed, and step-count fields give adapters a common
 baseline; `conditions` carries additional JSON parameters without putting MLIP- or
 integrator-specific settings into ReactionFlow core. Model selection belongs in `adapter_profile`,
