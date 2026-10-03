@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 436" width="1200" height="436" role="img" aria-labelledby="rf-restart-title rf-restart-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="rf-restart-title">Exact restart</title><desc id="rf-restart-desc">A checkpoint holds the atoms, the integrator, thermostat and barostat state, the random-number generator, the calculator contract, and the bond monitor. Two charts compare a run that was stopped at step 150 and restored with a run that never stopped: after an exact restart the cell volume follows the same curve and the position difference is zero at every step, while a restart from atoms, momenta, and cell alone drifts away.</desc>
+
+<rect x="0.5" y="0.5" width="1199" height="435" rx="14" fill="#ffffff" stroke="#d1d9e0"/>
+<rect x="36" y="16" width="310" height="404" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<text x="56" y="56" font-size="22" font-weight="700" fill="#1f2328">In every checkpoint</text>
+<rect x="50" y="82" width="282" height="54" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<circle cx="72" cy="109" r="6" fill="#2a78d6"/>
+<text x="90" y="116.81" font-size="22" font-weight="600" fill="#1f2328">Atoms</text>
+<rect x="50" y="148" width="282" height="54" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<circle cx="72" cy="175" r="6" fill="#2a78d6"/>
+<text x="90" y="182.81" font-size="22" font-weight="600" fill="#1f2328">Integrator</text>
+<rect x="50" y="214" width="282" height="54" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<circle cx="72" cy="241" r="6" fill="#2a78d6"/>
+<text x="90" y="248.81" font-size="22" font-weight="600" fill="#1f2328">Random numbers</text>
+<rect x="50" y="280" width="282" height="54" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<circle cx="72" cy="307" r="6" fill="#2a78d6"/>
+<text x="90" y="314.81" font-size="22" font-weight="600" fill="#1f2328">Calculator contract</text>
+<rect x="50" y="346" width="282" height="54" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<circle cx="72" cy="373" r="6" fill="#eb6834"/>
+<text x="90" y="380.81" font-size="22" font-weight="600" fill="#1f2328">Bond monitor</text>
+<line x1="458" y1="160.5" x2="1150" y2="160.5" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="167.6" font-size="20" text-anchor="end" fill="#59636e">370</text>
+<line x1="458" y1="113" x2="1150" y2="113" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="120.1" font-size="20" text-anchor="end" fill="#59636e">380</text>
+<line x1="458" y1="65.5" x2="1150" y2="65.5" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="72.6" font-size="20" text-anchor="end" fill="#59636e">390</text>
+<line x1="458" y1="170" x2="1150" y2="170" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="458" y="43.1" font-size="20" font-weight="700" fill="#1f2328">Cell volume (Å³)</text>
+<line x1="717.5" y1="52" x2="717.5" y2="170" fill="none" stroke="#818b98" stroke-width="1.25" stroke-dasharray="4 4"/>
+<path d="M458 130.26 L466.65 130.54 L475.3 131.99 L483.95 134.1 L492.6 137.11 L501.25 140.68 L509.9 143.9 L518.55 146.05 L527.2 147.22 L535.85 147.46 L544.5 147.31 L553.15 146.66 L561.8 145.88 L570.45 143.82 L579.1 140.55 L587.75 136.9 L596.4 133.16 L605.05 129.54 L613.7 126.2 L622.35 122.57 L631 120.39 L639.65 119.17 L648.3 118.62 L656.95 117.88 L665.6 117.4 L674.25 117.6 L682.9 118.6 L691.55 118.95 L700.2 119.43 L708.85 119.91 L717.5 120.45 L726.15 120.96 L734.8 121.15 L743.45 120.6 L752.1 119.83 L760.75 119 L769.4 118.4 L778.05 117.95 L786.7 117.09 L795.35 115.47 L804 113.72 L812.65 112.37 L821.3 111.54 L829.95 110.6 L838.6 109.17 L847.25 107.46 L855.9 106.18 L864.55 104.67 L873.2 103.13 L881.85 101.53 L890.5 100.09 L899.15 99.52 L907.8 99.03 L916.45 98.36 L925.1 97.21 L933.75 96.17 L942.4 96.59 L951.05 98.38 L959.7 100.67 L968.35 103.93 L977 107.8 L985.65 111.95 L994.3 116.06 L1002.95 121.09 L1011.6 126.13 L1020.25 130.96 L1028.9 135.3 L1037.55 138.72 L1046.2 140.42 L1054.85 141.4 L1063.5 142.04 L1072.15 141.24 L1080.8 140.5 L1089.45 137.97 L1098.1 134.15 L1106.75 129.19 L1115.4 123.27 L1124.05 116.98 L1132.7 110.09 L1141.35 102.71 L1150 95.72" fill="none" stroke="#818b98" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M717.5 120.45 L726.15 120.54 L734.8 120.04 L743.45 117.94 L752.1 115.37 L760.75 112.8 L769.4 110.46 L778.05 107.54 L786.7 104.69 L795.35 102.11 L804 99.73 L812.65 97.73 L821.3 96.05 L829.95 95.6 L838.6 95.56 L847.25 95.63 L855.9 97.08 L864.55 99.42 L873.2 102.42 L881.85 105.69 L890.5 109.76 L899.15 113.68 L907.8 116.49 L916.45 119.61 L925.1 123.53 L933.75 127.16 L942.4 130.86 L951.05 134.25 L959.7 136.68 L968.35 137.37 L977 136.81 L985.65 135.36 L994.3 133.18 L1002.95 129.88 L1011.6 126.09 L1020.25 122.66 L1028.9 119.28 L1037.55 116.18 L1046.2 113.32 L1054.85 110.24 L1063.5 107.42 L1072.15 103.85 L1080.8 100.29 L1089.45 97.87 L1098.1 96.5 L1106.75 94.62 L1115.4 92.06 L1124.05 89.26 L1132.7 87.32 L1141.35 86.36 L1150 86.24" fill="none" stroke="#eb6834" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M458 130.26 L466.65 130.54 L475.3 131.99 L483.95 134.1 L492.6 137.11 L501.25 140.68 L509.9 143.9 L518.55 146.05 L527.2 147.22 L535.85 147.46 L544.5 147.31 L553.15 146.66 L561.8 145.88 L570.45 143.82 L579.1 140.55 L587.75 136.9 L596.4 133.16 L605.05 129.54 L613.7 126.2 L622.35 122.57 L631 120.39 L639.65 119.17 L648.3 118.62 L656.95 117.88 L665.6 117.4 L674.25 117.6 L682.9 118.6 L691.55 118.95 L700.2 119.43 L708.85 119.91 L717.5 120.45 L726.15 120.96 L734.8 121.15 L743.45 120.6 L752.1 119.83 L760.75 119 L769.4 118.4 L778.05 117.95 L786.7 117.09 L795.35 115.47 L804 113.72 L812.65 112.37 L821.3 111.54 L829.95 110.6 L838.6 109.17 L847.25 107.46 L855.9 106.18 L864.55 104.67 L873.2 103.13 L881.85 101.53 L890.5 100.09 L899.15 99.52 L907.8 99.03 L916.45 98.36 L925.1 97.21 L933.75 96.17 L942.4 96.59 L951.05 98.38 L959.7 100.67 L968.35 103.93 L977 107.8 L985.65 111.95 L994.3 116.06 L1002.95 121.09 L1011.6 126.13 L1020.25 130.96 L1028.9 135.3 L1037.55 138.72 L1046.2 140.42 L1054.85 141.4 L1063.5 142.04 L1072.15 141.24 L1080.8 140.5 L1089.45 137.97 L1098.1 134.15 L1106.75 129.19 L1115.4 123.27 L1124.05 116.98 L1132.7 110.09 L1141.35 102.71 L1150 95.72" fill="none" stroke="#2a78d6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="727.5" y="43.1" font-size="20" fill="#59636e">restart</text>
+<line x1="458" y1="360" x2="1150" y2="360" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="367.1" font-size="20" text-anchor="end" fill="#59636e">0</text>
+<line x1="458" y1="320" x2="1150" y2="320" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="327.1" font-size="20" text-anchor="end" fill="#59636e">0.2</text>
+<line x1="458" y1="280" x2="1150" y2="280" fill="none" stroke="#e7ebef" stroke-width="1"/>
+<text x="446" y="287.1" font-size="20" text-anchor="end" fill="#59636e">0.4</text>
+<line x1="458" y1="360" x2="1150" y2="360" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="458" y="257.1" font-size="20" font-weight="700" fill="#1f2328">RMS position difference (Å)</text>
+<line x1="717.5" y1="266" x2="717.5" y2="360" fill="none" stroke="#818b98" stroke-width="1.25" stroke-dasharray="4 4"/>
+<path d="M717.5 360 L726.15 356.62 L734.8 350.82 L743.45 344.15 L752.1 337.99 L760.75 332.59 L769.4 328.88 L778.05 326.42 L786.7 324.93 L795.35 323.99 L804 322.39 L812.65 320.39 L821.3 318.46 L829.95 315.74 L838.6 313.45 L847.25 310.92 L855.9 307.92 L864.55 305.46 L873.2 303.3 L881.85 302.04 L890.5 301 L899.15 299.8 L907.8 298.27 L916.45 297.78 L925.1 297.63 L933.75 297.12 L942.4 295.82 L951.05 295.13 L959.7 294.7 L968.35 294.06 L977 293.12 L985.65 291.53 L994.3 290.02 L1002.95 287.96 L1011.6 285.19 L1020.25 281.74 L1028.9 279.52 L1037.55 278.32 L1046.2 277.85 L1054.85 277.98 L1063.5 278.95 L1072.15 281.09 L1080.8 284.25 L1089.45 286.81 L1098.1 287.52 L1106.75 286.95 L1115.4 285.16 L1124.05 283.23 L1132.7 281.76 L1141.35 281.56 L1150 282.39" fill="none" stroke="#eb6834" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M717.5 360 L726.15 360 L734.8 360 L743.45 360 L752.1 360 L760.75 360 L769.4 360 L778.05 360 L786.7 360 L795.35 360 L804 360 L812.65 360 L821.3 360 L829.95 360 L838.6 360 L847.25 360 L855.9 360 L864.55 360 L873.2 360 L881.85 360 L890.5 360 L899.15 360 L907.8 360 L916.45 360 L925.1 360 L933.75 360 L942.4 360 L951.05 360 L959.7 360 L968.35 360 L977 360 L985.65 360 L994.3 360 L1002.95 360 L1011.6 360 L1020.25 360 L1028.9 360 L1037.55 360 L1046.2 360 L1054.85 360 L1063.5 360 L1072.15 360 L1080.8 360 L1089.45 360 L1098.1 360 L1106.75 360 L1115.4 360 L1124.05 360 L1132.7 360 L1141.35 360 L1150 360" fill="none" stroke="#2a78d6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="458" y1="360" x2="458" y2="366" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="458" y="388" font-size="20" text-anchor="middle" fill="#59636e">0</text>
+<line x1="631" y1="360" x2="631" y2="366" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="631" y="388" font-size="20" text-anchor="middle" fill="#59636e">100</text>
+<line x1="804" y1="360" x2="804" y2="366" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="804" y="388" font-size="20" text-anchor="middle" fill="#59636e">200</text>
+<line x1="977" y1="360" x2="977" y2="366" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="977" y="388" font-size="20" text-anchor="middle" fill="#59636e">300</text>
+<line x1="1150" y1="360" x2="1150" y2="366" fill="none" stroke="#c0c8d1" stroke-width="1"/>
+<text x="1150" y="388" font-size="20" text-anchor="middle" fill="#59636e">400</text>
+<text x="1150" y="420" font-size="20" text-anchor="end" fill="#59636e">MD step</text>
+<text x="1146" y="266.39" font-size="20" font-weight="600" text-anchor="end" fill="none" stroke="#ffffff" stroke-width="4" stroke-linejoin="round">atoms, momenta, cell only</text>
+<text x="1146" y="266.39" font-size="20" font-weight="600" text-anchor="end" fill="#1f2328">atoms, momenta, cell only</text>
+<text x="1146" y="346" font-size="20" font-weight="600" text-anchor="end" fill="none" stroke="#ffffff" stroke-width="4" stroke-linejoin="round">exact: 0 Å at every step</text>
+<text x="1146" y="346" font-size="20" font-weight="600" text-anchor="end" fill="#1f2328">exact: 0 Å at every step</text>
+<line x1="633.09" y1="208" x2="657.09" y2="208" fill="none" stroke="#818b98" stroke-width="6" stroke-linecap="round"/>
+<text x="667.09" y="215.1" font-size="20" fill="#59636e">uninterrupted</text>
+<line x1="808.61" y1="208" x2="832.61" y2="208" fill="none" stroke="#2a78d6" stroke-width="2.5" stroke-linecap="round"/>
+<text x="842.61" y="215.1" font-size="20" fill="#59636e">exact restart</text>
+<line x1="975.34" y1="208" x2="999.34" y2="208" fill="none" stroke="#eb6834" stroke-width="2.5" stroke-linecap="round"/>
+<text x="1009.34" y="215.1" font-size="20" fill="#59636e">structural restart</text>
+</svg>

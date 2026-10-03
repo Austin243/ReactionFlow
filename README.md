@@ -1,191 +1,48 @@
-# ReactionFlow
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/hero-dark.svg">
+  <img alt="ReactionFlow: an MD trajectory crosses from the reactant basin to the product basin, and the refined path runs over the saddle" src="docs/figures/hero-light.svg" width="100%">
+</picture>
 
-ReactionFlow turns reactive events observed during atomistic molecular dynamics into candidate
-transition paths. It monitors bond changes while each trajectory runs. When a persistent bond
-formation or breaking event is detected, ReactionFlow checkpoints and pauses that trajectory,
-relaxes the full cell on both sides of the event, runs NEB followed by climbing-image NEB
-(variable-cell SSNEB for NPT trajectories),
-classifies the climbing image with a constrained active-region frequency calculation, then restores
-the exact molecular-dynamics state and continues the trajectory.
+ReactionFlow finds reactions in molecular dynamics and computes their pathways. It watches the
+bonds while a trajectory runs. When a bond forms or breaks and stays that way, the trajectory
+pauses at an exact checkpoint, ReactionFlow refines the minimum-energy path of that change with
+NEB and climbing-image NEB, and the trajectory continues from the same state. The dynamics and the
+refinement use the same machine-learned interatomic potential (MLIP), which can come from any of
+ten built-in model families or from any ASE calculator.
 
-The goal is to remove the manual step between seeing chemistry happen in an MD trajectory and
-calculating the corresponding minimum-energy path. ReactionFlow preserves the integrator,
-thermostat/barostat, random-number state, atomic state, and calculator contract needed for an exact
-restart. One significant imaginary mode is consistent with a constrained first-order saddle.
-ReactionFlow then displaces the saddle both ways along that mode, relaxes each side, and records
-whether one side reaches the reactant and the other the product.
+## How it works
 
-## Perlmutter quick start
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/how-it-works-dark.svg">
+  <img alt="Timeline of one trajectory: MD runs, the bond monitor confirms a change, MD pauses at a checkpoint while the pathway is refined, then the checkpoint is restored and MD continues" src="docs/figures/how-it-works-light.svg" width="100%">
+</picture>
 
-The included campaign requests one Perlmutter GPU node and runs four independent ANI-1xnr
-hydrostatic-NPT trajectories of a relaxed 192-atom beta-acetonitrile structure at 20 GPa. The four
-trajectories run at 100, 300, 500, and 700 K with different random seeds for 1,000 steps at 1 fs per
-step. Each Slurm task uses one GPU and runs its live bond monitor on CPU cores on the same node.
+Each trajectory runs in its own process. Every `observation_interval` MD steps, the bond monitor
+compares interatomic distances with the covalent radii of each pair. A bond change is accepted
+after it persists for three observations, and it becomes a reaction candidate once the new bond
+topology has been stable for three observations. The trajectory then writes a checkpoint, relaxes
+the reactant and product, runs NEB and CI-NEB, checks the saddle, and records the result. MD
+resumes from the checkpoint, not from a relaxed structure, so it continues the trajectory that
+would have run without the pause.
 
-### Clone and install
-
-Log in to Perlmutter and run:
+## Install
 
 ```bash
-cd "$PSCRATCH"
 git clone https://github.com/Austin243/ReactionFlow.git
 cd ReactionFlow
-./scripts/setup-perlmutter-ani1xnr.sh
+python -m pip install .
 ```
 
-The setup script loads NERSC's `pytorch/2.11.0` module, installs the pinned Python dependencies and
-ReactionFlow into `.perlmutter-python/` inside the checkout, downloads and verifies the pinned
-ANI-1xnr weights with `reactionflow prepare`, and validates the campaign. It can be run again
-safely after updating the checkout. Exact checkpoints are bound to the model files, the installed
-package versions, and the adapter, runtime, and integrator source, so a trajectory already in
-progress resumes only while those are unchanged. Each trajectory records the ReactionFlow version
-that created it in its `state.json` as `created_with_reactionflow`; run campaigns from a release
-tag (`git checkout v<version>` before setup) so that version can be reinstalled. No container or
-separate Conda environment is required.
+ReactionFlow needs Python 3.12 or newer. The core package depends only on ASE, NumPy, and
+NetworkX. Model backends are separate: `reactionflow prepare campaign.json --install` installs the
+ones a campaign uses, or you can install an extra yourself, for example
+`python -m pip install '.[mace]'`. Several backends pin conflicting versions of e3nn, Torch, or
+other packages and need separate environments ([which ones](docs/models.md#install-and-prepare)).
 
-### Run the campaign
+## Run a campaign
 
-From the repository root, enter the NERSC project that should be charged for GPU time and submit
-the job:
-
-```bash
-read -r -p "NERSC GPU project: " GPU_PROJECT
-sbatch -A "$GPU_PROJECT" -q regular \
-  examples/perlmutter/acn_20gpa_ani1xnr/submit.sbatch
-```
-
-If that project's GPU allocation is exhausted, submit to the free, low-priority `overrun` QOS:
-
-```bash
-read -r -p "NERSC GPU project: " GPU_PROJECT
-sbatch -A "$GPU_PROJECT" -q overrun --time-min=00:10:00 \
-  examples/perlmutter/acn_20gpa_ani1xnr/submit.sbatch
-```
-
-Results are written to `outputs/acn_20gpa_ani1xnr/<trajectory-id>/`. If a confirmed bond change is
-found, only that trajectory pauses for endpoint relaxation, NEB, CI-NEB, and constrained frequency
-validation before resuming from its exact checkpoint. Submit the same command again after an
-interruption to resume incomplete trajectories; completed trajectories are left unchanged. A
-trajectory that stops with an error does not stop the others, and its error is recorded in
-`last-error.json` in its output directory.
-
-Check progress at any time, including while the job runs; the command only reads the outputs:
-
-```bash
-module load pytorch/2.11.0
-export PYTHONUSERBASE="$PWD/.perlmutter-python" PATH="$PWD/.perlmutter-python/bin:$PATH"
-reactionflow status examples/perlmutter/acn_20gpa_ani1xnr/campaign.json
-```
-
-It lists each trajectory's phase, step, detected events, converged pathways, and latest error,
-then each reaction class merged across trajectories with its barrier range and how many of its
-saddles connect their endpoints. Add `--json` for the same data in machine-readable form.
-
-## Refinement outcomes and recorded data
-
-After a detected reaction is confirmed, ReactionFlow checkpoints the original MD state and refines
-every queued pathway serially. A successful CI-NEB or a handled scientific failure is recorded as a
-durable outcome. ReactionFlow then restores the checkpoint and continues the original MD
-trajectory; it never substitutes a relaxed endpoint or NEB image for the MD state.
-
-| Situation | Recorded status | Behavior |
-| --- | --- | --- |
-| Endpoint relaxation and CI-NEB converge | `ci_neb_converged` | Save the band, image energies, barrier, frequency diagnostic, and saddle connectivity check; resume MD whatever those diagnostics report. |
-| Either endpoint does not relax within the configured limits | `relaxation_failed` | Save the attempted relaxed endpoints, skip NEB, and resume MD. |
-| Both relaxed endpoints occupy the same bond-topology basin, including a product that relaxes back to the reactant | `collapsed` | Save the relaxed endpoints, skip NEB, and resume MD. |
-| The candidate or relaxed endpoint topology remains ambiguous, no longer matches the detected event, or relaxation changed bonds elsewhere in the cell | `unresolved` | Save every available endpoint image, skip NEB, and resume MD. |
-| Initial NEB does not converge | `neb_failed` | Save the current band, skip CI-NEB, and resume MD. |
-| Climbing-image NEB does not converge | `ci_neb_failed` | Save the current band and resume MD. |
-| Pathway preparation or calculator evaluation raises an unexpected error | `failed` | Save the available images and error message, then resume MD. |
-
-Failures to persist an outcome or otherwise maintain durable run state are different: ReactionFlow
-marks the trajectory itself as failed and stops instead of continuing from uncertain state. An
-environment that refuses the exact checkpoint, such as a changed installation, is not such a
-failure: the job exits with that error, and resubmitting in the original environment resumes the
-trajectory. Published outcomes are never overwritten or rerun. After an unsuccessful refinement,
-a fresh resolved occurrence of the same reaction class can launch another attempt. Only one
-attempt per class is queued at a time. A `ci_neb_converged` outcome stops further attempts for that
-class, regardless of its separate frequency and connectivity diagnostics.
-
-Each detected occurrence and its pathway result share an `occurrence-id`:
-
-```text
-outputs/acn_20gpa_ani1xnr/<trajectory-id>/
-├── candidates/<occurrence-id>/
-│   ├── candidate.json
-│   ├── reactant.traj
-│   └── product.traj
-└── pathways/<occurrence-id>/
-    ├── result.json
-    └── images.traj
-```
-
-`candidate.json` records the stable atom IDs in the connected reacting region, reactant and product
-bond lists, detector settings, endpoint hashes, and three source-frame fields:
-
-- `reactant_frame`: the last accepted stable observation before the topology change.
-- `product_frame`: the first observation containing the proposed product topology.
-- `observed_frame`: the observation at which the persistence checks confirmed the event.
-
-These are bond-monitor observation frames, not raw MD step numbers. The complete endpoint
-structures and pathway images retain stable IDs for every atom, and segment trajectory boundaries
-record both their global MD step and observation-frame counters. `result.json` records the outcome
-status, reaction class and occurrence IDs, barrier and image energies when available, a constrained
-frequency diagnostic and saddle connectivity check for converged CI-NEB results, a message
-describing any failure, and the ReactionFlow version that produced it.
-
-## Use another ASE-compatible MLIP
-
-ReactionFlow can prepare MACE (including MH-1 heads and POLAR sizes), MACE-FIELD, UMA tasks,
-AIMNet2/RXN, OrbMol-v2, ORB-v3, MatterSim, CHGNet, SevenNet, NEP89, and ANI-1xnr:
-
-```bash
-reactionflow models
-reactionflow models --backend mace
-reactionflow prepare campaign.json --install
-reactionflow run campaign.json --index 0
-```
-
-Configure the selected adapter first and use its own compatible Python environment. Preparation
-downloads weights before the run; normal runs use local files. MACE-POLAR supports NPT in float64
-using numerical stress from its full energy, with twelve extra energy evaluations per fresh stress.
-NEP89 uses a CPU backend and requires fully periodic structures. See the
-[model guide](docs/models.md) for profiles, optional package installation, local checkpoints,
-authentication, and restart constraints. The bundled Perlmutter example and setup scripts remain
-ANI-1xnr-specific.
-
-To select another installed ASE-compatible MLIP, define an adapter profile in the campaign JSON
-and set each trajectory's `adapter_profile` to its name:
-
-```json
-"adapter_profiles": {
-  "your-mlip": {
-    "factory": "reactionflow.adapters.ase:create_adapter",
-    "options": {
-      "calculator_factory": "your_mlip.calculators:create_calculator",
-      "calculator_kwargs": {
-        "checkpoint": "/global/cfs/cdirs/your_project/models/model.ckpt",
-        "device": "cuda"
-      },
-      "model_files": [
-        "/global/cfs/cdirs/your_project/models/model.ckpt"
-      ]
-    }
-  }
-}
-```
-
-`calculator_factory` is the importable `module:callable` for a calculator class or function; it
-must return an ASE `Calculator`. ReactionFlow passes `calculator_kwargs` directly to that callable,
-so change `checkpoint` and the other keys to the arguments that calculator expects. Put the model's
-absolute, compute-node-visible checkpoint path in both the appropriate calculator argument and
-`model_files`. Install the calculator package in the environment used by your trajectory workers.
-See the [campaign guide](docs/campaigns.md#use-an-ase-calculator-directly) for the full interface.
-
-## Use multiple MLIPs in one submission
-
-Define each complete adapter configuration once under `adapter_profiles` and assign one by name
-to every trajectory:
+A campaign is one JSON file with a starting structure, the models to use, and a list of
+trajectories:
 
 ```json
 {
@@ -194,81 +51,253 @@ to every trajectory:
   "output_root": "runs",
   "require_gpu": true,
   "adapter_profiles": {
-    "model-a": {
-      "factory": "my_mlip.reactionflow:create_adapter",
-      "options": {"checkpoint": "/models/a.ckpt"}
-    },
-    "model-b": {
-      "factory": "my_mlip.reactionflow:create_adapter",
-      "options": {"checkpoint": "/models/b.ckpt"}
+    "mace-omol": {
+      "factory": "reactionflow.adapters.mace:create_adapter",
+      "options": {"family": "mp", "model": "mh-1", "head": "omol", "device": "cuda"}
     }
   },
+  "reaction_run": {"observation_interval": 10},
   "trajectories": [
     {
-      "id": "run-001",
-      "adapter_profile": "model-a",
+      "id": "300K-seed1",
+      "adapter_profile": "mace-omol",
       "total_steps": 100000,
-      "timestep_fs": 1.0,
+      "timestep_fs": 0.5,
       "temperature_K": 300.0,
-      "pressure_GPa": 20.0,
-      "seed": 11
-    },
-    {
-      "id": "run-002",
-      "adapter_profile": "model-b",
-      "total_steps": 100000,
-      "timestep_fs": 1.0,
-      "temperature_K": 300.0,
-      "pressure_GPa": 20.0,
-      "seed": 22
+      "pressure_GPa": null,
+      "seed": 1
     }
   ]
 }
 ```
 
-Use the same explicit assignment for 8 trajectories or 500; each Slurm worker loads only the
-profile assigned to its trajectory. `reactionflow plan` summarizes the assignment counts before
-submission. See the [campaign guide](docs/campaigns.md#multiple-models-in-one-submission) for the
-complete file format and execution guarantees.
+Paths are relative to the campaign file. Each trajectory names one entry in `adapter_profiles`;
+this one uses the MACE-MH-1 `omol` head, and any other model fits in the same place (see
+[Models](#models)). With `require_gpu`, every trajectory needs exactly one visible GPU. To run on a
+CPU, set it to `false` and the model's `device` to `cpu`. Anything left out of `reaction_run`
+keeps its default; the [campaign guide](docs/campaigns.md) lists every field.
 
-## Change temperatures and pressures
+```bash
+reactionflow validate campaign.json   # check the file without loading the model
+reactionflow prepare campaign.json    # download the model weights
+reactionflow run campaign.json        # run the trajectory
+reactionflow status campaign.json     # summarize trajectories and reactions
+```
 
-Edit each entry in the `trajectories` array of the campaign JSON. Every trajectory can use its own
-temperature, pressure, and random seed:
+A campaign with several trajectories needs `run --index N` outside Slurm. `status` only reads the
+output and is safe to run while trajectories are still going. It prints one row per trajectory
+and one per reaction class, with the barrier range of each class; `--json` prints the same data
+for scripts.
+
+## Models
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/models-dark.svg">
+  <img alt="Ten built-in model adapters plus a generic ASE adapter and a custom adapter, all providing start, restore, and calculator; the commands reactionflow models, prepare, and run" src="docs/figures/models-light.svg" width="100%">
+</picture>
+
+`reactionflow models` lists every built-in model with its heads and tasks. It installs and
+downloads nothing. `reactionflow prepare` downloads the weights for the models a campaign uses,
+and runs then read only local files unless you pass `run --download`. On a cluster, prepare on a
+node with network access. The [model guide](docs/models.md) has a profile example for every
+backend.
+
+A model that is not built in can run through the generic adapter if it has an ASE calculator:
 
 ```json
-"temperature_K": 300.0,
-"pressure_GPa": 20.0,
-"seed": 11
+"my-model": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "my_package.calculators:MyCalculator",
+    "calculator_kwargs": {"model_path": "/abs/path/model.pt", "device": "cuda"},
+    "model_files": ["/abs/path/model.pt"]
+  }
+}
 ```
 
-A numeric `pressure_GPa` runs NPT at that target pressure. Set `"pressure_GPa": null` for NVT.
-Thermostat and barostat coupling times can be changed in that trajectory's `conditions` object.
+ReactionFlow calls `calculator_factory` with `calculator_kwargs` and records a hash of every file
+in `model_files` in each checkpoint. The generic adapter assumes the calculator holds no state of
+its own. A model with internal state or its own random numbers needs a
+[custom adapter](docs/campaigns.md#write-a-custom-adapter), which implements three methods:
+`start(atoms)`, `restore(snapshot)`, and `calculator(stage)`.
 
-NPT uses variable-cell SSNEB and enthalpy barriers, Δ(E + PV); the calculator must supply stress.
-NVT keeps fixed-cell NEB. See [pathway refinement](docs/pathway-refinement.md) for details.
+One campaign can mix models when they share an environment. Define one profile per model and set
+`adapter_profile` on each trajectory.
 
-## Change the number of GPU nodes
+## Constant volume and constant pressure
 
-For a customized campaign, set the resource lines near the top of
-`examples/perlmutter/run-campaign.sbatch`. For example, 10 Perlmutter GPU nodes and 40 trajectories
-use:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/ensembles-dark.svg">
+  <img alt="Constant volume uses NEB with a fixed cell and reports a potential-energy barrier; constant pressure uses SSNEB with a cell per image and reports an enthalpy barrier, shown for a model system at 0, 0.4, and 0.8 GPa" src="docs/figures/ensembles-light.svg" width="100%">
+</picture>
+
+`pressure_GPa` sets the ensemble for both MD and refinement. A number runs NPT at that pressure,
+and the pathway is refined with variable-cell solid-state NEB (SSNEB). Every image then carries
+its own cell and the barrier is an enthalpy, Δ(E + PV). The model must provide stress. `null` runs
+NVT with ordinary NEB in the fixed cell, and the barrier is a potential energy. The chart is
+SSNEB output for the volume-coupled double well in the test suite.
+
+## Many trajectories on a cluster
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/campaign-dark.svg">
+  <img alt="Eight trajectories on two four-GPU nodes over two jobs: refinement pauses only its own trajectory, an error stops only its own trajectory, and the resubmitted job resumes the rest" src="docs/figures/campaign-light.svg" width="100%">
+</picture>
+
+Trajectories are independent, and a campaign grows by adding entries to `trajectories`. Under
+Slurm, start one task per trajectory with one GPU each:
 
 ```bash
-#SBATCH --nodes=10
-#SBATCH --ntasks=40
-#SBATCH --ntasks-per-node=4
+srun reactionflow run campaign.json
 ```
 
-The script assigns one Slurm task to each GPU, so the campaign must contain exactly one trajectory
-entry per task: four entries per Perlmutter GPU node. It uses the same `.perlmutter-python`
-environment as the example, so submit it from the repository root (or set `REACTIONFLOW_ROOT` to
-the checkout) with the campaign file as its argument:
+`SLURM_PROCID` selects the trajectory. The command stops before any MD if the number of tasks
+differs from the number of trajectories. A refinement pauses only its own trajectory. An error
+stops only its own trajectory and is written to `last-error.json` in that trajectory's directory.
+
+To continue after a job ends, submit the same command again. Unfinished trajectories resume from
+their last checkpoint and finished ones are left as they are. Each output directory is bound to
+its structure, settings, and model, and a changed campaign is rejected instead of resumed.
+
+[`examples/perlmutter/run-campaign.sbatch`](examples/perlmutter/run-campaign.sbatch) is a job
+script for Perlmutter's four-GPU nodes. For 32 trajectories:
 
 ```bash
-read -r -p "NERSC GPU project: " GPU_PROJECT
-sbatch -A "$GPU_PROJECT" -q regular examples/perlmutter/run-campaign.sbatch path/to/campaign.json
+sbatch -A <project> --nodes=8 --ntasks=32 examples/perlmutter/run-campaign.sbatch campaign.json
 ```
 
-Leave the included ANI-1xnr `submit.sbatch` unchanged when running the bundled four-trajectory
-example.
+It loads the environment that `scripts/setup-perlmutter-ani1xnr.sh` builds. For another backend,
+replace its environment lines and keep the `srun` line.
+
+## Output
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/run-directory-dark.svg">
+  <img alt="Directory tree of one trajectory: contract, state, reaction database, checkpoint, MD segments, one candidates folder per occurrence, one pathways folder per refinement attempt, and last-error.json" src="docs/figures/run-directory-light.svg" width="100%">
+</picture>
+
+Each trajectory writes one directory under `output_root`. Records and checkpoints are written
+under a temporary name and renamed into place when complete, so an interrupted job leaves no
+partial record; MD frames are appended to the segment's `trajectory.traj`. A detected occurrence and its refinement share one occurrence ID. `candidate.json` lists the
+reacting atoms, the bonds before and after, and the observation frames the endpoints came from.
+`result.json` holds the status, barrier, image energies, frequency check, and connectivity check,
+and `images.traj` holds the band.
+
+## Refinement outcomes
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/outcomes-dark.svg">
+  <img alt="Refinement stages and the status each can end with: unresolved, relaxation_failed, collapsed, neb_failed, ci_neb_failed, ci_neb_converged, or failed; every outcome is saved, the checkpoint is restored, and MD continues" src="docs/figures/outcomes-light.svg" width="100%">
+</picture>
+
+A refinement either reaches `ci_neb_converged` or stops at the first stage that fails, with a
+status that says why. `collapsed` means both endpoints relaxed to the same bond topology.
+`unresolved` means the change could not be mapped onto the relaxed endpoints: a bond stayed between
+the two thresholds, the change disappeared, or relaxation changed bonds elsewhere in the cell.
+`failed` means an unexpected error. In every case the result is saved, the checkpoint is restored,
+and MD continues. A trajectory itself stops only if it cannot save its own state.
+
+Results are never overwritten. When an attempt does not converge, the next occurrence of the same
+reaction class is refined. After one attempt reaches `ci_neb_converged`, later occurrences of that
+class are recorded without refinement. The frequency and connectivity checks are stored with the
+result and do not change its status.
+
+## Bond detection
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/detection-dark.svg">
+  <img alt="Distance of one atom pair over 22 observations, scaled by the summed covalent radii, with the formation threshold at 1.15 and the breaking threshold at 1.30; a bond forms after three observations below 1.15 and becomes a candidate after three stable observations" src="docs/figures/detection-light.svg" width="100%">
+</picture>
+
+Each pair distance is divided by the sum of the two covalent radii. A bond forms at 1.15 or less
+and breaks at 1.30 or more. Between the two, the pair keeps its previous state, which stops
+thermal noise from switching a bond on and off. A crossing has to hold for three consecutive
+observations; the single frame below 1.15 at frame 5 does not count. The reactant and product
+structures are the observations just before and just after the change (`reactant_frame` and
+`product_frame`). Thresholds can be set per element pair; see
+[bond detection](docs/bond-detection.md). The trace above is a prescribed C–N distance passed
+through the detector and tracker with the default settings.
+
+## Reaction classes
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/identity-dark.svg">
+  <img alt="A reaction drawn as a change graph with unchanged, formed, and broken bonds; renumbered, reversed, and differently shaped copies match, a different change does not; the reaction database groups occurrences into classes" src="docs/figures/identity-light.svg" width="100%">
+</picture>
+
+A reaction is stored as a graph of the bonded region that contains the changed bonds. Nodes carry
+the element and edges are marked unchanged, formed, or broken. Two occurrences are the same
+reaction when their graphs are isomorphic, whatever the atom numbering, the geometry, or the
+direction. `reactions.sqlite3` keeps every occurrence with its class, and `reactionflow status`
+merges classes across trajectories that use the same model and pressure. See
+[reaction identity](docs/reaction-identity.md).
+
+## Pathway refinement
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/pathway-dark.svg">
+  <img alt="Four stages on a model energy surface: endpoint relaxation, nudged elastic band, climbing image, and saddle checks, with the energy along the band and a 0.62 eV barrier" src="docs/figures/pathway-light.svg" width="100%">
+</picture>
+
+Both MD snapshots are relaxed first, cell included at constant pressure, and checked again with
+the detection thresholds. A seven-image band is interpolated between them and relaxed with NEB,
+and then the highest image climbs to the saddle. A finite-difference frequency calculation over
+the reacting atoms and their neighbors within 4 Å counts the imaginary modes. The saddle is then
+pushed 0.1 Å each way along its mode and relaxed, which shows whether it connects the reactant
+to the product. The figure is a `refine_pathway()` run with default settings on a
+two-dimensional model potential; its barrier is 0.62 eV and its mode is 476i cm⁻¹. See
+[pathway refinement](docs/pathway-refinement.md).
+
+## Exact restart
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/restart-dark.svg">
+  <img alt="What a checkpoint holds, and a run stopped and restored at step 150 compared with one that never stopped: the exact restart matches at every step, a restart from atoms, momenta, and cell drifts away" src="docs/figures/restart-light.svg" width="100%">
+</picture>
+
+A checkpoint holds the atoms with their momenta and cell, the integrator, thermostat, and barostat
+state, the random-number generator, the model-file hashes and package versions, and the bond
+monitor. The comparison above is 32 copper atoms with EMT in NPT at 600 K and 1 GPa, stopped and
+restored at step 150. The restored run matches the uninterrupted one at every step. A restart from
+positions, momenta, and cell alone drifts by 0.4 Å RMS within 250 steps.
+
+A restore is refused when the model files, package versions, or adapter code differ from the
+checkpoint, and the error names each difference. Run long campaigns from a release tag so the
+same installation can be rebuilt. See [exact restart](docs/exact-restart.md).
+
+## Example: acetonitrile at 20 GPa
+
+[`examples/perlmutter/acn_20gpa_ani1xnr`](examples/perlmutter/acn_20gpa_ani1xnr/README.md) runs
+four NPT trajectories of a relaxed 192-atom β-acetonitrile crystal at 20 GPa with ANI-1xnr, at
+100, 300, 500, and 700 K, on one Perlmutter GPU node. From the repository root:
+
+```bash
+./scripts/setup-perlmutter-ani1xnr.sh
+sbatch -A <project> -q regular examples/perlmutter/acn_20gpa_ani1xnr/submit.sbatch
+```
+
+The setup script installs ReactionFlow and its dependencies into `.perlmutter-python/` in the
+checkout, downloads the ANI-1xnr weights, and validates the campaign. Results go to
+`outputs/acn_20gpa_ani1xnr/`.
+
+## Limits
+
+A detected change is geometric: two atoms crossed a distance threshold. ReactionFlow does not
+assign bond orders, compute free energies or rates, or run an IRC. The frequency check holds atoms
+beyond 4 Å and the cell fixed, so one imaginary mode is consistent with a saddle but does not prove
+one. The thresholds and observation interval need checking for each system.
+
+## Documentation
+
+- [Campaigns](docs/campaigns.md): file format, several models in one campaign, Slurm, status
+- [Models](docs/models.md): every backend, its options, and its environment
+- [Bond detection](docs/bond-detection.md)
+- [Candidate tracking](docs/candidate-tracking.md)
+- [Reaction identity](docs/reaction-identity.md)
+- [Occurrence store](docs/occurrence-store.md)
+- [Pathway refinement](docs/pathway-refinement.md)
+- [Exact restart](docs/exact-restart.md)
+
+## License
+
+BSD 3-Clause; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
