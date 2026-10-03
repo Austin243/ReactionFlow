@@ -293,19 +293,14 @@ class ReactionRun:
             self._phase = "running"
 
     def _queue_pathway(self, record: OccurrenceRecord, candidate: ReactionCandidate) -> None:
-        if not candidate.resolved or (self.pathways / record.occurrence_id).is_dir():
-            return
-        for previous in self.occurrences.records():
-            if previous.class_id != record.class_id:
-                continue
-            if previous.occurrence_id in self._pending:
-                return
-            result_path = self.pathways / previous.occurrence_id / "result.json"
-            if result_path.is_file():
-                result = json.loads(result_path.read_text(encoding="utf-8"))
-                if result["status"] == "ci_neb_converged":
-                    return
-        self._pending.append(record.occurrence_id)
+        # Every resolved occurrence is refined, also one that repeats an earlier reaction,
+        # because the reactions around it can change its barrier.
+        if (
+            candidate.resolved
+            and record.occurrence_id not in self._pending
+            and not (self.pathways / record.occurrence_id).is_dir()
+        ):
+            self._pending.append(record.occurrence_id)
 
     def _register(self, candidates: tuple[ReactionCandidate, ...], *, label: str) -> None:
         # Registration is idempotent, so an exact replay of an observation that was interrupted

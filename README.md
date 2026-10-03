@@ -201,10 +201,9 @@ the two thresholds, the change disappeared, or relaxation changed bonds elsewher
 `failed` means an unexpected error. In every case the result is saved, the checkpoint is restored,
 and MD continues. A trajectory itself stops only if it cannot save its own state.
 
-Results are never overwritten. When an attempt does not converge, the next occurrence of the same
-reaction class is refined. After one attempt reaches `ci_neb_converged`, later occurrences of that
-class are recorded without refinement. The frequency and connectivity checks are stored with the
-result and do not change its status.
+Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
+earlier reaction, because the reactions that have happened around it can change its barrier. The
+frequency and connectivity checks are stored with each result and do not change its status.
 
 ## Bond detection
 
@@ -233,8 +232,9 @@ A reaction is stored as a graph of the bonded region that contains the changed b
 the element and edges are marked unchanged, formed, or broken. Two occurrences are the same
 reaction when their graphs are isomorphic, whatever the atom numbering, the geometry, or the
 direction. `reactions.sqlite3` keeps every occurrence with its class, and `reactionflow status`
-merges classes across trajectories that use the same model and pressure. See
-[reaction identity](docs/reaction-identity.md).
+merges classes across trajectories that use the same model and pressure, so each class shows how
+often it happened and the range of its barriers. Classes only group results; they do not decide
+what is refined. See [reaction identity](docs/reaction-identity.md).
 
 ## Pathway refinement
 
