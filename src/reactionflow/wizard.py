@@ -316,21 +316,26 @@ def _needs_charge_and_spin(profile: _Profile) -> bool:
     )
 
 
-def _models(catalog: list[dict], previous: list[_Profile] | None) -> list[_Profile]:
+def _models(
+    catalog: list[dict], previous: list[_Profile] | None, *, single: bool = False
+) -> list[_Profile]:
     labels = [
         f"{backend['backend']:<11} {len(backend['models'])} "
         f"model{'s' if len(backend['models']) > 1 else ''}"
         for backend in catalog
     ]
     labels.append("another model with an ASE calculator")
-    hint = " (Enter: same as the previous group)" if previous else ""
-    picks = _menu(
-        f"Models; list several numbers to run each one{hint}",
-        labels,
-        prompt="Model numbers",
-        many=True,
-        default="" if previous else None,
-    )
+    if single:
+        picks = [_menu("Model", labels, prompt="Model number")]
+    else:
+        hint = " (Enter: same as the previous group)" if previous else ""
+        picks = _menu(
+            f"Models; list several numbers to run each one{hint}",
+            labels,
+            prompt="Model numbers",
+            many=True,
+            default="" if previous else None,
+        )
     if not picks:
         return list(previous or [])
     return [_builtin(catalog[pick]) if pick < len(catalog) else _ase_calculator() for pick in picks]
@@ -514,15 +519,148 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
     }
 
 
-def _write(path: Path, campaign: dict[str, Any]) -> None:
+def _write(path: Path, campaign: dict[str, Any], load: Callable = CampaignConfig.load) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     temporary.write_text(json.dumps(campaign, indent=2) + "\n", encoding="utf-8")
     try:
-        CampaignConfig.load(temporary)  # the same checks every other command applies
+        load(temporary)  # the same checks every other command applies
         publish(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _fraction(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError(f"{text!r} is not a number") from None
+    if not 0 < value < 1:
+        raise ValueError("use a number between 0 and 1")
+    return value
+
+
+def _eon_structure(text: str) -> _Structure:
+    from .search.eon import validate_start
+
+    structures = _structures(text)
+    if len(structures) != 1:
+        raise ValueError("an EON campaign starts from one structure file")
+    validate_start(structures[0].atoms)
+    return structures[0]
+
+
+def _centers(atoms: Atoms) -> Callable[[str], list]:
+    def parse(text: str) -> list:
+        centers: list = []
+        for token in text.replace(",", " ").split():
+            if token.isdigit() and int(token) < len(atoms):
+                centers.append(int(token))
+            elif token in atoms.get_chemical_symbols():
+                centers.append(token)
+            else:
+                raise ValueError(f"{token!r} is neither an element in the structure nor an index")
+        return centers
+
+    return parse
+
+
+def _eon_session(path: Path, catalog: list[dict]) -> int:
+    from .search.cli import PINNED, SearchCampaign
+    from .search.eon import free_rotation
+
+    print("\nEON adaptive kinetic Monte Carlo")
+    structure = _ask_until_valid("Starting structure file", _eon_structure)
+    rotation = free_rotation(structure.atoms)
+    if rotation == "pinned":
+        print(f"  Note: {PINNED}.")
+    while True:
+        profile = _models(catalog, None, single=True)[0]
+        if profile.backend not in _PERIODIC_ONLY or structure.periodic:
+            break
+        print(f"  {profile.name} needs a periodic cell, but {_shown(structure.path)} is not.")
+    if _needs_charge_and_spin(profile) and not {"charge", "spin"} <= set(structure.atoms.info):
+        print(
+            f"  Note: {profile.name} reads the total charge and spin multiplicity from the "
+            "structure, which has none. In an extxyz file, add charge=0 spin=1 (your values) "
+            "to the comment line."
+        )
+    akmc = {
+        "temperature_K": _ask_until_valid("Temperature in K", _positive(float), "300"),
+        "steps": _ask_until_valid("Kinetic Monte Carlo steps", _positive(), "100"),
+        "confidence": _ask_until_valid(
+            "Confidence to reach in each state before stepping", _fraction, "0.95"
+        ),
+        "seed": secrets.randbelow(2**32),
+    }
+    eon: dict[str, Any] = {}
+    push = _menu(
+        "Before each saddle search, give a random push to",
+        ["every free atom", "only the atoms near one chosen atom"],
+        default="1",
+    )
+    if push == 1:
+        eon["displace"] = "local"
+        eon["displace_radius_A"] = _ask_until_valid(
+            "Push the atoms within how many Å of it", _positive(float), "4"
+        )
+        centers = _ask_until_valid(
+            "Choose that atom from these elements or atom indices (Enter: any free atom)",
+            _centers(structure.atoms),
+            "",
+        )
+        if centers:
+            eon["displace_centers"] = centers
+    eon["displace_size_A"] = _ask_until_valid(
+        "Total size of the push in Å", _positive(float), "0.5"
+    )
+    if rotation:
+        print(
+            "  The structure can turn as a whole, so harmonic prefactors would miss its "
+            "rotations; it uses one fixed prefactor."
+        )
+        prefactors = 1
+    else:
+        prefactors = _menu(
+            "Rate prefactors",
+            ["harmonic transition-state theory, from vibrational frequencies", "one fixed value"],
+            default="1",
+        )
+    if prefactors == 1:
+        eon["prefactor"] = _ask_until_valid("Prefactor in 1/s", _positive(float), "1e13")
+    if profile.backend == "nep":
+        gpu = False
+        print("  NEP89 runs on CPUs, so the campaign will not ask for a GPU.")
+    else:
+        gpu = _yes("Run on a GPU?", True)
+    output = _ask_until_valid(
+        "Output directory, relative to the campaign file", _relative_directory, "eon-runs"
+    )
+    options = dict(profile.options)
+    if profile.backend and profile.backend != "nep":
+        options["device"] = "cuda" if gpu else "cpu"
+    campaign = {
+        "schema_version": 2,
+        "mode": "eon",
+        "structure": os.path.relpath(structure.path, path.parent),
+        "output_root": output,
+        "require_gpu": gpu,
+        "adapter": {"factory": profile.factory, "options": options},
+        "akmc": akmc,
+        "eon": eon,
+    }
+    if not _yes(f"Write {_shown(path)}?", True):
+        print("Nothing was written.")
+        return 1
+    _write(path, campaign, SearchCampaign.load)
+    shown = shlex.quote(_shown(path))
+    print(
+        f"Wrote {shown}. Next:\n"
+        f"  reactionflow validate {shown}\n"
+        f"  reactionflow prepare {shown} --install\n"
+        f"  reactionflow run {shown}"
+    )
+    return 0
 
 
 def _session(path: Path) -> int:
@@ -534,6 +672,16 @@ def _session(path: Path) -> int:
         print("Nothing was written.")
         return 1
     catalog = model_catalog()
+    kind = _menu(
+        "Campaign",
+        [
+            "MD: reactions seen directly in molecular dynamics",
+            "EON: rare events by adaptive kinetic Monte Carlo",
+        ],
+        default="1",
+    )
+    if kind == 1:
+        return _eon_session(path, catalog)
     groups: list[_Group] = []
     while True:
         used = [profile for group in groups for profile in group.profiles]
