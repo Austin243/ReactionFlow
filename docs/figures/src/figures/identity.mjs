@@ -49,11 +49,11 @@ export default {
     'A reaction occurrence is described by a change graph: atoms are nodes labeled by element, and bonds are edges ' +
     'labeled unchanged, formed, or broken. Occurrences with different atom numbers, a different geometry, or the ' +
     'reverse direction have the same graph and fall into one class; a different pattern of changes is a new class. ' +
-    'Every occurrence is stored, and a class is refined at each new occurrence until one attempt converges.',
+    'Every occurrence is stored and refined; its class groups the results.',
   caption:
     'Identity is exact graph isomorphism over the connected region touched by the change. Element labels and the ' +
     'pattern of formed and broken bonds must match; atom numbering, geometry, and direction do not matter. Every ' +
-    'occurrence is kept, and a class is refined again at later occurrences only until one attempt converges. ' +
+    'occurrence is kept and refined, and its class groups the results. ' +
     'The example is the hydrogen shift between acetonitrile and ketenimine.',
   width: 1200,
   height: 404,
@@ -98,28 +98,28 @@ export default {
       fig.text(cx + cw - 26, cy + ch - 23, cell.same ? '=' : '≠', { size: TYPE.body, weight: 700, anchor: 'middle', middle: true });
     });
 
-    // 3. Classes: every occurrence is kept; a class is refined until one attempt converges.
+    // 3. Classes: every occurrence is kept and refined; the class groups the results.
     heading(788, 3, 'Reaction classes');
     const card = { x: 788, y: top, w: 376, h };
     fig.card(card.x, card.y, card.w, card.h, { fill: t.panel });
     fig.text(card.x + 18, card.y + 34, 'reactions.sqlite3', { size: TYPE.small, mono: true, weight: 700 });
-    const dot = (x, y, kind) => {
-      if (kind === 'converged') fig.circle(x, y, 7.5, { fill: t.refine });
-      else if (kind === 'attempt') fig.circle(x, y, 7, { fill: t.warn, stroke: mix(t.warn, t.ink, 0.3), sw: 1 });
-      else fig.circle(x, y, 6.5, { fill: t.bg, stroke: t.ink3, sw: 1.75 });
-    };
+    const dot = (x, y, converged) =>
+      converged
+        ? fig.circle(x, y, 7.5, { fill: t.refine })
+        : fig.circle(x, y, 7, { fill: t.warn, stroke: mix(t.warn, t.ink, 0.3), sw: 1 });
     [
-      ['broken C-H; formed H-N', ['converged', 'recorded', 'recorded']],
-      ['broken C-H', ['attempt', 'converged']],
-    ].forEach(([label, kinds], i) => {
+      ['broken C-H; formed H-N', [true, true, false]],
+      ['broken C-H', [false, true]],
+    ].forEach(([label, results], i) => {
       const ry = card.y + 54 + i * 82;
       fig.rect(card.x + 14, ry, card.w - 28, 72, { rx: 8, fill: t.bg, stroke: t.border });
       fig.text(card.x + 30, ry + 24, label, { size: TYPE.small, mono: true, weight: 600, middle: true });
-      kinds.forEach((kind, k) => dot(card.x + 38 + k * 24, ry + 52, kind));
+      results.forEach((converged, k) => dot(card.x + 38 + k * 24, ry + 52, converged));
     });
-    [['converged', 'converged'], ['attempt', 'not converged'], ['recorded', 'recorded only']].forEach(([kind, label], i) => {
-      const ly = card.y + 242 + i * 28;
-      dot(card.x + 38, ly, kind);
+    fig.text(card.x + 30, card.y + 240, 'one dot per refined occurrence', { size: TYPE.small, fill: t.ink3, middle: true });
+    [[true, 'converged'], [false, 'not converged']].forEach(([converged, label], i) => {
+      const ly = card.y + 272 + i * 28;
+      dot(card.x + 38, ly, converged);
       fig.text(card.x + 56, ly, label, { size: TYPE.small, fill: t.ink2, middle: true });
     });
   },

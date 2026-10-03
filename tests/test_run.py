@@ -243,7 +243,7 @@ def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -
     assert leases.live == 0 and leases.max_live == 1
 
 
-def test_reopen_refines_then_suppresses_reverse_duplicate_and_serializes_leases(
+def test_reopen_refines_the_reverse_reaction_too_and_serializes_leases(
     tmp_path, monkeypatch
 ) -> None:
     leases = LeaseCounter()
@@ -274,9 +274,10 @@ def test_reopen_refines_then_suppresses_reverse_duplicate_and_serializes_leases(
     assert [record.is_representative for record in records] == [True, False]
     assert records[1].occurrence_id != representative.occurrence_id
     assert reopened.pending_pathway_ids == ()
-    assert (summary.phase, summary.pathways) == ("completed", 1)
-    assert len([path for path in (tmp_path / "pathways").iterdir() if path.is_dir()]) == 1
-    assert leases.stages == ["md", "md", "relax_reactant", "relax_product", "neb", "md"]
+    assert (summary.phase, summary.pathways) == ("completed", 2)
+    assert len([path for path in (tmp_path / "pathways").iterdir() if path.is_dir()]) == 2
+    refinement = ["relax_reactant", "relax_product", "neb"]
+    assert leases.stages == ["md", "md", *refinement, "md", *refinement]
     assert leases.live == 0 and leases.max_live == 1
     assert not list(tmp_path.rglob("*.tmp"))
 
@@ -285,7 +286,7 @@ def test_reopen_refines_then_suppresses_reverse_duplicate_and_serializes_leases(
     "failure_status",
     ["unresolved", "collapsed", "relaxation_failed", "neb_failed", "ci_neb_failed", "failed"],
 )
-def test_fresh_occurrence_retries_failed_class_until_converged(
+def test_every_occurrence_is_refined_after_a_failure_and_replays(
     tmp_path, monkeypatch, failure_status
 ) -> None:
     attempts = []
@@ -348,19 +349,20 @@ def test_fresh_occurrence_retries_failed_class_until_converged(
     # The replayed observation queued the retry exactly once.
     assert run.pending_pathway_ids == (retry.occurrence_id,)
     summary = advance(run)
-    assert len(attempts) == 2  # Reopen reused the published outcome.
+    assert len(attempts) == 3  # Reopen reused the published outcome.
     assert first_result.read_bytes() == original_result
     retried = json.loads((tmp_path / "pathways" / retry.occurrence_id / "result.json").read_text())
     assert retried["status"] == "ci_neb_converged"
     assert retried["frequency_validation"]["status"] == "failed"
-    # The third occurrence belongs to a converged class and launches nothing.
-    assert (summary.phase, summary.occurrences, summary.pathways) == ("completed", 3, 2)
+    # The third occurrence repeats a converged reaction and is refined as well.
+    assert (summary.phase, summary.occurrences, summary.pathways) == ("completed", 3, 3)
     assert run.pending_pathway_ids == ()
     row = {}
     (reaction,) = _trajectory(tmp_path, row)
-    assert row["pathways"] == {failure_status: 1, "ci_neb_converged": 1}
+    assert row["pathways"] == {failure_status: 1, "ci_neb_converged": 2}
     assert reaction[1] == 3
-    assert [result["status"] for result in reaction[2]] == [failure_status, "ci_neb_converged"]
+    statuses = [result["status"] for result in reaction[2]]
+    assert statuses == [failure_status, "ci_neb_converged", "ci_neb_converged"]
 
 
 @pytest.mark.parametrize("pressure", [None, 0.0])
