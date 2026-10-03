@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 518" width="1200" height="518" role="img" aria-labelledby="rf-run-directory-title rf-run-directory-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="rf-run-directory-title">What a run writes</title><desc id="rf-run-directory-desc">Directory tree of one trajectory: a contract file, state.json, the reactions.sqlite3 registry, one runtime checkpoint, numbered trajectory segments, one candidates folder per detected occurrence with reactant and product structures, and one pathways folder per refined occurrence with result.json and the band images.</desc>
+
+<rect x="0.5" y="0.5" width="1199" height="517" rx="14" fill="#ffffff" stroke="#d1d9e0"/>
+<rect x="36" y="16" width="1128" height="438" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<text x="58" y="53.1" font-size="20" font-weight="700" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">outputs/&lt;campaign&gt;/&lt;trajectory-id&gt;/</tspan></text>
+<path d="M66 62 V78 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="78" x2="66" y2="94" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="85.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">trajectory-contract.json</tspan></text>
+<circle cx="500" cy="78" r="5.5" fill="#818b98"/>
+<text x="518" y="85.1" font-size="20" fill="#59636e">hashes of the inputs</text>
+<path d="M66 94 V110 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="110" x2="66" y2="126" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="117.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">state.json</tspan></text>
+<circle cx="500" cy="110" r="5.5" fill="#818b98"/>
+<text x="518" y="117.1" font-size="20" fill="#59636e">phase and counters</text>
+<path d="M66 126 V142 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="142" x2="66" y2="158" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="149.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">reactions.sqlite3</tspan></text>
+<circle cx="500" cy="142" r="5.5" fill="#eb6834"/>
+<text x="518" y="149.1" font-size="20" fill="#59636e">occurrences and classes</text>
+<path d="M66 158 V174 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="174" x2="66" y2="190" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="181.1" font-size="20" font-weight="700" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">runtime-checkpoints/</tspan></text>
+<circle cx="500" cy="174" r="5.5" fill="#2a78d6"/>
+<text x="518" y="181.1" font-size="20" fill="#59636e">the exact checkpoint</text>
+<path d="M66 190 V206 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="206" x2="66" y2="222" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="213.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">segments/0000/trajectory.traj</tspan></text>
+<circle cx="500" cy="206" r="5.5" fill="#2a78d6"/>
+<text x="518" y="213.1" font-size="20" fill="#59636e">MD frames, one segment per pause</text>
+<path d="M66 222 V238 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="238" x2="66" y2="318" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="245.1" font-size="20" font-weight="700" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">candidates/&lt;occurrence-id&gt;/</tspan></text>
+<circle cx="500" cy="238" r="5.5" fill="#eb6834"/>
+<text x="518" y="245.1" font-size="20" fill="#59636e">one per detected occurrence</text>
+<path d="M96 254 V270 H112" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="96" y1="270" x2="96" y2="286" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="118" y="277.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">candidate.json</tspan></text>
+<circle cx="500" cy="270" r="5.5" fill="#eb6834"/>
+<text x="518" y="277.1" font-size="20" fill="#59636e">atoms, bonds, frames</text>
+<path d="M96 286 V302 H112" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="118" y="309.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">reactant.traj  product.traj</tspan></text>
+<circle cx="500" cy="302" r="5.5" fill="#eb6834"/>
+<text x="518" y="309.1" font-size="20" fill="#59636e">the two bracketing frames</text>
+<path d="M66 318 V334 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="66" y1="334" x2="66" y2="414" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="341.1" font-size="20" font-weight="700" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">pathways/&lt;occurrence-id&gt;/</tspan></text>
+<circle cx="500" cy="334" r="5.5" fill="#1baf7a"/>
+<text x="518" y="341.1" font-size="20" fill="#59636e">one per refinement attempt</text>
+<path d="M96 350 V366 H112" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<line x1="96" y1="366" x2="96" y2="382" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="118" y="373.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">result.json</tspan></text>
+<circle cx="500" cy="366" r="5.5" fill="#1baf7a"/>
+<text x="518" y="373.1" font-size="20" fill="#59636e">status, barrier, diagnostics</text>
+<path d="M96 382 V398 H112" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="118" y="405.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">images.traj</tspan></text>
+<circle cx="500" cy="398" r="5.5" fill="#1baf7a"/>
+<text x="518" y="405.1" font-size="20" fill="#59636e">the band</text>
+<path d="M66 414 V430 H82" fill="none" stroke="#c0c8d1" stroke-width="1.25"/>
+<text x="88" y="437.1" font-size="20" font-weight="500" fill="#1f2328"><tspan font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="18.8">last-error.json</tspan></text>
+<circle cx="500" cy="430" r="5.5" fill="#d03b3b"/>
+<text x="518" y="437.1" font-size="20" fill="#59636e">only after an error</text>
+<circle cx="46" cy="488" r="5.5" fill="#818b98"/>
+<text x="60" y="495.1" font-size="20" fill="#59636e">run state</text>
+<circle cx="171.55" cy="488" r="5.5" fill="#2a78d6"/>
+<text x="185.55" y="495.1" font-size="20" fill="#59636e">molecular dynamics</text>
+<circle cx="397.25" cy="488" r="5.5" fill="#eb6834"/>
+<text x="411.25" y="495.1" font-size="20" fill="#59636e">detection</text>
+<circle cx="526.64" cy="488" r="5.5" fill="#1baf7a"/>
+<text x="540.64" y="495.1" font-size="20" fill="#59636e">pathway refinement</text>
+</svg>
