@@ -219,6 +219,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     status.add_argument("campaign", type=Path)
     status.add_argument("--json", action="store_true", help="print the report as JSON")
+    status.add_argument(
+        "--radius",
+        type=int,
+        default=2,
+        help="bonds around a bond change that define its reaction class (default 2)",
+    )
     return parser
 
 
@@ -252,7 +258,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
         return 0
     if arguments.command == "status":
-        report = campaign_status(campaign)
+        if arguments.radius < 0:
+            parser.error("--radius must not be negative")
+        report = campaign_status(campaign, radius=arguments.radius)
         print(
             json.dumps(report, indent=2, sort_keys=True)
             if arguments.json

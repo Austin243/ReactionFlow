@@ -254,10 +254,12 @@ through the detector and tracker with the default settings.
 A reaction is stored as a graph of the bonded region that contains the changed bonds. Nodes carry
 the element and edges are marked unchanged, formed, or broken. Two occurrences are the same
 reaction when their graphs are isomorphic, whatever the atom numbering, the geometry, or the
-direction. `reactions.sqlite3` keeps every occurrence with its class, and `reactionflow status`
-merges classes across trajectories that use the same model and pressure, so each class shows how
-often it happened and the range of its barriers. Classes only group results; they do not decide
-what is refined. See [reaction identity](docs/reaction-identity.md).
+direction. `reactions.sqlite3` keeps every occurrence with its class. `reactionflow status`
+compares only the changed bonds and the atoms within two bonds of them (`--radius`), so a step
+that repeats in molecules or polymers of different size is one class. It merges classes across
+trajectories that use the same model and pressure, so each class shows how often it happened and
+the range of its barriers. Classes only group results; they do not decide what is refined. See
+[reaction identity](docs/reaction-identity.md).
 
 ## Pathway refinement
 

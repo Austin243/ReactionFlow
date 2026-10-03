@@ -120,7 +120,13 @@ def _changed_regions(
     return tuple(sorted(regions))
 
 
-def _reaction_graph(candidate: ReactionCandidate, *, reverse: bool = False) -> nx.Graph:
+def _reaction_graph(
+    candidate: ReactionCandidate, *, reverse: bool = False, radius: int | None = None
+) -> nx.Graph:
+    if radius is not None and (
+        isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 0
+    ):
+        raise ValueError("radius must be a non-negative integer or None")
     reactant_symbols = dict(
         zip(
             atom_ids(candidate.reactant),
@@ -159,7 +165,15 @@ def _reaction_graph(candidate: ReactionCandidate, *, reverse: bool = False) -> n
         if reverse:
             change = {"formed": "broken", "broken": "formed"}.get(change, change)
         graph.add_edge(first, second, change=change)
-    return graph
+    if radius is None:
+        return graph
+    # The local change: the atoms of the changed bonds and every atom within `radius` bonds.
+    nodes = {atom_id for bond in reactant ^ product for atom_id in bond}
+    frontier = nodes
+    for _ in range(radius):
+        frontier = {neighbor for atom_id in frontier for neighbor in graph[atom_id]} - nodes
+        nodes |= frontier
+    return graph.subgraph(nodes).copy()
 
 
 def _isomorphic(first: nx.Graph, second: nx.Graph) -> bool:
@@ -175,41 +189,55 @@ def _graph_hash(graph: nx.Graph) -> str:
     return nx.weisfeiler_lehman_graph_hash(graph, node_attr="element", edge_attr="change")
 
 
-def same_reaction(first: ReactionCandidate, second: ReactionCandidate) -> bool:
-    """Return whether candidates are exact forward/reverse graph equivalents."""
+def same_reaction(
+    first: ReactionCandidate, second: ReactionCandidate, *, radius: int | None = None
+) -> bool:
+    """Return whether candidates are exact forward/reverse graph equivalents.
 
-    graph = _reaction_graph(first)
-    return _isomorphic(graph, _reaction_graph(second)) or _isomorphic(
-        graph, _reaction_graph(second, reverse=True)
+    The graphs cover the whole bonded region, or with ``radius`` only the changed bonds and the
+    atoms within that many bonds of them.
+    """
+
+    graph = _reaction_graph(first, radius=radius)
+    return _isomorphic(graph, _reaction_graph(second, radius=radius)) or _isomorphic(
+        graph, _reaction_graph(second, reverse=True, radius=radius)
     )
 
 
-def reaction_key(candidate: ReactionCandidate) -> str:
+def reaction_key(candidate: ReactionCandidate, *, radius: int | None = None) -> str:
     """Hash shared by forward/reverse-equivalent candidates; confirm matches with same_reaction."""
 
     return min(
-        _graph_hash(_reaction_graph(candidate, reverse=reverse)) for reverse in (False, True)
+        _graph_hash(_reaction_graph(candidate, reverse=reverse, radius=radius))
+        for reverse in (False, True)
     )
 
 
 class ReactionClasses:
-    """Names of known reaction topologies, found by key and confirmed by exact graph matching."""
+    """Names of known reaction topologies, found by key and confirmed by exact graph matching.
 
-    def __init__(self) -> None:
+    ``radius`` limits the compared graphs as in ``same_reaction``.
+    """
+
+    def __init__(self, radius: int | None = None) -> None:
+        self.radius = radius
         self._graphs: dict[str, list[tuple[str, nx.Graph]]] = {}
 
     def find(self, candidate: ReactionCandidate) -> str | None:
         """Return the name of the class equivalent to this candidate, if one is known."""
 
-        directions = [_reaction_graph(candidate, reverse=reverse) for reverse in (False, True)]
+        directions = [
+            _reaction_graph(candidate, reverse=reverse, radius=self.radius)
+            for reverse in (False, True)
+        ]
         for name, graph in self._graphs.get(min(map(_graph_hash, directions)), ()):
             if any(_isomorphic(graph, direction) for direction in directions):
                 return name
         return None
 
     def add(self, name: str, candidate: ReactionCandidate) -> None:
-        self._graphs.setdefault(reaction_key(candidate), []).append(
-            (name, _reaction_graph(candidate))
+        self._graphs.setdefault(reaction_key(candidate, radius=self.radius), []).append(
+            (name, _reaction_graph(candidate, radius=self.radius))
         )
 
 
