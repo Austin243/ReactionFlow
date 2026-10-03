@@ -1,0 +1,575 @@
+{
+ "reactionflow_version": "0.1.0a4",
+ "reactionflow_commit": "58b2f71",
+ "backends": [
+  {
+   "backend": "mace",
+   "factory": "reactionflow.adapters.mace:create_adapter",
+   "package": "mace-torch==0.3.16",
+   "models": [
+    {
+     "name": "small",
+     "family": "mp"
+    },
+    {
+     "name": "medium",
+     "family": "mp"
+    },
+    {
+     "name": "large",
+     "family": "mp"
+    },
+    {
+     "name": "small-0b",
+     "family": "mp"
+    },
+    {
+     "name": "medium-0b",
+     "family": "mp"
+    },
+    {
+     "name": "small-0b2",
+     "family": "mp"
+    },
+    {
+     "name": "medium-0b2",
+     "family": "mp"
+    },
+    {
+     "name": "large-0b2",
+     "family": "mp"
+    },
+    {
+     "name": "medium-0b3",
+     "family": "mp"
+    },
+    {
+     "name": "medium-mpa-0",
+     "family": "mp"
+    },
+    {
+     "name": "small-omat-0",
+     "family": "mp"
+    },
+    {
+     "name": "medium-omat-0",
+     "family": "mp"
+    },
+    {
+     "name": "mace-matpes-pbe-0",
+     "family": "mp"
+    },
+    {
+     "name": "mace-matpes-r2scan-0",
+     "family": "mp"
+    },
+    {
+     "name": "mh-0",
+     "family": "mp",
+     "description": "MACE-MH-0; select an explicit checkpoint head"
+    },
+    {
+     "name": "mh-1",
+     "family": "mp",
+     "description": "MACE-MH-1 multi-head foundation model",
+     "heads": [
+      "omat_pbe",
+      "omol",
+      "spice_wB97M",
+      "oc20_usemppbe",
+      "matpes_r2scan",
+      "mp_pbe_refit_add"
+     ]
+    },
+    {
+     "name": "small",
+     "family": "off",
+     "description": "MACE-OFF23 organic molecules"
+    },
+    {
+     "name": "medium",
+     "family": "off",
+     "description": "MACE-OFF23 organic molecules"
+    },
+    {
+     "name": "large",
+     "family": "off",
+     "description": "MACE-OFF23 organic molecules"
+    },
+    {
+     "name": "polar-1-s",
+     "family": "polar",
+     "description": "MACE-POLAR-1 small"
+    },
+    {
+     "name": "polar-1-m",
+     "family": "polar",
+     "description": "MACE-POLAR-1 medium"
+    },
+    {
+     "name": "polar-1-l",
+     "family": "polar",
+     "description": "MACE-POLAR-1 large"
+    }
+   ],
+   "heads": {
+    "omat_pbe": "OMat24 PBE/PBE+U; inorganic materials and cross-domain chemistry",
+    "omol": "OMol25 neutral subset, wB97M-V; molecular and organometallic chemistry",
+    "spice_wB97M": "SPICE, wB97M-D3(BJ); molecular chemistry",
+    "oc20_usemppbe": "OC20, PBE; adsorbates and surfaces",
+    "matpes_r2scan": "MatPES, r2SCAN; inorganic materials",
+    "mp_pbe_refit_add": "Materials Project trajectories, PBE/PBE+U; inorganic materials"
+   },
+   "notes": [
+    "Named mh-0 and mh-1 models require an explicit head.",
+    "These six heads were verified in the released MH-1 checkpoint. rgd1_b3lyp belongs to MH-0, not the current MH-1 release.",
+    "Local checkpoints may expose other heads; the loaded checkpoint is authoritative.",
+    "No additional D3 dispersion correction is enabled by this adapter.",
+    "Polar models require graph_longrange 0.4.0; prepare --install installs the pinned source.",
+    "Polar inputs: explicit integer atoms.info charge, positive integer spin multiplicity, and optional finite external_field [Ex, Ey, Ez] in V/angstrom (zero by default).",
+    "Polar stress uses central differences of the full energy (strain 1e-5), retaining analytic forces; stress/NPT require float64 and cost twelve energy probes."
+   ],
+   "sources": [
+    "https://github.com/ACEsuit/mace-foundations/releases/tag/mace_mh_1",
+    "https://github.com/ACEsuit/mace/discussions/1462",
+    "https://mace-docs.readthedocs.io/en/latest/guide/polar_mace.html",
+    "https://github.com/ACEsuit/mace/issues/1642"
+   ]
+  },
+  {
+   "backend": "uma",
+   "factory": "reactionflow.adapters.uma:create_adapter",
+   "package": "fairchem-core==2.23.0",
+   "models": [
+    {
+     "name": "uma-s-1p2p1",
+     "tasks": [
+      "omol",
+      "omat",
+      "omc",
+      "odac",
+      "oc20",
+      "oc22",
+      "oc25"
+     ]
+    },
+    {
+     "name": "uma-s-1p2",
+     "tasks": [
+      "omol",
+      "omat",
+      "omc",
+      "odac",
+      "oc20",
+      "oc22",
+      "oc25"
+     ]
+    },
+    {
+     "name": "uma-s-1p1",
+     "tasks": [
+      "omol",
+      "omat",
+      "omc",
+      "odac",
+      "oc20"
+     ]
+    },
+    {
+     "name": "uma-m-1p1",
+     "tasks": [
+      "omol",
+      "omat",
+      "omc",
+      "odac",
+      "oc20"
+     ]
+    }
+   ],
+   "tasks": {
+    "omol": "OMol25, wB97M-V; molecules with explicit total charge and spin multiplicity",
+    "omat": "OMat24, PBE/PBE+U; inorganic materials",
+    "omc": "OMC25, PBE+D3; molecular crystals",
+    "odac": "ODAC23, PBE+D3; CO2/H2O adsorption in metal-organic frameworks",
+    "oc20": "OC20, RPBE; heterogeneous catalysis",
+    "oc22": "OC22, PBE+U; oxide catalysis (UMA 1.2 and 1.2.1)",
+    "oc25": "OC25, RPBE+D3; electrolyte/inorganic interfaces (UMA 1.2 and 1.2.1)"
+   },
+   "notes": [
+    "Every model requires an explicit task; the loaded checkpoint validates availability.",
+    "OC22 and OC25 require UMA 1.2 or 1.2.1. Other listed tasks also exist in UMA 1.1.",
+    "OMol requires integer atoms.info charge and positive integer spin multiplicity.",
+    "Stress availability does not establish training or suitability for NPT in every task.",
+    "Named checkpoints require access to the gated facebook/UMA Hugging Face repository."
+   ],
+   "sources": [
+    "https://facebookresearch.github.io/fairchem/uma/",
+    "https://huggingface.co/facebook/UMA"
+   ]
+  },
+  {
+   "backend": "aimnet2",
+   "factory": "reactionflow.adapters.aimnet2:create_adapter",
+   "package": "aimnet[ase]==0.2.0",
+   "models": [
+    {
+     "name": "aimnet2",
+     "description": "General organic and main-group chemistry, wB97M-D3",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "name": "aimnet2-2025",
+     "description": "B97-3c with improved intermolecular interactions",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "name": "aimnet2-b973c",
+     "description": "Legacy B97-3c reference for reproducibility",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "name": "aimnet2-nse",
+     "description": "Open-shell molecules and radicals",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "name": "aimnet2-pd",
+     "description": "Palladium chemistry, B97-3c/CPCM(THF) reference",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "name": "aimnet2-rxn",
+     "description": "Reactive paths and transition states; neutral H/C/N/O systems",
+     "model_index": [
+      0,
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "options": {
+    "model": "One listed family, or use an absolute local checkpoint path instead",
+    "checkpoint": "Absolute path to a current AIMNet .pt checkpoint",
+    "model_index": "Ensemble member 0-3; default 0, only with model",
+    "device": "cpu or cuda; default cuda",
+    "cache_dir": "Optional absolute model cache root",
+    "coulomb_method": "auto (default), dsf, ewald, or pme"
+   },
+   "limitations": [
+    "Explicit integer atoms.info charge and positive spin multiplicity are required",
+    "Only aimnet2-nse supports spin multiplicities above one; RXN requires net charge zero",
+    "AIMNet ASE uses float32 inputs; this adapter does not expose a dtype option",
+    "auto uses simple molecular Coulomb and DSF for periodic structures",
+    "NPT requires a fully periodic nonzero cell and working finite stress predictions",
+    "Energy reference scales differ across model families"
+   ],
+   "sources": [
+    "https://github.com/isayevlab/aimnetcentral",
+    "https://huggingface.co/isayevlab/aimnet2-rxn"
+   ]
+  },
+  {
+   "backend": "orb",
+   "factory": "reactionflow.adapters.orb:create_adapter",
+   "package": "orb-models==0.7.0",
+   "models": [
+    {
+     "name": "orbmol-v2",
+     "description": "Molecules/polymers (OMol25 + OPoly26)"
+    },
+    {
+     "name": "orb-v3-conservative-inf-omat",
+     "description": "Inorganic materials (OMat24)"
+    },
+    {
+     "name": "orb-v3-conservative-inf-mpa",
+     "description": "Materials (MPtraj + Alexandria)"
+    }
+   ],
+   "options": [
+    "cache_dir",
+    "checkpoint",
+    "device",
+    "model",
+    "precision"
+   ],
+   "precision": [
+    "float32-highest",
+    "float64"
+   ],
+   "notes": "Conservative forces only; model required even with a local checkpoint. OrbMol requires atoms.info integer charge and positive spin multiplicity.",
+   "sources": [
+    "https://github.com/orbital-materials/orb-models/blob/v0.7.0/MODELS.md"
+   ]
+  },
+  {
+   "backend": "mattersim",
+   "factory": "reactionflow.adapters.mattersim:create_adapter",
+   "package": "mattersim==1.2.5",
+   "models": [
+    {
+     "name": "mattersim-v1.0.0-1M"
+    },
+    {
+     "name": "mattersim-v1.0.0-5M"
+    }
+   ],
+   "notes": [
+    "Periodic materials; PBE training across elements, temperatures and pressures.",
+    "Requires fully periodic structures. dtype: float32 (default) or float64."
+   ],
+   "sources": [
+    "https://github.com/microsoft/mattersim"
+   ]
+  },
+  {
+   "backend": "chgnet",
+   "factory": "reactionflow.adapters.chgnet:create_adapter",
+   "package": "chgnet==0.4.2",
+   "models": [
+    {
+     "name": "0.3.0",
+     "description": "MPtrj PBE+U materials model"
+    },
+    {
+     "name": "r2scan",
+     "description": "MP-r2SCAN transfer-learning model"
+    }
+   ],
+   "notes": [
+    "Weights are included in the package; no separate download is needed.",
+    "Requires fully periodic structures; isolated atoms fail explicitly."
+   ],
+   "sources": [
+    "https://github.com/CederGroupHub/chgnet"
+   ]
+  },
+  {
+   "backend": "mace_field",
+   "factory": "reactionflow.adapters.mace_field:create_adapter",
+   "package": "mace-torch @ git+https://github.com/mdi-group/mace-field.git@136e4ef040d7c51a5b051a7a609ffb1f29307478",
+   "models": [
+    {
+     "name": "MACEField-MH-0-omat-dielectric",
+     "description": "Inorganic dielectric/ferroelectric materials under a fixed field",
+     "heads": [
+      "pt_head",
+      "mp-dielectric",
+      "mp-ferroelectric"
+     ]
+    }
+   ],
+   "options": [
+    "cache_dir",
+    "checkpoint",
+    "device",
+    "dtype",
+    "electric_field",
+    "head",
+    "model"
+   ],
+   "notes": [
+    "Requires a separate environment: this fork replaces the mace-torch distribution.",
+    "Explicit head and electric_field [Ex, Ey, Ez] in V/angstrom are required.",
+    "The configured field overrides structure fields and stays fixed during MD/refinement.",
+    "Energies are electric enthalpies at that field; NPT additionally includes PV."
+   ],
+   "sources": [
+    "https://github.com/mdi-group/mace-field/releases/tag/1.0.2"
+   ]
+  },
+  {
+   "backend": "sevennet",
+   "factory": "reactionflow.adapters.sevennet:create_adapter",
+   "package": "sevenn==0.13.0",
+   "models": [
+    {
+     "name": "7net-0",
+     "description": "Materials model",
+     "modals": [],
+     "bundled": true
+    },
+    {
+     "name": "7net-0_22may2024",
+     "description": "Materials model",
+     "modals": [],
+     "bundled": true
+    },
+    {
+     "name": "7net-l3i5",
+     "description": "Materials model",
+     "modals": [],
+     "bundled": true
+    },
+    {
+     "name": "7net-mf-0",
+     "description": "Materials model",
+     "modals": [
+      "PBE",
+      "R2SCAN"
+     ],
+     "bundled": true
+    },
+    {
+     "name": "7net-mf-ompa",
+     "description": "Materials model",
+     "modals": [
+      "mpa",
+      "omat24"
+     ],
+     "bundled": false
+    },
+    {
+     "name": "7net-omat",
+     "description": "Materials model",
+     "modals": [],
+     "bundled": false
+    },
+    {
+     "name": "7net-omni",
+     "description": "Cross-domain multitask model",
+     "modals": [
+      "mpa",
+      "omat24",
+      "matpes_pbe",
+      "matpes_r2scan",
+      "mp_r2scan",
+      "oc20",
+      "oc22",
+      "odac23",
+      "omol25_low",
+      "omol25_high",
+      "spice",
+      "qcml",
+      "pet_mad"
+     ],
+     "bundled": false
+    },
+    {
+     "name": "7net-omni-i8",
+     "description": "Cross-domain multitask model",
+     "modals": [
+      "mpa",
+      "omat24",
+      "matpes_pbe",
+      "matpes_r2scan",
+      "mp_r2scan",
+      "oc20",
+      "oc22",
+      "odac23",
+      "omol25_low",
+      "omol25_high",
+      "spice",
+      "qcml",
+      "pet_mad"
+     ],
+     "bundled": false
+    },
+    {
+     "name": "7net-omni-i12",
+     "description": "Cross-domain multitask model",
+     "modals": [
+      "mpa",
+      "omat24",
+      "matpes_pbe",
+      "matpes_r2scan",
+      "mp_r2scan",
+      "oc20",
+      "oc22",
+      "odac23",
+      "omol25_low",
+      "omol25_high",
+      "spice",
+      "qcml",
+      "pet_mad"
+     ],
+     "bundled": false
+    }
+   ],
+   "options": [
+    "cache_dir",
+    "checkpoint",
+    "device",
+    "modal",
+    "model"
+   ],
+   "notes": [
+    "Multitask models require an explicit modal; the loaded checkpoint must contain it.",
+    "Uses float32 e3nn inference with conservative forces/stress and no extra D3.",
+    "Charge/spin are not explicit calculator inputs; modal selects training fidelity."
+   ],
+   "sources": [
+    "https://github.com/MDIL-SNU/SevenNet",
+    "https://sevennet.readthedocs.io/en/latest/user_guide/pretrained.html"
+   ]
+  },
+  {
+   "backend": "nep",
+   "factory": "reactionflow.adapters.nep:create_adapter",
+   "package": "calorine==4.0",
+   "models": [
+    {
+     "name": "nep89",
+     "description": "NEP89, 2025-04-09 release; 89 elements"
+    }
+   ],
+   "notes": [
+    "CPU float64 implementation; set campaign require_gpu=false. No Torch dependency.",
+    "Requires fully periodic structures; the backend always applies periodic boundaries.",
+    "Local energy-model nep.txt files are also supported; no explicit charge/spin inputs.",
+    "Installing Calorine may require a C++17 compiler."
+   ],
+   "sources": [
+    "https://github.com/brucefan1983/GPUMD/tree/v5.0/potentials/nep/nep89_20250409",
+    "https://calorine.materialsmodeling.org/get_started/ase_calculators.html"
+   ]
+  },
+  {
+   "backend": "ani1xnr",
+   "factory": "reactionflow.adapters.ani1xnr:create_adapter",
+   "package": "torchani==2.8.4",
+   "models": [
+    {
+     "name": "ani1xnr",
+     "description": "ANI-1xnr reactive potential for H, C, N and O; BLYP/TZV2P"
+    }
+   ],
+   "notes": [
+    "The adapter always loads the pinned weights; there is no model or checkpoint option.",
+    "The model is an ensemble of eight networks; model_index selects one (default 0).",
+    "dtype is float32 (default) or float64; strategy is pyaev (default) or cuaev.",
+    "Requires torch 2.11.0."
+   ],
+   "sources": [
+    "https://www.nature.com/articles/s41557-023-01427-3",
+    "https://huggingface.co/roitberg-group/ani1xnr"
+   ]
+  }
+ ]
+}

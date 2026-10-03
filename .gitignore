@@ -13,3 +13,7 @@ dist/
 
 # ReactionFlow run artifacts
 reactionflow-runs/
+
+# Figure build outputs; only the SVGs in docs/figures are committed
+docs/figures/png/
+docs/figures/index.html
