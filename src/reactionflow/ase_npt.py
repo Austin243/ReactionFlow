@@ -104,15 +104,11 @@ def restore_langevin_baoab(
     dynamics.nsteps = int(metadata["nsteps"])
     dynamics.accel = state.arrays["accel"].copy()
     if dynamics.externalstress is not None:
-        dynamics.p_eps = state.arrays["p_eps"].copy()
-        if dynamics.hydrostatic:
-            dynamics.p_eps = float(dynamics.p_eps)
-        dynamics.force_eps = state.arrays["force_eps"].copy()
-        if dynamics.hydrostatic:
-            dynamics.force_eps = float(dynamics.force_eps)
-        dynamics.gamma_mod = state.arrays["gamma_mod"].copy()
-        if dynamics.hydrostatic:
-            dynamics.gamma_mod = float(dynamics.gamma_mod)
+        # ASE holds these as floats until a non-hydrostatic step makes them 3x3 arrays. Restore
+        # the same types: an in-place update of a 0-d array by a 3x3 array would fail.
+        for name in ("p_eps", "force_eps", "gamma_mod"):
+            value = state.arrays[name].copy()
+            setattr(dynamics, name, float(value) if value.ndim == 0 else value)
     return dynamics
 
 

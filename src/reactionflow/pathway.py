@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
+from numbers import Integral
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -56,6 +57,9 @@ class PathwayConfig:
             or self.frequency_delta <= 0
         ):
             raise ValueError("radii, force tolerances, and frequency delta must be positive")
+        counts = (self.relax_steps, self.images, self.neb_steps, self.ci_neb_steps)
+        if any(isinstance(count, bool) or not isinstance(count, Integral) for count in counts):
+            raise ValueError("step counts and images must be whole numbers")
         if self.relax_steps < 1 or self.images < 3 or self.neb_steps < 1 or self.ci_neb_steps < 1:
             raise ValueError("step counts must be positive and NEB needs at least three images")
         if (

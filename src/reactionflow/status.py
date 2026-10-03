@@ -63,8 +63,6 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     failure = state.get("failure")
     if state["phase"] == "failed" and failure:
         row["error"] = f"{failure.get('type')}: {failure.get('message')}"
-    elif (root / "last-error.json").is_file():
-        row["error"] = _read_json(root / "last-error.json").get("error")
     records = _occurrences(root)
     members: dict[str, list[sqlite3.Row]] = {}
     for record in records:
@@ -108,13 +106,19 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
         }
         trajectories.append(row)
         root = campaign.output_root / spec.id
-        if not (root / "state.json").is_file():
-            continue
-        try:
-            classes = _trajectory(root, row)
-        except Exception as error:  # a damaged trajectory must not hide the rest
-            row["error"] = f"unreadable: {type(error).__name__}: {error}"
-            continue
+        classes = []
+        if (root / "state.json").is_file():
+            try:
+                classes = _trajectory(root, row)
+            except Exception as error:  # a damaged trajectory must not hide the rest
+                row["error"] = f"unreadable: {type(error).__name__}: {error}"
+        # A worker can fail before it writes state.json, so its last error is read for every
+        # trajectory, and read last so that a damaged file cannot hide the reactions above.
+        if row["error"] is None and (root / "last-error.json").is_file():
+            try:
+                row["error"] = _read_json(root / "last-error.json").get("error")
+            except Exception as error:
+                row["error"] = f"unreadable last-error.json: {type(error).__name__}"
         merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses())
         for candidate, events, results in classes:
             name = merged.find(candidate)

@@ -288,12 +288,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as error:
         payload["error"] = f"{type(error).__name__}: {error}"
         print(json.dumps(payload, sort_keys=True))
+        temporary = error_path.with_name(f".last-error-{uuid4().hex}.tmp")
         with suppress(OSError):
-            error_path.parent.mkdir(parents=True, exist_ok=True)
-            error_path.write_text(
-                json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            try:
+                error_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary.write_text(
+                    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                publish(temporary, error_path)
+            finally:
+                temporary.unlink(missing_ok=True)
         raise
     print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
     return 0

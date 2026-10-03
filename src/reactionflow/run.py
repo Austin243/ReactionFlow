@@ -16,7 +16,7 @@ import numpy as np
 from ase import Atoms
 from ase.io.trajectory import Trajectory
 
-from ._durable import ensure_directory, publish, sync_directory
+from ._durable import ensure_directory, flush_to_disk, publish, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, canonical_copy, transport_copy
@@ -369,8 +369,11 @@ class ReactionRun:
             written = _last_frame(path)
             if written > self._global_frame + 1:
                 raise ValueError("trajectory is ahead of its exact runtime checkpoint")
+            if 0 <= written < self._global_frame:
+                raise ValueError("trajectory is missing frames before its exact runtime checkpoint")
             with Trajectory(path, "w" if written < 0 else "a") as trajectory:
                 self._write_frame(trajectory, runtime.atoms, written)
+                sync_directory(path.parent)
                 while self._global_step < total_steps and self._phase == "running":
                     steps = min(self.config.observation_interval, total_steps - self._global_step)
                     before = int(runtime.nsteps)
@@ -382,6 +385,8 @@ class ReactionRun:
                         )
                     self._observe(runtime.atoms, self._global_step + steps)
                     self._write_frame(trajectory, runtime.atoms, written)
+                    # A checkpoint survives a crash, so the frames written before it must too.
+                    flush_to_disk(path)
                     self._checkpoint(runtime)
 
     def _publish_outcome(self, occurrence_id: str, outcome: PathwayOutcome) -> None:
