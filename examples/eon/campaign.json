@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "mode": "eon",
+  "structure": "start.extxyz",
+  "output_root": "../../outputs/eon-demo",
+  "require_gpu": false,
+  "adapter": {
+    "factory": "reactionflow.adapters.ase:create_adapter",
+    "options": {
+      "calculator_factory": "toy:DoubleWell"
+    }
+  },
+  "akmc": {
+    "temperature_K": 300,
+    "steps": 4,
+    "confidence": 0.9,
+    "seed": 1
+  },
+  "eon": {
+    "displace": "all",
+    "displace_size_A": 0.5
+  }
+}
