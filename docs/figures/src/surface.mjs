@@ -81,9 +81,10 @@ function isoLoops(values, xs, ys, level) {
 
 /**
  * Draw the filled, contoured surface into a rectangle. Low energy recedes toward the page color.
+ * `field` and `levels` default to this model potential; pass another surface's with its own key.
  * Returns the maps from model coordinates (Å) to pixels.
  */
-export function drawSurface(fig, key, rect, { domain = DOMAIN, columns = 132, rx = 8 } = {}) {
+export function drawSurface(fig, key, rect, { domain = DOMAIN, columns = 132, rx = 8, field = energy, levels = LEVELS } = {}) {
   const t = fig.t;
   const group = fig.def(`surface-${key}`, (id) => {
     const rows = Math.round((columns * rect.h) / rect.w);
@@ -93,12 +94,12 @@ export function drawSurface(fig, key, rect, { domain = DOMAIN, columns = 132, rx
     const dataX = scale(0, rect.w, domain.x0, domain.x1);
     const dataY = scale(0, rect.h, domain.y1, domain.y0);
     const values = ys.map((py, j) =>
-      xs.map((px, i) => (i === 0 || j === 0 || i === xs.length - 1 || j === ys.length - 1 ? 1e9 : energy(dataX(px), dataY(py)))),
+      xs.map((px, i) => (i === 0 || j === 0 || i === xs.length - 1 || j === ys.length - 1 ? 1e9 : field(dataX(px), dataY(py)))),
     );
-    const color = (k) => mix(t.surfaceLow, t.surfaceHigh, k / LEVELS.length);
-    let body = `<rect width="${rect.w}" height="${rect.h}" fill="${color(LEVELS.length)}"/>`;
-    for (let k = LEVELS.length - 1; k >= 0; k--) {
-      const d = isoLoops(values, xs, ys, LEVELS[k])
+    const color = (k) => mix(t.surfaceLow, t.surfaceHigh, k / levels.length);
+    let body = `<rect width="${rect.w}" height="${rect.h}" fill="${color(levels.length)}"/>`;
+    for (let k = levels.length - 1; k >= 0; k--) {
+      const d = isoLoops(values, xs, ys, levels[k])
         .map((loop) => loop.map(([px, py], n) => `${n ? 'L' : 'M'}${px.toFixed(1)} ${py.toFixed(1)}`).join('') + 'Z')
         .join('');
       body += `<path d="${d}" fill="${color(k)}" fill-rule="evenodd" stroke="${t.contour}" stroke-width="0.6" stroke-opacity="0.55"/>`;

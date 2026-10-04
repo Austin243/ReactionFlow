@@ -3,19 +3,24 @@
 Run it from the repository root with ReactionFlow installed from this checkout
 (python -m pip install -e .):
 
-    python docs/figures/make_data.py
+    python docs/figures/make_data.py          # every data file
+    python docs/figures/make_data.py eon      # only the named ones
 
-Writes docs/figures/data/detection.json, pathway.json, ssneb.json, restart.json, and models.json.
-The figure build (node docs/figures/build.mjs) reads only those files.
+Writes docs/figures/data/detection.json, pathway.json, ssneb.json, restart.json, models.json, and
+eon.json. The figure build (node docs/figures/build.mjs) reads only those files. eon.json needs
+the EON backend (python -m pip install -e '.[eon]').
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
+import sys
 import tempfile
 import tomllib
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import ClassVar
 
@@ -23,6 +28,7 @@ import numpy as np
 from ase import Atoms
 from ase.build import bulk
 from ase.calculators.calculator import Calculator, all_changes
+from ase.constraints import FixAtoms
 from ase.data import covalent_radii
 
 import reactionflow
@@ -41,6 +47,11 @@ from reactionflow import pathway as pathway_module
 from reactionflow.adapters.ase import ASECalculatorAdapter
 from reactionflow.campaign import TrajectorySpec
 from reactionflow.model_setup import model_catalog
+from reactionflow.search.akmc import AKMCConfig, rate
+from reactionflow.search.cli import _eon_output
+from reactionflow.search.eon import EONBackend, EONSettings
+from reactionflow.search.records import SearchStore
+from reactionflow.search.runner import run_exploration
 
 DATA = Path(__file__).resolve().parent / "data"
 ROOT = Path(__file__).resolve().parents[2]
@@ -441,9 +452,213 @@ def models() -> None:
     dump("models.json", {"backends": model_catalog()})
 
 
+# --- EON: adaptive kinetic Monte Carlo on a two-dimensional model landscape ---------------------
+
+# Gaussian wells [x, y, depth eV, width Å] on a shallow bowl that is walled in beyond
+# wall_radius_A: a funnel from a shallow well on the left to a deep one on the right, with a side
+# well above the middle.
+LANDSCAPE = {
+    "wells": [
+        [-2.4, 0.05, 1.7, 0.5],
+        [-1.15, 0.85, 1.85, 0.5],
+        [-1.2, -0.8, 1.8, 0.5],
+        [0.05, 0.0, 2.05, 0.52],
+        [1.25, 0.85, 2.0, 0.5],
+        [1.2, -0.85, 2.15, 0.5],
+        [2.35, 0.0, 2.75, 0.52],
+        [0.0, 1.75, 1.3, 0.45],
+    ],
+    "center": [0.4, 0.0],
+    "bowl": 0.06,
+    "wall_radius_A": 3.6,
+    "wall": 20.0,
+    "kz": 30.0,
+}
+EON_ANCHOR = np.array([10.0, 10.0, 10.0])
+
+
+def landscape_energy(x: float, y: float, z: float = 0.0) -> tuple[float, np.ndarray]:
+    """Energy and gradient of the moving atom at (x, y, z) from the anchor."""
+
+    wells = np.array(LANDSCAPE["wells"])
+    dx, dy = x - wells[:, 0], y - wells[:, 1]
+    depth = wells[:, 2] * np.exp(-(dx**2 + dy**2) / (2 * wells[:, 3] ** 2))
+    cx, cy = x - LANDSCAPE["center"][0], y - LANDSCAPE["center"][1]
+    radius = float(np.hypot(cx, cy))
+    outside = max(0.0, radius - LANDSCAPE["wall_radius_A"])
+    radial = LANDSCAPE["bowl"] + (LANDSCAPE["wall"] * outside / radius if outside else 0.0)
+    energy = (
+        -depth.sum()
+        + 0.5 * LANDSCAPE["bowl"] * radius**2
+        + 0.5 * LANDSCAPE["wall"] * outside**2
+        + 0.5 * LANDSCAPE["kz"] * z**2
+    )
+    gradient = np.array(
+        [
+            (depth * dx / wells[:, 3] ** 2).sum() + radial * cx,
+            (depth * dy / wells[:, 3] ** 2).sum() + radial * cy,
+            LANDSCAPE["kz"] * z,
+        ]
+    )
+    return float(energy), gradient
+
+
+class Landscape(Calculator):
+    """The landscape acts on atom 1 relative to the fixed atom 0; every evaluation is logged."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.log: list[np.ndarray] = []
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        offset = self.atoms.positions[1] - self.atoms.positions[0]
+        energy, gradient = landscape_energy(*offset)
+        self.log.append(offset)
+        self.results = {"energy": energy, "forces": np.array([gradient, -gradient])}
+
+
+def drawn(points: list) -> list:
+    """The points an optimizer or the dimer moved through, in the plane, without the probe that
+    each evaluates 0.01 Å from its current point (the dimer's image, a line search's step)."""
+
+    kept = [points[0]]
+    for point in points[1:]:
+        if abs(np.linalg.norm(point - kept[-1]) - 0.01) > 1e-6:
+            kept.append(point)
+    return [point[:2].round(3).tolist() for point in kept]
+
+
+def search_trace(calls: list, minimum: np.ndarray, saddle: np.ndarray | None) -> dict:
+    """One search's evaluations as its climb from the push and its two relaxations.
+
+    A jump of more than 0.3 Å starts the next stage. The relaxations start 0.2 Å from the saddle,
+    and the Hessian evaluations after them are left out.
+    """
+
+    while np.linalg.norm(calls[0] - minimum) < 1e-6:
+        calls = calls[1:]  # the state's own energy, unless the calculator had it cached
+    runs, run = [], [calls[0]]
+    for previous, point in itertools.pairwise(calls):
+        if np.linalg.norm(point - previous) > 0.3:
+            runs.append(run)
+            run = []
+        run.append(point)
+    runs.append(run)
+    if saddle is None:
+        # A failed search: the climb ends where a relaxation starts, if one did.
+        offsets = [
+            i
+            for i in range(1, len(runs[0]))
+            if abs(np.linalg.norm(runs[0][i] - runs[0][i - 1]) - 0.2) < 1e-6
+        ]
+        return {"climb": drawn(runs[0][: offsets[0]] if offsets else runs[0])}
+    top = int(np.argmin([np.linalg.norm(point - saddle) for point in runs[0]]))
+    return {
+        "climb": drawn(runs[0][: top + 1]),
+        "relax": [drawn(runs[0][top:]), drawn([saddle, *runs[1]])],
+    }
+
+
+def eon() -> None:
+    """ReactionFlow's AKMC runner and EON backend with default settings on the landscape."""
+
+    config = AKMCConfig(steps=12)
+    calculator = Landscape()
+    backend = EONBackend(calculator, EONSettings(), config.temperature_K)
+    # Every evaluation a search makes and the saddle it found, keyed by the search's seed; the
+    # evaluations before the first search relax the starting structure.
+    searches: dict[int, tuple] = {}
+    starts: list[int] = []
+    search = backend.search
+
+    def logged(atoms: Atoms, *, seed: int):
+        starts.append(len(calculator.log))
+        result = search(atoms, seed=seed)
+        saddle = None if result.saddle is None else offset(result.saddle)
+        searches[seed] = (calculator.log[starts[-1] :], saddle)
+        return result
+
+    backend.search = logged
+    start = [-2.15, 0.35]
+    atoms = Atoms(
+        "He2",
+        positions=[EON_ANCHOR, EON_ANCHOR + np.array([*start, 0.0])],
+        cell=[2 * EON_ANCHOR[0]] * 3,
+        pbc=True,
+        constraint=FixAtoms([0]),
+    )
+
+    def offset(structure: Atoms) -> np.ndarray:
+        return structure.positions[1] - structure.positions[0]
+
+    def where(structure: Atoms) -> list[float]:
+        return offset(structure)[:2].round(5).tolist()
+
+    with tempfile.TemporaryDirectory() as root:
+        # EON's own log goes to a file, as in `reactionflow run`.
+        with _eon_output(Path(root) / "eon.log"):
+            run_exploration(
+                root, atoms, backend=backend, contract={"model": "landscape"}, config=config
+            )
+        store = SearchStore(root)
+        initial = store.read("states", "state-000000").structures["atoms"]
+        states = {}
+        for name in store.ids("states"):
+            record = store.read("states", name)
+            states[name] = {"position": where(record.structures["atoms"]), **record.data}
+        processes = {}
+        for name in store.ids("processes"):
+            record = store.read("processes", name)
+            data = record.data
+            processes[name] = {
+                "state": data["state"],
+                "product": data["product"],
+                "barrier_eV": data["barrier_eV"],
+                "prefactor_s": data["prefactor_s"],
+                "rate_s": rate(data["prefactor_s"], data["barrier_eV"], config.kT),
+                "saddle": where(record.structures["saddle"]),
+                "source": data["source"],
+            }
+        attempts = []
+        for name in store.ids("attempts"):
+            data = store.read("attempts", name).data
+            attempt = {
+                "id": name,
+                **{key: data.get(key) for key in ("state", "status", "message", "barrier_eV")},
+                **{key: data.get(key) for key in ("process", "reverse", "product", "relevant")},
+                "force_calls": data["backend"].get("force_calls"),
+            }
+            # The searches from the starting state are drawn.
+            if data["state"] == "state-000000":
+                calls, saddle = searches[data["seed"]]
+                attempt |= search_trace(calls, offset(initial), saddle)
+            attempts.append(attempt)
+        steps = [store.read("steps", name).data for name in store.ids("steps")]
+    # The two random numbers behind each step, drawn as kmc_step draws them.
+    for index, step in enumerate(steps):
+        pick, wait = np.random.default_rng([config.seed, 1, index]).random(2)
+        assert np.isclose(-np.log(1 - wait) / step["total_rate_s"], step["dt_s"], rtol=1e-9)
+        step["random"] = [float(pick), float(wait)]
+    dump(
+        "eon.json",
+        {
+            "landscape": LANDSCAPE,
+            "akmc": {**asdict(config), "kT_eV": config.kT},
+            "eon": {key: value for key, value in asdict(EONSettings()).items() if key != "log"},
+            "start": start,
+            "relax": drawn(calculator.log[: starts[0]]),
+            "states": states,
+            "processes": processes,
+            "attempts": attempts,
+            "steps": steps,
+        },
+    )
+
+
 if __name__ == "__main__":
-    detection()
-    pathway()
-    ssneb()
-    restart()
-    models()
+    jobs = {job.__name__: job for job in (detection, pathway, ssneb, restart, models, eon)}
+    for name in sys.argv[1:] or jobs:
+        jobs[name]()
