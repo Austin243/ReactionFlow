@@ -30,7 +30,7 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
             "adapters/ani1xnr.py": {"torch", "torchani", "huggingface_hub"},
             "adapters/_torch.py": {"torch"},
             "adapters/mace.py": {"mace"},
-            "adapters/uma.py": {"fairchem", "huggingface_hub", "omegaconf"},
+            "adapters/uma.py": {"fairchem", "huggingface_hub", "omegaconf", "torch"},
             "adapters/aimnet2.py": {"aimnet", "torch", "yaml"},
             "adapters/orb.py": {"orb_models", "torch"},
             "adapters/mattersim.py": {"mattersim", "torch"},

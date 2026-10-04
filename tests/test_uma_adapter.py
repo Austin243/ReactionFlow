@@ -220,6 +220,7 @@ def backend(monkeypatch, package):
         loaded.append((path, kwargs))
         return SimpleNamespace(
             **kwargs,
+            model=SimpleNamespace(modules=lambda: ()),
             dataset_to_tasks={
                 task: []
                 for task in ("omol", "omat", "omc", "odac", "oc20", "oc22", "oc25", "custom")
@@ -231,6 +232,9 @@ def backend(monkeypatch, package):
         for name in (
             "fairchem",
             "fairchem.core",
+            "fairchem.core.models",
+            "fairchem.core.models.uma",
+            "fairchem.core.models.uma.escn_moe",
             "fairchem.core.units",
             "fairchem.core.units.mlip_unit",
             "fairchem.core.units.mlip_unit.api",
@@ -239,6 +243,7 @@ def backend(monkeypatch, package):
         )
     }
     modules["fairchem.core"].FAIRChemCalculator = FakeCalculator
+    modules["fairchem.core.models.uma.escn_moe"].eSCNMDMoeBackbone = type("Backbone", (), {})
     modules["fairchem.core.units.mlip_unit"].load_predict_unit = load
     modules["fairchem.core.units.mlip_unit.api.inference"].InferenceSettings = SimpleNamespace
     modules["omegaconf"].OmegaConf = SimpleNamespace(

@@ -431,7 +431,10 @@ Torch/platform/device environment (or the native Calorine binary for NEP). Chang
 than treating it as exact continuation. Preserve the environment and files of an active campaign.
 For Torch backends, deterministic algorithms are enabled and TF32 is disabled; unsupported nondeterministic
 operations fail. UMA uses fixed float32 inference without compilation or MoLE merging, so its
-upstream accelerated presets do not describe this adapter's performance.
+upstream accelerated presets do not describe this adapter's performance. The adapter makes two
+UMA steps deterministic: expert routing sums each structure's composition average in a fixed
+order, because fairchem's reduction has no deterministic CUDA kernel, and each forward pass draws
+its random edge-rotation angles from the same seed.
 
 The adapter tests cover setup, configuration, and restart contracts with controlled calculators.
 Opt-in integration tests use prepared real weights without downloads. CPU checks include finite
@@ -440,6 +443,9 @@ AIMNet2/RXN (NVT and NPT), OrbMol-v2 (NVT and NPT), MACE-FIELD (NPT), MatterSim 
 CHGNet 0.3.0/r2SCAN (NPT), SevenNet-0/MF-0/Omni (NPT), and NEP89 (NPT).
 All six MH-1 heads have finite CPU energy/force checks; Polar-S has force, numerical-stress,
 NVT, and NPT restart checks.
-These short checks do not establish GPU reproducibility, real gated UMA behavior, every model
+UMA-S 1.1, 1.2 and 1.2.1 (`omol`, and 1.2.1 `omc`) ran with real weights on an A100: energies agree
+with fairchem's own CPU reduction within 1e-6 eV, and repeated and fresh evaluations are bitwise
+identical on GPU and CPU.
+These short checks do not establish GPU reproducibility for the other backends, every model
 variant, or scientific accuracy for a new system. Model integration alone is not validation of a
 reaction barrier or stress model.

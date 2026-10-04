@@ -210,6 +210,56 @@ def _validate_omol(atoms: Atoms) -> None:
             raise ValueError("UMA omol spin must be a positive multiplicity")
 
 
+def _deterministic_backbone(model: Any) -> None:
+    """Make UMA's backbone give the same result for the same positions, on CPU and GPU.
+
+    fairchem 2.23.0 averages each structure's composition embedding with
+    ``Tensor.index_reduce_``, which has no deterministic CUDA kernel, so every UMA evaluation on a
+    GPU failed; during routing that one reduction becomes a per-structure mean summed in a fixed
+    order. The backbone also draws a random roll angle for every edge rotation, so repeated
+    evaluations differed by about 1e-7 eV and a resumed trajectory drifted from the original; each
+    forward pass now draws from the same seed in a forked random state.
+    """
+
+    from fairchem.core.models.uma.escn_moe import eSCNMDMoeBackbone
+
+    backbones = [module for module in model.modules() if isinstance(module, eSCNMDMoeBackbone)]
+    if not backbones:
+        return
+    import torch
+
+    original = torch.Tensor.index_reduce_
+
+    def ordered_mean(target, dim, index, source, reduce, *, include_self=True):
+        if dim != 0 or reduce != "mean":
+            return original(target, dim, index, source, reduce, include_self=include_self)
+        for row in range(target.shape[0]):
+            members = source[index == row]
+            if len(members):
+                total = members.sum(dim=0) + (target[row] if include_self else 0)
+                target[row] = total / (len(members) + include_self)
+        return target
+
+    for module in backbones:
+        route, forward = module.set_MOLE_coefficients, module.forward
+
+        def routed(*args, _route=route, **kwargs):
+            torch.Tensor.index_reduce_ = ordered_mean
+            try:
+                return _route(*args, **kwargs)
+            finally:
+                torch.Tensor.index_reduce_ = original
+
+        def seeded(*args, _forward=forward, **kwargs):
+            devices = [torch.cuda.current_device()] if torch.cuda.is_initialized() else []
+            with torch.random.fork_rng(devices=devices):
+                torch.manual_seed(0)
+                return _forward(*args, **kwargs)
+
+        module.set_MOLE_coefficients = routed
+        module.forward = seeded
+
+
 class UMAAdapter(TorchModelAdapter):
     """Use a prepared UMA model with the shared Langevin runtime."""
 
@@ -244,6 +294,7 @@ class UMAAdapter(TorchModelAdapter):
             workers=1,
             seed=0,
         )
+        _deterministic_backbone(predictor.model)
         task = self.options["task"]
         if task != "omol":
             return FAIRChemCalculator(predictor, task_name=task)
