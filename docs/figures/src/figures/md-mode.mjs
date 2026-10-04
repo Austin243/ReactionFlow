@@ -4,7 +4,7 @@
 
 import { readFileSync } from 'node:fs';
 
-import { Figure, HERO_TYPE as TYPE, scale } from '../lib.mjs';
+import { Figure, TYPE, scale } from '../lib.mjs';
 import { DOMAIN, drawSurface, pathway } from '../surface.mjs';
 
 const detection = JSON.parse(readFileSync(new URL('../../data/detection.json', import.meta.url)));

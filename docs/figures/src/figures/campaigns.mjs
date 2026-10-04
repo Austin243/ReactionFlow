@@ -5,7 +5,7 @@
 
 import { readFileSync } from 'node:fs';
 
-import { Figure, HERO_TYPE as TYPE, scale } from '../lib.mjs';
+import { Figure, TYPE, scale } from '../lib.mjs';
 
 const catalog = JSON.parse(readFileSync(new URL('../../data/models.json', import.meta.url)));
 const ssneb = JSON.parse(readFileSync(new URL('../../data/ssneb.json', import.meta.url)));

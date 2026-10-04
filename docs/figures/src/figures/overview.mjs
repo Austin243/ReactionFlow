@@ -1,11 +1,10 @@
 // README banner: the two ways ReactionFlow finds reactions, each on a model landscape, and the loop
 // each one runs.
 
-import { Figure, HERO_TYPE as TYPE } from '../lib.mjs';
+import { Figure, TYPE } from '../lib.mjs';
 import { DOMAIN, energy, eon, LEVELS, stateNumber } from '../landscape.mjs';
 import { drawSurface, pathway } from '../surface.mjs';
 import { firstCrossing, langevin } from '../toy.mjs';
-import { mark } from './hero.mjs';
 
 // The MD view has the aspect ratio of the EON view, so the two panels are the same size.
 const MD_DOMAIN = { x0: -1.72, x1: 1.92, y0: -0.754, y1: 1.5102 };
@@ -21,6 +20,22 @@ let confirmed = null;
 for (let i = Math.ceil((hop - 520) / 10) * 10, run = 0; i < hop + 430 && !confirmed; i += 10) {
   run = Math.hypot(all[i][0] - pathway.anchor[0], all[i][1] - pathway.anchor[1]) >= pathway.thresholds_A[1] ? run + 1 : 0;
   if (run === 3) confirmed = all[i];
+}
+
+/** Small mark: a path over a barrier between two states. */
+function mark(fig, x, y, size) {
+  const t = fig.t;
+  const s = size / 56;
+  fig.rect(x, y, size, size, { rx: 13 * s, fill: fig.tint(t.refine, 0.14), stroke: fig.tint(t.refine, 0.5), sw: 1 });
+  const [ax, ay, bx, by, px, py] = [x + 13 * s, y + 39 * s, x + 43 * s, y + 39 * s, x + 28 * s, y + 17 * s];
+  fig.path(`M${ax} ${ay} C${ax + 6 * s} ${ay - 4 * s} ${px - 11 * s} ${py} ${px} ${py} C${px + 11 * s} ${py} ${bx - 6 * s} ${by - 4 * s} ${bx} ${by}`, {
+    stroke: t.refine,
+    sw: 3 * s,
+    cap: 'round',
+  });
+  fig.circle(ax, ay, 4.6 * s, { fill: t.ink });
+  fig.circle(bx, by, 4.6 * s, { fill: t.ink });
+  fig.polygon([[px, py - 7.5 * s], [px + 6.8 * s, py + 4.2 * s], [px - 6.8 * s, py + 4.2 * s]], { fill: t.refine, stroke: fig.tint(t.refine, 0.14), sw: 1.5 * s, join: 'round' });
 }
 
 function molecularDynamics(fig, rect) {

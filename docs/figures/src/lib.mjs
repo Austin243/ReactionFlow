@@ -1,4 +1,4 @@
-// Small SVG toolkit shared by every figure: themes, text metrics, shapes, arrows, and atoms.
+// Small SVG toolkit shared by every figure: themes, text metrics, shapes, and arrows.
 // No dependencies. Every color is written as a plain attribute so the files stay editable in
 // Illustrator, Inkscape, or Figma.
 
@@ -27,15 +27,11 @@ export const THEMES = {
     refine: '#1baf7a',
     good: '#0ca30c',
     warn: '#fab219',
-    serious: '#ec835a',
     critical: '#d03b3b',
     ramp: ['#86b6ef', '#2a78d6', '#104281'],
     surfaceLow: '#f8fafc',
     surfaceHigh: '#a8b8cd',
     contour: '#8598b3',
-    atomStroke: '#000000',
-    atomStrokeOpacity: 0.3,
-    bond: '#6e7781',
   },
   dark: {
     name: 'dark',
@@ -53,15 +49,11 @@ export const THEMES = {
     refine: '#199e70',
     good: '#0ca30c',
     warn: '#fab219',
-    serious: '#ec835a',
     critical: '#d03b3b',
     ramp: ['#184f95', '#3987e5', '#9ec5f4'],
     surfaceLow: '#0e131a',
     surfaceHigh: '#3c4a60',
     contour: '#5d6c82',
-    atomStroke: '#ffffff',
-    atomStrokeOpacity: 0.35,
-    bond: '#8b949e',
   },
 };
 
@@ -111,35 +103,10 @@ export function textWidth(s, size, { mono = false, weight = 400 } = {}) {
   return (total / 1000) * size * tracking * (weight >= 600 ? 1.06 : weight >= 500 ? 1.03 : 1);
 }
 
-/** Break a sentence into lines no wider than maxWidth. */
-export function wrap(s, maxWidth, o = {}) {
-  const rows = [];
-  let row = '';
-  for (const word of String(s).split(' ')) {
-    const next = row ? `${row} ${word}` : word;
-    if (row && textWidth(next, o.size ?? 16, o) > maxWidth) {
-      rows.push(row);
-      row = word;
-    } else row = next;
-  }
-  if (row) rows.push(row);
-  return rows;
-}
-
 // Type sizes for every figure, in SVG units. Figures are 1200 units wide and a GitHub README shows
-// them about 840 px wide, so `small` renders near 14 px and `head` near 18 px.
-export const TYPE = { small: 20, body: 22, head: 26 };
-
-// The multi-panel figures fit more into the same width, so their text is a step larger: `small`
-// renders near 17 px at README width, the size of the README's own text.
-export const HERO_TYPE = { small: 24, body: 26, head: 30 };
-
-const ELEMENTS = {
-  C: ['#d4d4d4', '#737373', '#2e2e2e'],
-  N: ['#c3d0ff', '#4264d9', '#1c2e7c'],
-  H: ['#ffffff', '#ececec', '#9c9c9c'],
-  O: ['#ffc7bf', '#e0452f', '#8c1c10'],
-};
+// them about 840 px wide, so `small` renders near 17 px, the size of the README's own text, and
+// `head` near 21 px.
+export const TYPE = { small: 24, body: 26, head: 30 };
 
 export class Figure {
   constructor({ id, width, height, theme, title, desc }) {
@@ -429,43 +396,6 @@ export class Figure {
     return this;
   }
 
-  /** Shaded sphere for an element (C, N, H, O). */
-  atom(x, y, r, el, o = {}) {
-    const [light, mid, dark] = ELEMENTS[el];
-    const id = this.def(`atom-${el}`, (gid) =>
-      `<radialGradient id="${gid}" cx="0.36" cy="0.32" r="0.72"><stop offset="0" stop-color="${light}"/>` +
-      `<stop offset="0.55" stop-color="${mid}"/><stop offset="1" stop-color="${dark}"/></radialGradient>`,
-    );
-    return this.circle(x, y, r, {
-      fill: `url(#${id})`,
-      stroke: this.t.atomStroke,
-      strokeOpacity: this.t.atomStrokeOpacity,
-      sw: 0.75,
-      opacity: o.opacity,
-    });
-  }
-
-  /** Bond between two atom centers. kind: 'single' | 'double' | 'triple' | 'forming' | 'breaking'. */
-  bond(x1, y1, x2, y2, o = {}) {
-    const kind = o.kind ?? 'single';
-    const w = o.w ?? 4;
-    const color = o.color ?? this.t.bond;
-    const count = kind === 'double' ? 2 : kind === 'triple' ? 3 : 1;
-    const len = Math.hypot(x2 - x1, y2 - y1);
-    const [nx, ny] = [-(y2 - y1) / len, (x2 - x1) / len];
-    for (let i = 0; i < count; i++) {
-      const off = (i - (count - 1) / 2) * w * 1.25;
-      this.line(x1 + nx * off, y1 + ny * off, x2 + nx * off, y2 + ny * off, {
-        stroke: color,
-        sw: count > 1 ? w * 0.62 : w,
-        cap: 'round',
-        dash: kind === 'forming' || kind === 'breaking' ? `${r2(w * 0.4)} ${r2(w * 1.5)}` : undefined,
-        opacity: o.opacity,
-      });
-    }
-    return this;
-  }
-
   /** Soft halo that marks a detected bond change. */
   glow(x, y, r, color) {
     const id = this.def(`glow-${color.slice(1)}`, (gid) =>
@@ -477,16 +407,16 @@ export class Figure {
 
   /** Panel letter and title, as in a multi-panel figure; y is the baseline. */
   heading(x, y, letter, title) {
-    this.text(x, y, letter, { size: HERO_TYPE.head, weight: 750 });
-    return this.text(x + 34, y, title, { size: HERO_TYPE.head, weight: 650 });
+    this.text(x, y, letter, { size: TYPE.head, weight: 750 });
+    return this.text(x + 34, y, title, { size: TYPE.head, weight: 650 });
   }
 
   /** Legend items in a row, each [draw(x, y), label] with the mark centered 11 units in. Returns the end x. */
   keys(x, y, items, o = {}) {
     for (const [draw, label] of items) {
       draw(x + 11, y);
-      this.text(x + 30, y, label, { size: HERO_TYPE.small, middle: true, fill: o.fill ?? this.t.ink2, halo: o.halo });
-      x += 30 + this.measure(label, { size: HERO_TYPE.small }) + (o.gap ?? 32);
+      this.text(x + 30, y, label, { size: TYPE.small, middle: true, fill: o.fill ?? this.t.ink2, halo: o.halo });
+      x += 30 + this.measure(label, { size: TYPE.small }) + (o.gap ?? 32);
     }
     return x;
   }
@@ -514,13 +444,12 @@ export class Figure {
     });
   }
 
-  /** Check mark, cross, or pause glyph drawn as strokes, centered on (x, y). */
+  /** Check mark or cross drawn as strokes, centered on (x, y). */
   glyph(kind, x, y, size, color) {
     const s = size / 2;
     const stroke = { stroke: color, sw: Math.max(1.6, size * 0.16), cap: 'round', join: 'round' };
     if (kind === 'check') return this.path(`M${r2(x - s)} ${r2(y + s * 0.05)} L${r2(x - s * 0.3)} ${r2(y + s * 0.7)} L${r2(x + s)} ${r2(y - s * 0.65)}`, stroke);
     if (kind === 'cross') return this.path(`M${r2(x - s * 0.8)} ${r2(y - s * 0.8)} L${r2(x + s * 0.8)} ${r2(y + s * 0.8)} M${r2(x + s * 0.8)} ${r2(y - s * 0.8)} L${r2(x - s * 0.8)} ${r2(y + s * 0.8)}`, stroke);
-    if (kind === 'pause') return this.path(`M${r2(x - s * 0.45)} ${r2(y - s * 0.8)} V${r2(y + s * 0.8)} M${r2(x + s * 0.45)} ${r2(y - s * 0.8)} V${r2(y + s * 0.8)}`, stroke);
     throw new Error(`unknown glyph ${kind}`);
   }
 

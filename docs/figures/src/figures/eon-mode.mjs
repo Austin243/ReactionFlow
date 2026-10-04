@@ -2,7 +2,7 @@
 // state, the energy along one process, the searches and steps at the start of the run, the first
 // kinetic Monte Carlo step, and the energy of the current state against simulated time.
 
-import { Figure, HERO_TYPE as TYPE, scale } from '../lib.mjs';
+import { Figure, TYPE, scale } from '../lib.mjs';
 import { duration, energy, eon, events, LEVELS, rate, stateNumber } from '../landscape.mjs';
 import { drawSurface } from '../surface.mjs';
 
