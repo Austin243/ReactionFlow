@@ -10,8 +10,10 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from ase.formula import Formula
+
 from .campaign import CampaignConfig
-from .candidates import ReactionCandidate, ReactionClasses
+from .candidates import ReactionCandidate, ReactionClasses, _reaction_graph
 from .detection import atom_ids
 from .store import _read_bundle
 
@@ -34,7 +36,7 @@ def _occurrences(root: Path) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def _describe(candidate: ReactionCandidate) -> str:
+def _describe(candidate: ReactionCandidate, radius: int) -> str:
     symbols = dict(
         zip(atom_ids(candidate.reactant), candidate.reactant.get_chemical_symbols(), strict=True)
     )
@@ -46,13 +48,19 @@ def _describe(candidate: ReactionCandidate) -> str:
         )
         for bond in bonds
     )
-    return "; ".join(
+    changed = "; ".join(
         label if count == 1 else f"{label} x{count}" for label, count in sorted(changes.items())
     )
+    # Classes with the same bond changes differ in the atoms around them, so name those atoms.
+    graph = _reaction_graph(candidate, radius=radius)
+    elements = [element for _, element in graph.nodes(data="element")]
+    return f"{changed} [{Formula.from_list(elements).format('hill')}]"
 
 
 def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
-    """Fill one trajectory's status row and return its classes as (candidate, events, results).
+    """Fill one trajectory's status row and return its classes.
+
+    Each class is (candidate, events, results, occurrence ID of the candidate).
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
     step from state.json in place.
@@ -78,13 +86,18 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 result = _read_json(path)
                 results.append(result)
                 pathways[result["status"]] += 1
-        classes.append((candidate, len(occurrences), results))
+        classes.append((candidate, len(occurrences), results, occurrences[0]["occurrence_id"]))
     row.update(events=len(records), pathways=dict(pathways))
     return classes
 
 
-def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
-    """Summarize every trajectory and merge reaction classes by model and pressure."""
+def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, Any]:
+    """Summarize every trajectory and merge reaction classes by model and pressure.
+
+    A class is a bond change together with the atoms within ``radius`` bonds of it, so the same
+    local reaction counts once however large the molecule or polymer it happens in. Each
+    trajectory's store keeps exact whole-region classes, and those merge here.
+    """
 
     trajectories: list[dict[str, Any]] = []
     # Only barriers from the same model and pressure are comparable, so classes merge within those.
@@ -119,14 +132,15 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
                 row["error"] = _read_json(root / "last-error.json").get("error")
             except Exception as error:
                 row["error"] = f"unreadable last-error.json: {type(error).__name__}"
-        merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses())
-        for candidate, events, results in classes:
+        merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses(radius))
+        for candidate, events, results, occurrence_id in classes:
             name = merged.find(candidate)
             if name is None:
                 name = str(len(entries))
                 merged.add(name, candidate)
                 entries[name] = {
-                    "reaction": _describe(candidate),
+                    "reaction": _describe(candidate, radius),
+                    "example": {"trajectory": spec.id, "occurrence_id": occurrence_id},
                     "model": model,
                     "pressure_GPa": spec.pressure_GPa,
                     "barrier_quantity": (
@@ -171,7 +185,12 @@ def campaign_status(campaign: CampaignConfig) -> dict[str, Any]:
             item["reaction"],
         )
     )
-    return {"campaign": str(campaign.source), "trajectories": trajectories, "reactions": reactions}
+    return {
+        "campaign": str(campaign.source),
+        "radius": radius,
+        "trajectories": trajectories,
+        "reactions": reactions,
+    }
 
 
 def _table(header: list[str], rows: list[list[str]]) -> str:
@@ -271,6 +290,11 @@ def format_status(report: dict[str, Any]) -> str:
             f"{checks['does_not_connect']} do not connect, {checks['inconclusive']} inconclusive, "
             f"{checks['failed']} failed."
         )
+    radius = report["radius"]
+    lines.append(
+        f"A class is a bond change with the atoms within {radius} bond{'' if radius == 1 else 's'}"
+        " of it; brackets give their formula."
+    )
     lines.append("NVT barriers are potential energies; NPT barriers are enthalpies.")
     return "\n".join(lines)
 

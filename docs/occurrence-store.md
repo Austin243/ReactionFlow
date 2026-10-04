@@ -43,7 +43,8 @@ restores the canonical `atoms.arrays["atom_id"]` representation.
 `load_detector_config()` returns the thresholds stored beside a candidate for later endpoint
 validation during [pathway refinement](pathway-refinement.md).
 
-Equivalent occurrences use [`same_reaction()`](reaction-identity.md) and share an opaque class ID.
+Equivalent occurrences use [`same_reaction()`](reaction-identity.md) over the whole bonded region
+and share an opaque class ID; `reactionflow status` merges these classes by the local change.
 Every occurrence still has its own row and bundle. An unresolved terminal candidate is retained
 but is not a representative; the first later resolved match becomes the class representative.
 That assignment never changes. `ReactionRun` refines every resolved occurrence, not only the
