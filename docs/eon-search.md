@@ -160,5 +160,13 @@ output directory.
   shows the searches and confidence of the current state.
 - Searches use a fixed, nonsingular cell, fully periodic or fully nonperiodic, with `FixAtoms` as
   the only constraint.
+- EON converges saddles and minima on the norm of the whole force vector (`force_tolerance`,
+  0.01 eV/Å). Run the model in float64 or full float32: TF32-style fast arithmetic leaves too much
+  force noise to reach that norm in cells of a few hundred atoms.
+- Searches climb from a small push along the softest mode, which suits solids and surfaces. In
+  liquids the softest modes are collective solvent motions that lead to no saddle, so searches
+  rarely connect; use the MD workflow there.
+- Small periodic cells admit collective processes, such as a whole surface row sliding through the
+  boundary. Check which atoms move in the lowest barriers before trusting the kinetics.
 - The analytic example verifies software behavior; it does not validate a model for real
   chemistry.
