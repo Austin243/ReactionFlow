@@ -7,6 +7,7 @@ from numbers import Integral
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
@@ -103,11 +104,20 @@ class _PrecisionAtomsAdapter:
         self.adapter = adapter
         self.dtype = dtype
 
-    def from_ase_atoms(self, **kwargs: Any) -> Any:
+    def from_ase_atoms(self, *, atoms: Atoms, **kwargs: Any) -> Any:
+        # ORB accepts only Python numbers for charge and spin; ASE readers give NumPy integers.
+        info = {
+            name: int(value)
+            for name in ("charge", "spin")
+            if isinstance(value := atoms.info.get(name), np.integer)
+        }
+        if info:
+            atoms = atoms.copy()
+            atoms.info.update(info)
         # ORB otherwise reads the process default dtype on every evaluation. Model
         # construction restores that global setting, so bind graph precision explicitly.
         return self.adapter.from_ase_atoms(
-            **kwargs, output_dtype=self.dtype, graph_construction_dtype=self.dtype
+            atoms=atoms, **kwargs, output_dtype=self.dtype, graph_construction_dtype=self.dtype
         )
 
 
