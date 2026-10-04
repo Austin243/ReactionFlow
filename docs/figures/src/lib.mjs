@@ -130,6 +130,10 @@ export function wrap(s, maxWidth, o = {}) {
 // them about 840 px wide, so `small` renders near 14 px and `head` near 18 px.
 export const TYPE = { small: 20, body: 22, head: 26 };
 
+// The multi-panel figures fit more into the same width, so their text is a step larger: `small`
+// renders near 17 px at README width, the size of the README's own text.
+export const HERO_TYPE = { small: 24, body: 26, head: 30 };
+
 const ELEMENTS = {
   C: ['#d4d4d4', '#737373', '#2e2e2e'],
   N: ['#c3d0ff', '#4264d9', '#1c2e7c'],
@@ -469,6 +473,32 @@ export class Figure {
       `<stop offset="0.55" stop-color="${color}" stop-opacity="0.2"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></radialGradient>`,
     );
     return this.circle(x, y, r, { fill: `url(#${id})` });
+  }
+
+  /** Panel letter and title, as in a multi-panel figure; y is the baseline. */
+  heading(x, y, letter, title) {
+    this.text(x, y, letter, { size: HERO_TYPE.head, weight: 750 });
+    return this.text(x + 34, y, title, { size: HERO_TYPE.head, weight: 650 });
+  }
+
+  /** Legend items in a row, each [draw(x, y), label] with the mark centered 11 units in. Returns the end x. */
+  keys(x, y, items, o = {}) {
+    for (const [draw, label] of items) {
+      draw(x + 11, y);
+      this.text(x + 30, y, label, { size: HERO_TYPE.small, middle: true, fill: o.fill ?? this.t.ink2, halo: o.halo });
+      x += 30 + this.measure(label, { size: HERO_TYPE.small }) + (o.gap ?? 32);
+    }
+    return x;
+  }
+
+  /** Saddle point marker, a triangle centered on (x, y). */
+  saddle(x, y, r, o = {}) {
+    return this.polygon([[x, y - r * 1.15], [x + r, y + r * 0.75], [x - r, y + r * 0.75]], {
+      fill: o.fill ?? this.t.refine,
+      stroke: o.stroke ?? this.t.bg,
+      sw: o.sw ?? 2,
+      join: 'round',
+    });
   }
 
   /** Numbered step badge. */
