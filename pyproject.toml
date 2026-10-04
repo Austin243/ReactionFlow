@@ -21,6 +21,7 @@ dependencies = [
 reactionflow = "reactionflow.cli:main"
 
 [project.optional-dependencies]
+eon = ["pyeonclient[ase]==0.4.2"]
 mace = ["mace-torch==0.3.16"]
 uma = ["fairchem-core==2.23.0"]
 aimnet2 = ["aimnet[ase]==0.2.0"]
