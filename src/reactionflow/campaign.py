@@ -171,8 +171,11 @@ class CampaignConfig:
         value = _mapping(json.loads(source.read_text(encoding="utf-8")), "campaign")
         if value.get("schema_version") != 2:
             raise ValueError("unsupported campaign schema; use schema_version 2")
+        if value.get("mode", "md") != "md":
+            raise ValueError("MD campaign requires mode 'md'")
         unknown = set(value) - {
             "schema_version",
+            "mode",
             "structure",
             "output_root",
             "reaction_run",
