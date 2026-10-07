@@ -83,6 +83,7 @@ then requires exactly one visible CUDA device.
 | `confidence` | 0.95 | Search a state until 1 - 1/N reaches this, N being consecutive repeats of known processes in the window (EON's rule; its default is 0.99) |
 | `thermal_window_kT` | 20 | Keep processes up to this many kT above the state's lowest barrier |
 | `seed` | 1 | Seeds every search and every step |
+| `basins` | `"none"` | `"bonds"` merges states joined without a bond change into one chemical basin, so `steps` counts only chemical steps; see Chemical basins |
 
 `eon`:
 
@@ -105,6 +106,35 @@ then requires exactly one visible CUDA device.
 The total push is spread over the moved atoms, so its size does not grow with the system.
 EON computes harmonic prefactors from the atoms that move most in each process (those carrying
 90% of the displacement) and rejects values outside 10⁹–10²¹ 1/s.
+
+## Chemical basins
+
+In molecules on surfaces and in molecular crystals, most exits from a state are conformational:
+a methyl group turns, a molecule tilts or slides to a neighboring site. Their barriers are small,
+so they dominate the rate table, every kinetic Monte Carlo step is short, and the clock rarely
+reaches a reaction. With `basins: "bonds"`, two states belong to one chemical basin when a known
+process joins them without forming or breaking a bond, using the same bond labels as `status`.
+
+A step then leaves the part of the current basin that has been searched to the confidence target.
+Its exits are the chemical processes of those states, and the bond-preserving processes into
+conformers that have not been searched yet. The exit probabilities and the mean escape time come
+from the absorbing Markov chain of the explored basin, as in EON's mean rate method, so the time
+spent moving between conformers is counted without taking a step for each move. The time step is
+drawn from an exponential distribution with that mean, which is exact for a single state and
+assumes a memoryless escape when the basin has several. The basin states are eliminated with only
+sums of positive numbers, so the result stays accurate when conformational rates exceed the
+chemical ones by many orders of magnitude.
+
+An exit into an unexplored conformer moves the run there, searches it, and adds it to the basin; it
+is recorded as a step but does not count toward `steps`. Chemical exits count. Each step record
+says which kind it was (`chemical`), how many states the basin held, the escape probability of the
+chosen exit, and the mean escape time. When every state of the basin has been searched and none
+has a chemical exit, the run stops with `no_chemical_exit`.
+
+The thermal window applies among chemical exits only: a chemical process is kept when it lies
+within `thermal_window_kT` of the lowest chemical barrier of its state, and bond-preserving
+processes are always kept. Without basins, a 0.05 eV methyl rotation would push every reaction
+more than 20 kT above it, 0.52 eV at 300 K, out of the rate table.
 
 ## Symmetry
 
@@ -154,8 +184,9 @@ output directory.
 - A search that returns to the same state, such as equivalent atoms trading places, does not change
   the state-to-state kinetics. It is recorded as a search but kept out of the rate table and the
   confidence count.
-- No superbasins yet. Two states joined by a very low barrier make every step short; such pairs
-  show up in the step list.
+- Without `basins`, two states joined by a very low barrier make every step short, and such pairs
+  show up in the step list. `basins: "bonds"` merges states only when no bond changes between
+  them; a low-barrier reaction is still a separate step.
 - A state is searched until it reaches the confidence target, with no cap on searches; `status`
   shows the searches and confidence of the current state.
 - Searches use a fixed, nonsingular cell, fully periodic or fully nonperiodic, with `FixAtoms` as

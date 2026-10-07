@@ -4,6 +4,10 @@ A state is searched until its confidence, 1 - 1/N after N consecutive searches t
 process inside the thermal window, reaches the target. A kinetic Monte Carlo step then picks one
 process in the window with probability proportional to its harmonic transition-state rate and
 advances the clock by an exponentially distributed residence time.
+
+With `basins = "bonds"`, states joined by a process that forms and breaks no bond are one chemical
+basin. A step then leaves the explored part of the current basin, with exit probabilities and a
+mean escape time from the basin's absorbing Markov chain (EON's mean rate method).
 """
 
 from __future__ import annotations
@@ -24,8 +28,11 @@ class AKMCConfig:
     confidence: float = 0.95
     thermal_window_kT: float = 20.0
     seed: int = 1
+    basins: str = "none"
 
     def __post_init__(self) -> None:
+        if self.basins not in ("none", "bonds"):
+            raise ValueError("akmc.basins must be 'none' or 'bonds'")
         for name in ("temperature_K", "thermal_window_kT"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not value > 0:
@@ -61,6 +68,55 @@ def rate(prefactor: float, barrier: float, kT: float) -> float:
 
 def in_window(barrier: float, lowest: float, config: AKMCConfig) -> bool:
     return barrier <= lowest + config.thermal_window_kT * config.kT
+
+
+def basin_escape(
+    rates: dict[str, list[tuple[str, float]]], entry: str
+) -> tuple[dict[str, float], float]:
+    """Exit probabilities and mean escape time from `entry` through a basin of states.
+
+    `rates[s]` lists `(target, rate)` for every transition out of basin state `s`; a target that
+    is not a key of `rates` is an exit. Basin states other than `entry` are eliminated one at a
+    time using only sums and products of positive numbers (the GTH form of state reduction), so
+    the result stays accurate when internal rates exceed the exit rates by many orders of
+    magnitude, where inverting the transition matrix would lose every digit.
+    """
+
+    if entry not in rates:
+        raise KeyError(f"{entry} is not a basin state")
+    branch: dict[str, dict[str, float]] = {}
+    sojourn: dict[str, float] = {}
+    for state, transitions in rates.items():
+        moves = [(target, value) for target, value in transitions if target != state]
+        total = math.fsum(value for _, value in moves)
+        if not total > 0:
+            raise ValueError(f"basin state {state} has no way out")
+        probabilities: dict[str, float] = {}
+        for target, value in moves:
+            probabilities[target] = probabilities.get(target, 0.0) + value / total
+        branch[state], sojourn[state] = probabilities, 1.0 / total
+    for eliminated in [state for state in rates if state != entry]:
+        onward, held = branch.pop(eliminated), sojourn.pop(eliminated)
+        for state, probabilities in branch.items():
+            through = probabilities.pop(eliminated, 0.0)
+            if not through:
+                continue
+            sojourn[state] += through * held
+            for target, value in onward.items():
+                probabilities[target] = probabilities.get(target, 0.0) + through * value
+            back = probabilities.pop(state, 0.0)
+            if back:
+                # Returns to `state` repeat its visit; fold them in without forming 1 - back.
+                leave = math.fsum(probabilities.values())
+                if not leave > 0:
+                    raise ValueError(f"basin state {state} has no way out")
+                sojourn[state] /= leave
+                for target in probabilities:
+                    probabilities[target] /= leave
+    exits = branch[entry]
+    if not exits:
+        raise ValueError(f"no exit is reachable from {entry}")
+    return dict(exits), sojourn[entry]
 
 
 def kmc_step(rates: list[float], seed: list[int]) -> tuple[int, float]:
