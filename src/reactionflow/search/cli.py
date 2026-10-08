@@ -150,6 +150,7 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
     counters = state["states"][current]
     table = [{**processes[pid], "id": pid} for pid in counters["processes"]]
     kept = {process["id"] for process in kept_processes(table, config)}
+    saddles = [item["minima"] for item in attempts if "minima" in item]
     return report | {
         "status": "stopped" if state["stop_reason"] else "incomplete",
         "stop_reason": state["stop_reason"],
@@ -166,6 +167,11 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
         "processes": len(processes),
         "attempts": state["attempts"],
         "attempt_statuses": dict(Counter(item["status"] for item in attempts)),
+        "failed_with_saddle": len(saddles),
+        "failed_with_bond_change": sum(
+            any(side["bonds"]["formed"] or side["bonds"]["broken"] for side in minima)
+            for minima in saddles
+        ),
         "step_rows": [
             {
                 "step": index,
@@ -207,6 +213,11 @@ def _format_status(report: dict[str, Any]) -> str:
         f"States: {report['states']}; processes: {report['processes']}; searches: "
         f"{report['attempts']} {json.dumps(report['attempt_statuses'], sort_keys=True)}",
     ]
+    if report["failed_with_saddle"]:
+        lines.append(
+            f"Failed searches that kept a saddle: {report['failed_with_saddle']}, of which "
+            f"{report['failed_with_bond_change']} reach a minimum with a bond change"
+        )
     for row in report["step_rows"]:
         kind = ""
         if row["chemical"] is not None:
