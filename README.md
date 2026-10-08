@@ -225,6 +225,11 @@ inverse of the summed rates. In the first step of the model run (panel d), the t
 0 have barriers of 0.432 and 0.437 eV, so the pick is close to a coin toss. It went to state 1 and
 moved the clock 350 ns.
 
+With `"basins": "bonds"` in `akmc`, states joined by a process that forms and breaks no bond are
+one chemical basin. A step leaves the explored part of the basin with exit probabilities and a
+mean escape time from its absorbing Markov chain, so fast conformational changes no longer use up
+the steps and the clock advances on chemistry. See [chemical basins](docs/eon-search.md#chemical-basins).
+
 ## Models
 
 <picture>
@@ -381,8 +386,8 @@ a saddle but does not prove one. The thresholds and observation interval need ch
 system.
 
 EON rates come from harmonic transition-state theory, which suits barriers well above kT in stiff
-solids and on surfaces. States joined by a very low barrier are not merged, so such a pair makes
-every step short. In liquids the softest modes are collective solvent motions that lead to no
+solids and on surfaces. Without `basins`, states joined by a very low barrier are not merged, so
+such a pair makes every step short; `basins: "bonds"` merges them when no bond changes. In liquids the softest modes are collective solvent motions that lead to no
 saddle, searches rarely connect, and MD mode is the better choice.
 
 ## Documentation

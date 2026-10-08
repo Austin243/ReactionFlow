@@ -19,7 +19,7 @@ from ase.io.jsonio import encode
 
 from .._durable import ensure_directory, file_digest, publish, sync_directory
 from ..detection import canonical_copy
-from .akmc import AKMCConfig, confidence, in_window, kmc_step, rate
+from .akmc import AKMCConfig, basin_escape, confidence, in_window, kmc_step, rate
 from .eon import validate_start
 from .labels import bond_changes, reversed_changes
 from .records import SearchStore
@@ -85,6 +85,22 @@ def _in_window(processes: list[dict[str, Any]], config: AKMCConfig) -> list[dict
     return [p for p in processes if in_window(p["barrier_eV"], lowest, config)]
 
 
+def is_internal(process: dict[str, Any]) -> bool:
+    """A process that forms and breaks no bond stays inside its chemical basin."""
+
+    return not process["bonds"]["formed"] and not process["bonds"]["broken"]
+
+
+def kept_processes(processes: list[dict[str, Any]], config: AKMCConfig) -> list[dict[str, Any]]:
+    """Processes in the rate table. With basins, the window compares chemical exits only, so a
+    fast conformational change does not push the chemistry out of the window."""
+
+    if config.basins == "none":
+        return _in_window(processes, config)
+    internal = [p for p in processes if is_internal(p)]
+    return internal + _in_window([p for p in processes if not is_internal(p)], config)
+
+
 def _repeat(store: SearchStore, backend: Any, known: list[dict], saddle: Atoms, energy: float):
     for process in known:
         stored = store.read("processes", process["id"])
@@ -147,12 +163,17 @@ def _attempt(
     barrier = result.saddle_energy - energy
     data["barrier_eV"] = barrier
     known = _processes(store, state["states"][origin_id]["processes"])
-    lowest = min([barrier] + [process["barrier_eV"] for process in known])
-    if not in_window(barrier, lowest, config):
+    bonds = bond_changes(origin.structures["atoms"], result.product)
+    if config.basins == "none":
+        inside = in_window(barrier, min([barrier, *(p["barrier_eV"] for p in known)]), config)
+    else:
+        lowest = min([barrier, *(p["barrier_eV"] for p in known if not is_internal(p))])
+        inside = is_internal({"bonds": bonds}) or in_window(barrier, lowest, config)
+    if not inside:
         return {**data, "status": "outside_window"}
     repeated = _repeat(store, backend, known, result.saddle, result.saddle_energy)
     if repeated is not None:
-        relevant = repeated["id"] in {process["id"] for process in _in_window(known, config)}
+        relevant = repeated["id"] in {process["id"] for process in kept_processes(known, config)}
         return {**data, "status": "repeat", "process": repeated["id"], "relevant": relevant}
     data["product"] = _state_id(store, backend, result.product, result.product_energy)
     if data["product"] == origin_id:
@@ -170,7 +191,7 @@ def _attempt(
             "product_energy_eV": result.product_energy,
             "prefactor_s": result.prefactor,
             "reverse_prefactor_s": result.reverse_prefactor,
-            "bonds": bond_changes(origin.structures["atoms"], result.product),
+            "bonds": bonds,
             "source": active["id"],
             "search": data,
         },
@@ -199,7 +220,74 @@ def _commit_attempt(state: dict[str, Any], result: dict[str, Any]) -> None:
     state["active"] = None
 
 
-def _step(store: SearchStore, state: dict[str, Any], config: AKMCConfig) -> dict[str, Any]:
+def _basin_step(
+    store: SearchStore, state: dict[str, Any], config: AKMCConfig
+) -> dict[str, Any] | None:
+    """Leave the explored part of the current chemical basin, or return None if it is closed.
+
+    The basin holds every state reached from the current one through processes that form and
+    break no bond and that has been searched to the confidence target. Its exits are chemical
+    processes and bond-preserving processes into states not yet searched to confidence.
+    """
+
+    identifier = f"step-{state['steps']:06d}"
+    if identifier in store.ids("steps"):
+        return store.read("steps", identifier).data
+    current = state["current"]
+    explored = {
+        name
+        for name, counters in state["states"].items()
+        if confidence(counters["repeats"]) >= config.confidence
+    }
+    kept, basin, queue = {}, {current}, [current]
+    while queue:
+        name = queue.pop()
+        kept[name] = kept_processes(_processes(store, state["states"][name]["processes"]), config)
+        for process in kept[name]:
+            product = process["product"]
+            if is_internal(process) and product in explored and product not in basin:
+                basin.add(product)
+                queue.append(product)
+    rates, exits = {}, {}
+    for name in sorted(basin):
+        rates[name] = []
+        for process in kept[name]:
+            value = rate(process["prefactor_s"], process["barrier_eV"], config.kT)
+            if is_internal(process) and process["product"] in basin:
+                rates[name].append((process["product"], value))
+            else:
+                rates[name].append((process["id"], value))
+                exits[process["id"]] = process
+    if not exits:
+        return None
+    probabilities, mean = basin_escape(rates, current)
+    order = sorted(probabilities)
+    pick, dt = kmc_step([probabilities[e] / mean for e in order], [config.seed, 1, state["steps"]])
+    chosen = exits[order[pick]]
+    counters = state["states"][current]
+    data = {
+        "from": current,
+        "to": chosen["product"],
+        "process": chosen["id"],
+        "exit_state": chosen["state"],
+        "chemical": not is_internal(chosen),
+        "dt_s": dt,
+        "time_s": state["time_s"] + dt,
+        "total_rate_s": 1.0 / mean,
+        "mean_escape_time_s": mean,
+        "escape_probability": probabilities[chosen["id"]],
+        "basin_states": len(basin),
+        "processes_in_window": len(order),
+        "confidence": confidence(counters["repeats"]),
+        "searches": counters["searches"],
+    }
+    store.write("steps", identifier, data)
+    return data
+
+
+def _step(store: SearchStore, state: dict[str, Any], config: AKMCConfig) -> dict[str, Any] | None:
+    if config.basins == "bonds":
+        return _basin_step(store, state, config)
     identifier = f"step-{state['steps']:06d}"
     if identifier in store.ids("steps"):
         return store.read("steps", identifier).data
@@ -277,14 +365,24 @@ def run_exploration(
                 "active": None,
                 "stop_reason": None,
             }
+            if config.basins == "bonds":
+                # Only chemical steps count toward `steps`; moves into unexplored conformers do not.
+                state["chemical_steps"] = 0
             _save_state(root, state)
-        while state["steps"] < config.steps:
+        counted = "chemical_steps" if config.basins == "bonds" else "steps"
+        while state[counted] < config.steps:
             if state["active"] is None:
                 counters = state["states"][state["current"]]
                 if confidence(counters["repeats"]) >= config.confidence:
                     step = _step(store, state, config)
+                    if step is None:
+                        state["stop_reason"] = "no_chemical_exit"
+                        _save_state(root, state)
+                        return state
                     state.update(current=step["to"], time_s=step["time_s"])
                     state["steps"] += 1
+                    if step.get("chemical"):
+                        state["chemical_steps"] += 1
                     _save_state(root, state)
                     continue
                 index = state["attempts"]

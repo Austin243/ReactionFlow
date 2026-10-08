@@ -21,11 +21,11 @@ from ..campaign import AdapterSpec, TrajectorySpec
 from ..detection import canonical_copy
 from ..mlip import load_mlip_adapter
 from ..model_setup import install_and_prepare, prepare_adapter, prepare_campaign
-from .akmc import AKMCConfig, confidence, in_window, rate
+from .akmc import AKMCConfig, confidence, rate
 from .eon import EON_VERSION, EONBackend, EONSettings, free_rotation
 from .labels import describe
 from .records import SearchStore
-from .runner import read_search_state, run_exploration
+from .runner import kept_processes, read_search_state, run_exploration
 
 
 def _object(value: Any, label: str) -> dict:
@@ -149,11 +149,13 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
     current = state["current"]
     counters = state["states"][current]
     table = [{**processes[pid], "id": pid} for pid in counters["processes"]]
-    lowest = min((process["barrier_eV"] for process in table), default=0.0)
+    kept = {process["id"] for process in kept_processes(table, config)}
     return report | {
         "status": "stopped" if state["stop_reason"] else "incomplete",
         "stop_reason": state["stop_reason"],
         "temperature_K": config.temperature_K,
+        "basins": config.basins,
+        "chemical_steps": state.get("chemical_steps"),
         "steps": state["steps"],
         "time_s": state["time_s"],
         "current": current,
@@ -170,6 +172,8 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
                 **{key: step[key] for key in ("from", "to", "process", "dt_s", "time_s")},
                 "barrier_eV": processes[step["process"]]["barrier_eV"],
                 "bonds": describe(processes[step["process"]]["bonds"]),
+                "chemical": step.get("chemical"),
+                "basin_states": step.get("basin_states"),
             }
             for index, step in enumerate(steps)
         ],
@@ -180,7 +184,7 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
                 "barrier_eV": process["barrier_eV"],
                 "prefactor_s": process["prefactor_s"],
                 "rate_s": rate(process["prefactor_s"], process["barrier_eV"], config.kT),
-                "in_window": in_window(process["barrier_eV"], lowest, config),
+                "in_window": process["id"] in kept,
                 "bonds": describe(process["bonds"]),
             }
             for process in table
@@ -191,10 +195,12 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
 def _format_status(report: dict[str, Any]) -> str:
     if report["status"] == "not_started":
         return "EON AKMC: not started"
+    chemical = report["chemical_steps"]
+    steps = report["steps"] if chemical is None else f"{chemical} chemical of {report['steps']}"
     lines = [
         f"EON AKMC: {report['status']} ({report['stop_reason'] or 'no stop reason'}) "
         f"at {report['temperature_K']:g} K",
-        f"Steps: {report['steps']}; simulated time {report['time_s']:.4g} s",
+        f"Steps: {steps}; simulated time {report['time_s']:.4g} s",
         f"Current {report['current']}: confidence {report['current_confidence']:.3f} after "
         f"{report['current_searches']} searches; known processes: "
         f"{len(report['current_processes'])}",
@@ -202,9 +208,14 @@ def _format_status(report: dict[str, Any]) -> str:
         f"{report['attempts']} {json.dumps(report['attempt_statuses'], sort_keys=True)}",
     ]
     for row in report["step_rows"]:
+        kind = ""
+        if row["chemical"] is not None:
+            kind = f"{'chemical' if row['chemical'] else 'into unexplored conformer'}, " + (
+                f"basin of {row['basin_states']}; "
+            )
         lines.append(
             f"step {row['step']}: {row['from']} -> {row['to']} via {row['process']} "
-            f"({row['barrier_eV']:.4g} eV; {row['bonds']}), dt {row['dt_s']:.4g} s, "
+            f"({kind}{row['barrier_eV']:.4g} eV; {row['bonds']}), dt {row['dt_s']:.4g} s, "
             f"t {row['time_s']:.4g} s"
         )
     return "\n".join(lines)
