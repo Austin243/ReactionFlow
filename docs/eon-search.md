@@ -94,6 +94,7 @@ then requires exactly one visible CUDA device.
 | `displace_radius_A` | 4.0 | Local push: atoms within this distance of the center move |
 | `displace_centers` | `[]` | Local push: element symbols or atom indices the center is chosen from; empty means any free atom |
 | `force_tolerance` | 0.01 | Convergence of saddle searches and relaxations, eV/Å |
+| `force_metric` | `"norm"` | What `force_tolerance` bounds: the norm of the whole force vector, or `"max_atom"`: the largest force on any atom |
 | `max_iterations` | 1000 | Limit for each saddle search and relaxation |
 | `max_energy_eV` | 20 | Abandon a saddle search this far above the state |
 | `prefactor` | `null` | `null` computes harmonic prefactors; a number in 1/s fixes them |
@@ -191,9 +192,12 @@ output directory.
   shows the searches and confidence of the current state.
 - Searches use a fixed, nonsingular cell, fully periodic or fully nonperiodic, with `FixAtoms` as
   the only constraint.
-- EON converges saddles and minima on the norm of the whole force vector (`force_tolerance`,
-  0.01 eV/Å). Run the model in float64 or full float32: TF32-style fast arithmetic leaves too much
-  force noise to reach that norm in cells of a few hundred atoms.
+- By default EON converges saddles and minima on the norm of the whole force vector
+  (`force_tolerance`, 0.01 eV/Å), which adds up the small residual forces on every free atom. In
+  cells of a few hundred free atoms that norm can stay above the tolerance while no atom carries
+  more than a few meV/Å, and TF32-style fast arithmetic alone leaves that much force noise. There,
+  converge on the largest atomic force (`force_metric: "max_atom"`, as ASE's `fmax` does), for
+  example at 0.05 eV/Å, and run the model in float64 or full float32.
 - Searches climb from a small push along the softest mode, which suits solids and surfaces. In
   liquids the softest modes are collective solvent motions that lead to no saddle, so searches
   rarely connect; use the MD workflow there.
