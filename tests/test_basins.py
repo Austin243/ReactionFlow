@@ -150,6 +150,49 @@ def test_default_runs_keep_their_records(tmp_path):
     assert all("chemical" not in s for s in steps(tmp_path))
 
 
+def test_a_search_eon_rejects_as_not_connected_leaves_the_basin_by_its_bonds(tmp_path):
+    class Settled(Conformers):
+        """The first search from A breaks the H-H bond, but its start side settles into a
+        conformer 0.1 eV below A, so EON finds neither minimum at A."""
+
+        def search(self, atoms, *, seed):
+            if self.calls:
+                return super().search(atoms, seed=seed)
+            self.calls.append("A")
+            saddle = place(atoms, "C")
+            saddle.positions[1, 0] = 1.2
+            return ProcessResult(
+                "failed",
+                "Saddle is not connected to initial state",
+                saddle=saddle,
+                saddle_energy=CHEMICAL,
+                metadata={"seed": seed, "termination_reason": 6},
+                minima=((place(atoms, "B"), -0.1), (place(atoms, "C"), ENERGY["C"])),
+            )
+
+        def prefactors(self, first, saddle, second):
+            assert (label(first), label(second)) == ("B", "C")
+            return 2e12, 3e12
+
+    run(tmp_path / "none", Settled())
+    rejected = SearchStore(tmp_path / "none").read("attempts", "attempt-000000")
+    assert rejected.data["status"] == "failed"
+    run(tmp_path / "bonds", Settled(), basins="bonds")
+    store = SearchStore(tmp_path / "bonds")
+    attempt = store.read("attempts", "attempt-000000").data
+    process = store.read("processes", attempt["process"])
+    assert attempt["status"] == "new" and attempt["start_side_energy_eV"] == -0.1
+    # Measured from the start-side conformer, which lies below A.
+    assert process.data["barrier_eV"] == pytest.approx(CHEMICAL + 0.1)
+    assert (process.data["prefactor_s"], process.data["reverse_prefactor_s"]) == (2e12, 3e12)
+    assert process.data["bonds"] == {
+        "formed": [],
+        "broken": [{"atom_ids": [0, 1], "elements": "H-H"}],
+    }
+    assert label(process.structures["start_side"]) == "B"
+    assert label(store.read("states", process.data["product"]).structures["atoms"]) == "C"
+
+
 def test_escape_stays_exact_across_twenty_orders_of_magnitude():
     fast, slow = 1e13, 1e-7
     rates = {"A": [("B", fast)], "B": [("A", fast), ("exit", slow)]}

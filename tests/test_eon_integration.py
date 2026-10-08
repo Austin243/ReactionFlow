@@ -119,6 +119,9 @@ def test_real_eon_finds_analytic_barriers_and_harmonic_prefactors():
     assert result.saddle_energy - result.product_energy == pytest.approx(1.6128, abs=1e-3)
     assert result.prefactor == pytest.approx(frequency(6.4, 4.002602), rel=0.02)
     assert result.reverse_prefactor == pytest.approx(frequency(9.6, 4.002602), rel=0.02)
+    # The same prefactors as EON's own search, for searches the runner joins by their bonds.
+    prefactors = backend.prefactors(start, result.saddle, result.product)
+    assert prefactors == pytest.approx((result.prefactor, result.reverse_prefactor), rel=1e-6)
     assert result.product.positions[1, 0] - 5 == pytest.approx(1, abs=0.01)
     assert result.saddle.info == atoms.info
     np.testing.assert_array_equal(result.product.arrays["atom_id"], atoms.arrays["atom_id"])
