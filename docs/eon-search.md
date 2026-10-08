@@ -171,8 +171,10 @@ does not promise bitwise agreement across EON builds or numerical environments.
 The output directory holds the model/settings contract in `search-contract.json`, progress in
 `search-state.json`, and immutable checksummed records under `states/`, `processes/`,
 `attempts/`, and `steps/`. A process record keeps its saddle, product, barrier, prefactors, and
-bond changes; the reverse of each process is recorded for the product state. One process writes
-an exploration at a time.
+bond changes; the reverse of each process is recorded for the product state. An attempt that EON
+rejected after its saddle converged keeps the saddle, both minima with their energies, and the
+bonds each minimum forms and breaks relative to the searched state; `status` counts them. One
+process writes an exploration at a time.
 
 Resume checks bind the starting structure, settings, the model identity that an MD restart also
 records, and the search code. To compare different settings, copy the campaign and choose a new

@@ -61,6 +61,23 @@ class FreeWell(Calculator):
         self.results = {"energy": energy, "forces": np.array([force, -force])}
 
 
+class WellAndSpring(Calculator):
+    """AnchoredWell plus a third atom held to (5, 5, 8) by a soft spring of 0.1 eV/Å²."""
+
+    implemented_properties = ("energy", "forces")
+
+    def calculate(self, atoms=None, properties=None, system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        x, y, z = atoms.positions[1] - atoms.positions[0]
+        energy, slope = well(x)
+        gradient = np.array([slope, 16 * y, 16 * z])
+        offset = atoms.positions[2] - [5, 5, 8]
+        self.results = {
+            "energy": energy + 8 * (y * y + z * z) + 0.05 * float(offset @ offset),
+            "forces": np.array([gradient, -gradient, -0.1 * offset]),
+        }
+
+
 class Springs(Calculator):
     """Free atoms held to their sites by springs of 1 eV/Å²."""
 
@@ -117,6 +134,31 @@ def test_real_eon_max_atom_metric_accepts_small_forces_spread_over_many_atoms():
         backend = EONBackend(Springs(sites), EONSettings(force_metric=metric), temperature_K=300)
         relaxed, _ = backend.relax(atoms)
         np.testing.assert_allclose(relaxed.positions - sites, remaining, atol=1e-3)
+
+
+def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect():
+    # The third atom starts 0.3 Å from its site and relaxes there on both sides of the saddle,
+    # so neither minimum matches the start.
+    positions = [[5, 5, 5], [4.0, 5, 5], [5.3, 5, 8]]
+    atoms = assign_atom_ids(Atoms("He2Ne", positions=positions, cell=[12] * 3, pbc=True))
+    atoms.set_constraint(FixAtoms(indices=[0]))
+    settings = EONSettings(
+        displace="local", displace_centers=[1], displace_radius_A=0.5, prefactor=1e13
+    )
+    backend = EONBackend(WellAndSpring(), settings, temperature_K=300)
+    results = [backend.search(atoms, seed=seed) for seed in range(8)]
+    rejected = [result for result in results if "not connected" in result.message]
+    assert rejected, [result.message for result in results]
+    result = rejected[0]
+    assert result.status == "failed" and result.saddle_energy == pytest.approx(1.0795, abs=1e-3)
+    assert result.saddle.positions[1, 0] - 5 == pytest.approx(-0.2, abs=0.01)
+    sides = sorted((side.positions[1, 0] - 5, energy) for side, energy in result.minima)
+    assert sides == [
+        (pytest.approx(-1, abs=0.01), pytest.approx(0.5333, abs=1e-3)),
+        (pytest.approx(1, abs=0.01), pytest.approx(-0.5333, abs=1e-3)),
+    ]
+    assert all(side.positions[2, 0] == pytest.approx(5, abs=0.05) for side, _ in result.minima)
+    np.testing.assert_array_equal(result.saddle.arrays["atom_id"], atoms.arrays["atom_id"])
 
 
 def test_real_eon_treats_rigid_rotation_of_a_free_molecule_as_no_change():

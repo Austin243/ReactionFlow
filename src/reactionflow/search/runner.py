@@ -144,7 +144,9 @@ def _reverse(
 
 def _attempt(
     store: SearchStore, state: dict[str, Any], active: dict[str, Any], backend: Any, config
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Atoms]]:
+    """Run one search and classify it; return the attempt record and the structures it keeps."""
+
     origin_id = active["state"]
     forward_id = active["id"].replace("attempt-", "process-", 1)
     if forward_id in store.ids("processes"):
@@ -152,14 +154,26 @@ def _attempt(
         forward = store.read("processes", forward_id)
         reverse = _reverse(store, backend, state, forward_id, forward)
         search = forward.data["search"]
-        return {**search, "status": "new", "process": forward_id, "reverse": reverse}
+        return {**search, "status": "new", "process": forward_id, "reverse": reverse}, {}
     origin = store.read("states", origin_id)
     energy = origin.data["energy_eV"]
     data: dict[str, Any] = dict(active)
     result = backend.search(origin.structures["atoms"].copy(), seed=active["seed"])
     data.update(backend=result.metadata, message=result.message)
     if result.status != "good":
-        return {**data, "status": "failed"}
+        if not result.minima:
+            return {**data, "status": "failed"}, {}
+        # EON rejected the search after its saddle converged, most often because neither minimum
+        # matches the start. Keep what it reached, and the bonds each minimum forms and breaks.
+        data["barrier_eV"] = result.saddle_energy - energy
+        data["minima"] = [
+            {"energy_eV": value, "bonds": bond_changes(origin.structures["atoms"], minimum)}
+            for minimum, value in result.minima
+        ]
+        structures = {"saddle": result.saddle}
+        for number, (minimum, _) in enumerate(result.minima, 1):
+            structures[f"minimum_{number}"] = minimum
+        return {**data, "status": "failed"}, structures
     barrier = result.saddle_energy - energy
     data["barrier_eV"] = barrier
     known = _processes(store, state["states"][origin_id]["processes"])
@@ -170,15 +184,15 @@ def _attempt(
         lowest = min([barrier, *(p["barrier_eV"] for p in known if not is_internal(p))])
         inside = is_internal({"bonds": bonds}) or in_window(barrier, lowest, config)
     if not inside:
-        return {**data, "status": "outside_window"}
+        return {**data, "status": "outside_window"}, {}
     repeated = _repeat(store, backend, known, result.saddle, result.saddle_energy)
     if repeated is not None:
         relevant = repeated["id"] in {process["id"] for process in kept_processes(known, config)}
-        return {**data, "status": "repeat", "process": repeated["id"], "relevant": relevant}
+        return {**data, "status": "repeat", "process": repeated["id"], "relevant": relevant}, {}
     data["product"] = _state_id(store, backend, result.product, result.product_energy)
     if data["product"] == origin_id:
         # Equivalent atoms exchanged places: no state change, so no part of the kinetics.
-        return {**data, "status": "same_state"}
+        return {**data, "status": "same_state"}, {}
     data["status"] = "new"
     store.write(
         "processes",
@@ -198,7 +212,7 @@ def _attempt(
         structures={"saddle": result.saddle, "product": result.product},
     )
     reverse = _reverse(store, backend, state, forward_id, store.read("processes", forward_id))
-    return {**data, "process": forward_id, "reverse": reverse}
+    return {**data, "process": forward_id, "reverse": reverse}, {}
 
 
 def _new_counters() -> dict[str, Any]:
@@ -397,8 +411,8 @@ def run_exploration(
             if active["id"] in store.ids("attempts"):
                 result = store.read("attempts", active["id"]).data
             else:
-                result = _attempt(store, state, active, backend, config)
-                store.write("attempts", active["id"], result)
+                result, structures = _attempt(store, state, active, backend, config)
+                store.write("attempts", active["id"], result, structures=structures)
             _commit_attempt(state, result)
             _save_state(root, state)
         state["stop_reason"] = "steps_completed"

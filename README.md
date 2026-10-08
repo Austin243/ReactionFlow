@@ -212,9 +212,10 @@ all four is `new`.
 
 `outside_window` means the barrier lies more than 20 kT above the lowest barrier known for the
 state, which is 0.52 eV at 300 K. `same_state` means that equivalent atoms traded places and
-nothing changed. A `new` process is saved together with its reverse, so the product state starts
-with one known exit. Only a `repeat` of a process inside the window adds to N, and a `new` process
-resets it.
+nothing changed. A search that EON rejects after its saddle converged, most often because neither
+minimum matches the start, is `failed` but keeps the saddle, both minima and their bond changes.
+A `new` process is saved together with its reverse, so the product state starts with one known
+exit. Only a `repeat` of a process inside the window adds to N, and a `new` process resets it.
 
 ## Kinetic Monte Carlo steps
 

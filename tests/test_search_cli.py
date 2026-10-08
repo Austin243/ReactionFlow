@@ -149,6 +149,28 @@ def test_run_resume_and_read_only_status(tmp_path, monkeypatch, capsys):
     assert before == after
 
 
+def test_status_counts_failed_searches_that_kept_a_saddle(tmp_path, monkeypatch, capsys):
+    class Rejected(Backend):
+        def search(self, atoms, *, seed):
+            result = super().search(atoms, seed=seed)
+            if Backend.searches > 1:
+                return result
+            minima = ((atoms, result.reactant_energy), (result.product, result.product_energy))
+            return ProcessResult(
+                "failed", "not connected", saddle=result.saddle, saddle_energy=1.0, minima=minima
+            )
+
+    path = campaign(tmp_path)
+    monkeypatch.setattr(search_cli, "EONBackend", Rejected)
+    Backend.searches = 0
+    assert main(["run", str(path), "--index", "0"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["attempt_statuses"] == {"failed": 1, "new": 1, "repeat": 2}
+    assert (output["failed_with_saddle"], output["failed_with_bond_change"]) == (1, 0)
+    assert main(["status", str(path)]) == 0
+    assert "Failed searches that kept a saddle: 1, of which 0" in capsys.readouterr().out
+
+
 def test_md_mode_is_optional_and_explicit_md_keeps_validation_output(tmp_path, capsys):
     path = campaign(tmp_path)
     data = {
