@@ -217,6 +217,11 @@ minimum matches the start, is `failed` but keeps the saddle, both minima and the
 A `new` process is saved together with its reverse, so the product state starts with one known
 exit. Only a `repeat` of a process inside the window adds to N, and a `new` process resets it.
 
+A random push seldom brings two particular atoms together. With
+`"guide": {"form": ["C-N"], "break": ["C-H"]}` in `eon`, each search instead pushes one pair of
+the named element types together or apart and starts the dimer along that motion. See
+[guided searches](docs/eon-search.md#guided-searches).
+
 ## Kinetic Monte Carlo steps
 
 Once a state reaches the target, every process inside the thermal window gets the rate ν
