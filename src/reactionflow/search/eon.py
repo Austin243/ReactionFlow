@@ -29,6 +29,9 @@ from .._durable import file_digest
 from ..detection import atom_ids, canonical_copy
 
 EON_VERSION = "0.4.2"
+# EON ends a search with these after its saddle converged: 6 not connected to the start,
+# 7 prefactors out of range, 9 minimizations from the saddle not converged, 10 Hessian failed.
+_AFTER_SADDLE = {6, 7, 9, 10}
 
 
 def _number(value: object, name: str, *, integer: bool = False) -> float:
@@ -102,7 +105,8 @@ class EONSettings:
 
 @dataclass(frozen=True)
 class ProcessResult:
-    """One EON process search. Prefactors are in 1/s, energies in eV."""
+    """One EON process search. Prefactors are in 1/s, energies in eV. A search that EON rejects
+    after its saddle converged keeps the saddle and the minima reached from it, with energies."""
 
     status: str
     message: str
@@ -114,6 +118,7 @@ class ProcessResult:
     prefactor: float | None = None
     reverse_prefactor: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    minima: tuple[tuple[Atoms, float], ...] = ()
 
 
 def _load_eon():
@@ -369,7 +374,20 @@ class EONBackend:
                 results = _results(Path("results.dat"))
             message = results.get("termination_reason_text", "")
             metadata["force_calls"] = int(results.get("total_force_calls", 0))
-            if int(results["termination_reason"]) != 0:
+            reason = int(results["termination_reason"])
+            if reason in _AFTER_SADDLE:
+                return ProcessResult(
+                    "failed",
+                    message,
+                    saddle=_moved(source, job.saddle.positions),
+                    saddle_energy=float(results["potential_energy_saddle"]),
+                    metadata=metadata,
+                    minima=tuple(
+                        (_moved(source, side.positions), float(side.potential_energy))
+                        for side in (job.min1, job.min2)
+                    ),
+                )
+            if reason != 0:
                 return ProcessResult("failed", message, metadata=metadata)
             return ProcessResult(
                 "good",

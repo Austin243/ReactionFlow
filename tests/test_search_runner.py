@@ -159,6 +159,36 @@ def test_same_state_and_out_of_window_results_do_not_build_confidence(tmp_path):
     assert state["current"] == "state-000001"
 
 
+def test_a_search_rejected_after_its_saddle_keeps_the_saddle_minima_and_bond_changes(tmp_path):
+    class Rejected(TwoStates):
+        """The first search reaches a saddle whose minima are CH and C and H apart."""
+
+        def search(self, atoms, *, seed):
+            if self.calls:
+                return super().search(atoms, seed=seed)
+            self.calls.append((0, seed))
+            saddle, apart = atoms.copy(), atoms.copy()
+            saddle.positions[1, 0], apart.positions[1, 0] = 1.8, 3.0
+            minima = ((atoms.copy(), 0.01), (apart, 0.4))
+            message = "Saddle is not connected to initial state"
+            return ProcessResult("failed", message, saddle=saddle, saddle_energy=0.8, minima=minima)
+
+    start = Atoms("CH", positions=[[0, 0, 0], [1.09, 0, 0]], cell=[4, 4, 4])
+    config = AKMCConfig(steps=1, confidence=0.5)
+    state = run_exploration(
+        tmp_path, start, backend=Rejected(), contract={"model": "fixture"}, config=config
+    )
+    assert state["steps"] == 1 and state["attempts"] == 4
+    rejected = SearchStore(tmp_path).read("attempts", "attempt-000000")
+    assert rejected.data["status"] == "failed" and rejected.data["barrier_eV"] == 0.8
+    first, second = rejected.data["minima"]
+    assert first == {"energy_eV": 0.01, "bonds": {"formed": [], "broken": []}}
+    assert second["energy_eV"] == 0.4
+    assert second["bonds"] == {"formed": [], "broken": [{"atom_ids": [0, 1], "elements": "C-H"}]}
+    assert set(rejected.structures) == {"saddle", "minimum_1", "minimum_2"}
+    assert rejected.structures["minimum_2"].positions[1, 0] == pytest.approx(3.0)
+
+
 def test_changed_settings_and_second_writers_are_refused(tmp_path):
     run(tmp_path, TwoStates(), steps=1)
     with pytest.raises(ValueError, match="changed"):
