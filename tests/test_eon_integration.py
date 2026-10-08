@@ -61,6 +61,21 @@ class FreeWell(Calculator):
         self.results = {"energy": energy, "forces": np.array([force, -force])}
 
 
+class Springs(Calculator):
+    """Free atoms held to their sites by springs of 1 eV/Å²."""
+
+    implemented_properties = ("energy", "forces")
+
+    def __init__(self, sites: np.ndarray):
+        super().__init__()
+        self.sites = sites
+
+    def calculate(self, atoms=None, properties=None, system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        offset = atoms.positions - self.sites
+        self.results = {"energy": 0.5 * float((offset**2).sum()), "forces": -offset}
+
+
 def frequency(curvature: float, mass: float) -> float:
     """Frequency in 1/s of a `mass` u on a spring of `curvature` eV/Å²."""
 
@@ -90,6 +105,18 @@ def test_real_eon_finds_analytic_barriers_and_harmonic_prefactors():
     assert result.product.positions[1, 0] - 5 == pytest.approx(1, abs=0.01)
     assert result.saddle.info == atoms.info
     np.testing.assert_array_equal(result.product.arrays["atom_id"], atoms.arrays["atom_id"])
+
+
+def test_real_eon_max_atom_metric_accepts_small_forces_spread_over_many_atoms():
+    sites = np.array([[2.0 * (i % 4) + 1, 2.0 * (i // 4) + 1, 5.0] for i in range(16)])
+    # 0.005 eV/Å on each of 16 atoms, alternating in sign so they do not move as one: a force
+    # norm of 0.02, above the 0.01 tolerance, with no atom above it.
+    offsets = np.array([[0.005 * (-1) ** i, 0, 0] for i in range(16)])
+    atoms = assign_atom_ids(Atoms("He16", positions=sites + offsets, cell=[10] * 3, pbc=True))
+    for metric, remaining in (("norm", 0 * offsets), ("max_atom", offsets)):
+        backend = EONBackend(Springs(sites), EONSettings(force_metric=metric), temperature_K=300)
+        relaxed, _ = backend.relax(atoms)
+        np.testing.assert_allclose(relaxed.positions - sites, remaining, atol=1e-3)
 
 
 def test_real_eon_treats_rigid_rotation_of_a_free_molecule_as_no_change():

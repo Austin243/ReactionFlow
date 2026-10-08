@@ -49,6 +49,7 @@ class EONSettings:
     displace_radius_A: float = 4.0
     displace_centers: tuple = ()
     force_tolerance: float = 0.01
+    force_metric: str = "norm"
     max_iterations: int = 1000
     max_energy_eV: float = 20.0
     prefactor: float | None = None
@@ -61,6 +62,8 @@ class EONSettings:
     def __post_init__(self) -> None:
         if self.displace not in {"all", "local"}:
             raise ValueError("eon.displace must be 'all' or 'local'")
+        if self.force_metric not in {"norm", "max_atom"}:
+            raise ValueError("eon.force_metric must be 'norm' or 'max_atom'")
         if self.rigid_rotation != "auto" and type(self.rigid_rotation) is not bool:
             raise ValueError("eon.rigid_rotation must be 'auto', true, or false")
         if self.log not in {"file", "terminal"}:
@@ -275,8 +278,10 @@ class EONBackend:
             },
             "Dimer": {"remove_rotation": rotation},
             "Process Search": {"minimize_first": False},
+            # EON's saddle search takes its force tolerance and metric from here as well.
             "Optimizer": {
                 "converged_force": options.force_tolerance,
+                "convergence_metric": options.force_metric,
                 "max_iterations": options.max_iterations,
             },
             "Prefactor": {"default_value": options.prefactor or 0.0},

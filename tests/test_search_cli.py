@@ -118,6 +118,8 @@ def test_validate_plan_and_status_are_offline(tmp_path, monkeypatch, capsys):
     assert main(["validate", str(campaign(tmp_path, molecule, eon={"prefactor": 1e13}))]) == 0
     output = json.loads(capsys.readouterr().out)
     assert not output["rigid_rotation"] and "turning" in output["warnings"][0]
+    with pytest.raises(ValueError, match="force_metric"):
+        main(["validate", str(campaign(tmp_path, eon={"force_metric": "max"}))])
 
 
 def test_run_resume_and_read_only_status(tmp_path, monkeypatch, capsys):
