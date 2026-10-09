@@ -137,6 +137,16 @@ within `thermal_window_kT` of the lowest chemical barrier of its state, and bond
 processes are always kept. Without basins, a 0.05 eV methyl rotation would push every reaction
 more than 20 kT above it, 0.52 eV at 300 K, out of the rate table.
 
+EON keeps a search only when one of the two minima beside its saddle is the searched state. In
+clusters, liquids, and other soft systems the start often settles into a nearby conformer while
+the saddle search climbs, for example a water molecule turning to a better hydrogen bond. Neither
+minimum then matches the start, and EON rejects the search as not connected. With basins, such a
+search still counts when one minimum keeps every bond of the searched state and the other forms or
+breaks one: the process leads from the searched state to the second minimum. Its barrier is
+measured from the lower of the searched state and the start-side minimum, so a better conformer
+never makes a barrier look lower. Its prefactors come from the start-side minimum, or are the fixed
+`prefactor`. The attempt records the start-side energy and the process keeps its structure.
+
 ## Symmetry
 
 A motion that changes nothing physical must not count as a new state or a new process, and it has
@@ -173,8 +183,9 @@ The output directory holds the model/settings contract in `search-contract.json`
 `attempts/`, and `steps/`. A process record keeps its saddle, product, barrier, prefactors, and
 bond changes; the reverse of each process is recorded for the product state. An attempt that EON
 rejected after its saddle converged keeps the saddle, both minima with their energies, and the
-bonds each minimum forms and breaks relative to the searched state; `status` counts them. One
-process writes an exploration at a time.
+bonds each minimum forms and breaks relative to the searched state; `status` counts them. With
+basins, such a search can still become a process (see Chemical basins). One process writes an
+exploration at a time.
 
 Resume checks bind the starting structure, settings, the model identity that an MD restart also
 records, and the search code. To compare different settings, copy the campaign and choose a new
