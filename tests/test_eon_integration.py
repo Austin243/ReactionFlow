@@ -171,6 +171,18 @@ def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect(
     np.testing.assert_array_equal(result.saddle.arrays["atom_id"], atoms.arrays["atom_id"])
 
 
+@pytest.mark.parametrize(
+    "push",
+    [{"displace": "local", "displace_centers": [0, "Ar"]}, {"guide": {"form": ["Ne-Ne"]}}],
+)
+def test_real_eon_reports_a_push_that_selects_nothing(push):
+    positions = [[5, 5, 5], [4.0, 5, 5], [5.3, 5, 8]]
+    atoms = assign_atom_ids(Atoms("He2Ne", positions=positions, cell=[12] * 3, pbc=True))
+    atoms.set_constraint(FixAtoms(indices=[0]))
+    backend = EONBackend(WellAndSpring(), EONSettings(**push), temperature_K=300)
+    assert backend.search(atoms, seed=0).status == "no_push"
+
+
 @pytest.mark.parametrize("symbols", ["He2", "HeNe"])
 def test_real_eon_treats_rigid_rotation_of_a_free_molecule_as_no_change(symbols):
     atoms = assign_atom_ids(Atoms(symbols, positions=[[5, 5, 5], [6.0, 5.3, 5]], cell=[12] * 3))

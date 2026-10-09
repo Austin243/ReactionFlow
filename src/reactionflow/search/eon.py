@@ -145,7 +145,8 @@ class EONSettings:
 @dataclass(frozen=True)
 class ProcessResult:
     """One EON process search. Prefactors are in 1/s, energies in eV. A search that EON rejects
-    after its saddle converged keeps the saddle and the minima reached from it, with energies."""
+    after its saddle converged keeps the saddle and the minima reached from it, with energies.
+    Status "no_push" means the state has no atom or pair the push settings select."""
 
     status: str
     message: str
@@ -415,8 +416,9 @@ class EONBackend:
         matter.fixed = np.repeat(fixed[:, None], 3, axis=1).astype(np.int32)
         return matter, potential
 
-    def _push(self, atoms: Atoms, fixed: np.ndarray, seed: int) -> tuple[int, float, float]:
-        """Choose the push center and give EON the Gaussian width for the requested size."""
+    def _push(self, atoms: Atoms, fixed: np.ndarray, seed: int) -> tuple[int, float, float] | None:
+        """Choose the push center and give EON the Gaussian width for the requested size, or
+        return None when no free atom matches `displace_centers`."""
 
         free = np.flatnonzero(~fixed)
         candidates = free
@@ -426,7 +428,7 @@ class EONBackend:
             wanted = set(options.displace_centers)
             candidates = np.array([i for i in free if i in wanted or symbols[i] in wanted], int)
             if not len(candidates):
-                raise ValueError("no free atom matches eon.displace_centers")
+                return None
         center = int(np.random.default_rng(seed).choice(candidates))
         if options.displace == "all":
             radius, moved = 1e6, len(free)
@@ -459,7 +461,12 @@ class EONBackend:
             fixed = validate_start(source)
             if self.settings.guide is not None:
                 return self._guided(source, fixed, seed, metadata)
-            center, radius, size = self._push(source, fixed, seed)
+            push = self._push(source, fixed, seed)
+            if push is None:
+                return ProcessResult(
+                    "no_push", "no free atom matches eon.displace_centers", metadata=metadata
+                )
+            center, radius, size = push
             metadata.update(center=center, displace_magnitude_A=size)
             parameters = self._parameters(
                 seed=seed,
@@ -515,7 +522,7 @@ class EONBackend:
 
         push = guided_push(source, fixed, self.settings, np.random.default_rng(seed))
         if push is None:
-            return ProcessResult("failed", "no pair of the guide's elements", metadata=metadata)
+            return ProcessResult("no_push", "no pair of the guide's elements", metadata=metadata)
         positions, mode, metadata["pair"] = push
         parameters = self._parameters(seed=seed, rotation=self.settings.rotation_for(source))
         matter, potential = self._matter(source, fixed, parameters)
