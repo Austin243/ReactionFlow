@@ -16,7 +16,7 @@ from ase.calculators.calculator import Calculator, all_changes
 from ase.constraints import FixAtoms
 
 from reactionflow.detection import assign_atom_ids
-from reactionflow.search.eon import EONBackend, EONSettings
+from reactionflow.search.eon import NOT_CONNECTED, EONBackend, EONSettings
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("REACTIONFLOW_TEST_EON") != "1",
@@ -106,12 +106,14 @@ def first_good(backend, start):
     return good[0]
 
 
-def test_real_eon_finds_analytic_barriers_and_harmonic_prefactors():
+# A guided push of the He pair climbs to the same saddle as EON's own random push.
+@pytest.mark.parametrize("guide", [None, {"form": ["He-He"]}])
+def test_real_eon_finds_analytic_barriers_and_harmonic_prefactors(guide):
     atoms = assign_atom_ids(Atoms("He2", positions=[[5, 5, 5], [4.1, 5.05, 5]], cell=[12] * 3))
     atoms.pbc = True
     atoms.set_constraint(FixAtoms(indices=[0]))
     atoms.info.update(charge=0, spin=1)
-    backend = EONBackend(AnchoredWell(), EONSettings(), temperature_K=300)
+    backend = EONBackend(AnchoredWell(), EONSettings(guide=guide), temperature_K=300)
     start, energy = backend.relax(atoms)
     assert energy == pytest.approx(0.8 * 2 / 3, abs=1e-4)
     result = first_good(backend, start)
@@ -139,21 +141,26 @@ def test_real_eon_max_atom_metric_accepts_small_forces_spread_over_many_atoms():
         np.testing.assert_allclose(relaxed.positions - sites, remaining, atol=1e-3)
 
 
-def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect():
+@pytest.mark.parametrize(
+    "push",
+    [
+        {"displace": "local", "displace_centers": [1], "displace_radius_A": 0.5},
+        {"guide": {"form": ["He-He"]}},
+    ],
+)
+def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect(push):
     # The third atom starts 0.3 Å from its site and relaxes there on both sides of the saddle,
     # so neither minimum matches the start.
     positions = [[5, 5, 5], [4.0, 5, 5], [5.3, 5, 8]]
     atoms = assign_atom_ids(Atoms("He2Ne", positions=positions, cell=[12] * 3, pbc=True))
     atoms.set_constraint(FixAtoms(indices=[0]))
-    settings = EONSettings(
-        displace="local", displace_centers=[1], displace_radius_A=0.5, prefactor=1e13
-    )
-    backend = EONBackend(WellAndSpring(), settings, temperature_K=300)
+    backend = EONBackend(WellAndSpring(), EONSettings(**push, prefactor=1e13), temperature_K=300)
     results = [backend.search(atoms, seed=seed) for seed in range(8)]
     rejected = [result for result in results if "not connected" in result.message]
     assert rejected, [result.message for result in results]
     result = rejected[0]
     assert result.status == "failed" and result.saddle_energy == pytest.approx(1.0795, abs=1e-3)
+    assert result.metadata["termination_reason"] == NOT_CONNECTED
     assert result.saddle.positions[1, 0] - 5 == pytest.approx(-0.2, abs=0.01)
     sides = sorted((side.positions[1, 0] - 5, energy) for side, energy in result.minima)
     assert sides == [

@@ -3,7 +3,9 @@
 The supported interface is pyeonclient 0.4.2, the EON 3.5.0 client. One search is EON's own
 ProcessSearchJob: a random push, a min-mode saddle search, relaxation of both sides along the
 saddle mode, the check that exactly one side is the starting minimum, the barriers, and harmonic
-transition-state prefactors. States are compared with EON's structure comparison.
+transition-state prefactors. A guided search pushes one chosen atom pair instead and runs the same
+steps from EON's saddle search, dimer, and relaxation. States are compared with EON's structure
+comparison.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import contextlib
 import copy
 import math
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from importlib import import_module
 from importlib.metadata import version
@@ -23,16 +26,30 @@ import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.constraints import FixAtoms
-from ase.geometry import get_distances
+from ase.geometry import find_mic, get_distances
+from ase.neighborlist import neighbor_list
 
 from .._durable import file_digest
-from ..detection import atom_ids, canonical_copy
+from ..detection import BondDetectorConfig, _element_pair, atom_ids, canonical_copy, classify_bonds
 
 EON_VERSION = "0.4.2"
 # EON ends a search with these after its saddle converged: 6 not connected to the start,
 # 7 prefactors out of range, 9 minimizations from the saddle not converged, 10 Hessian failed.
 NOT_CONNECTED = 6
 _AFTER_SADDLE = {NOT_CONNECTED, 7, 9, 10}
+# EON's own words for the endings a guided search reports itself.
+_ENDINGS = {
+    0: "Success",
+    3: "Barrier too high",
+    5: "Too many iterations",
+    NOT_CONNECTED: "Saddle is not connected to initial state",
+    7: "Prefactors not within window",
+    9: "Minimizations from saddle did not converge",
+}
+# A guided push also moves every free atom this far in total, so a pair picked again starts a
+# little differently; both sides of a guided saddle are relaxed from EON's default offset.
+_JITTER_A = 0.1
+_OFFSET_A = 0.2
 
 
 def _number(value: object, name: str, *, integer: bool = False) -> float:
@@ -44,14 +61,31 @@ def _number(value: object, name: str, *, integer: bool = False) -> float:
     return int(value) if integer else float(value)
 
 
+def _guide(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or not set(value) <= {"form", "break", "within_A"}:
+        raise ValueError("eon.guide takes 'form', 'break', and 'within_A'")
+    guide: dict[str, Any] = {}
+    for kind in ("form", "break"):
+        pairs = value.get(kind, [])
+        if isinstance(pairs, str) or not isinstance(pairs, (list, tuple)):
+            raise ValueError(f"eon.guide.{kind} must be a list of element pairs such as 'C-N'")
+        guide[kind] = sorted({"-".join(_element_pair(pair)) for pair in pairs})
+    if not guide["form"] and not guide["break"]:
+        raise ValueError("eon.guide needs an element pair to form or break")
+    guide["within_A"] = _number(value.get("within_A", 3.5), "guide.within_A")
+    return guide
+
+
 @dataclass(frozen=True)
 class EONSettings:
-    """Search settings. The push covers every free atom unless `displace` is "local"."""
+    """Search settings. The push covers every free atom unless `displace` is "local"; with a
+    `guide` it moves one atom pair of the listed elements together or apart."""
 
     displace: str = "all"
     displace_size_A: float = 0.5
     displace_radius_A: float = 4.0
     displace_centers: tuple = ()
+    guide: Mapping | None = None
     force_tolerance: float = 0.01
     force_metric: str = "norm"
     max_iterations: int = 1000
@@ -95,6 +129,10 @@ class EONSettings:
         object.__setattr__(self, "displace_centers", tuple(centers))
         if type(self.equivalent_atoms) is not bool:
             raise ValueError("eon.equivalent_atoms must be true or false")
+        if self.guide is not None:
+            object.__setattr__(self, "guide", _guide(self.guide))
+            if self.displace != "all" or self.displace_centers:
+                raise ValueError("eon.guide replaces the random push; leave displace unset")
 
     def rotation_for(self, atoms: Atoms) -> bool:
         """EON can treat rigid rotation as a symmetry only when no atom is fixed."""
@@ -171,6 +209,68 @@ def free_rotation(atoms: Atoms) -> str | None:
     if len(anchors) >= 3 and np.linalg.matrix_rank(anchors, tol=1e-3) >= 2:
         return None
     return "pinned"
+
+
+def guided_push(
+    atoms: Atoms, fixed: np.ndarray, settings: EONSettings, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
+    """Positions, starting direction, and record of a push that moves one pair of the guide's
+    elements together or apart, or None when the structure has no such pair.
+
+    A pair to form is unbonded, within `within_A`, and shares no bonded neighbor; a pair to break
+    is bonded, by the bond distances of reaction detection. The pair moves `displace_size_A`
+    along its axis, split by mass, and every free atom gets a small random push as well.
+    """
+
+    guide = settings.guide
+    symbols = atoms.get_chemical_symbols()
+    ids = atom_ids(atoms)
+    index = {atom_id: number for number, atom_id in enumerate(ids)}
+    bonded = {
+        tuple(sorted(index[i] for i in bond))
+        for bond in classify_bonds(atoms, BondDetectorConfig())[0]
+    }
+    neighbors: list[set[int]] = [set() for _ in atoms]
+    for i, j in bonded:
+        neighbors[i].add(j)
+        neighbors[j].add(i)
+
+    def elements(i: int, j: int) -> str:
+        return "-".join(sorted((symbols[i], symbols[j])))
+
+    pairs = [
+        (i, j, vector, 1.0)
+        for i, j, vector in zip(*neighbor_list("ijD", atoms, guide["within_A"]), strict=True)
+        if i < j
+        and elements(i, j) in guide["form"]
+        and (i, j) not in bonded
+        and not neighbors[i] & neighbors[j]
+    ]
+    pairs += [
+        (i, j, atoms.get_distance(i, j, mic=True, vector=True), -1.0)
+        for i, j in sorted(bonded)
+        if elements(i, j) in guide["break"]
+    ]
+    pairs = [pair for pair in pairs if not (fixed[pair[0]] and fixed[pair[1]])]
+    if not pairs:
+        return None
+    i, j, vector, sign = pairs[rng.integers(len(pairs))]
+    masses = atoms.get_masses()
+    # Each atom moves in proportion to the other's mass, and a fixed atom not at all.
+    share = np.array([masses[j], masses[i]]) * ~fixed[[i, j]]
+    share /= share.sum()
+    unit = vector / np.linalg.norm(vector)
+    mode = np.zeros((len(atoms), 3))
+    mode[i], mode[j] = sign * share[0] * unit, -sign * share[1] * unit
+    positions = atoms.positions + settings.displace_size_A * mode
+    free = np.flatnonzero(~fixed)
+    positions[free] += rng.normal(0.0, _JITTER_A / math.sqrt(3 * len(free)), (len(free), 3))
+    record = {
+        "push": "form" if sign > 0 else "break",
+        "atom_ids": [int(ids[i]), int(ids[j])],
+        "elements": elements(i, j),
+    }
+    return positions, mode / np.linalg.norm(mode), record
 
 
 class _PreservingCalculator(Calculator):
@@ -357,6 +457,8 @@ class EONBackend:
         try:
             source = canonical_copy(atoms)
             fixed = validate_start(source)
+            if self.settings.guide is not None:
+                return self._guided(source, fixed, seed, metadata)
             center, radius, size = self._push(source, fixed, seed)
             metadata.update(center=center, displace_magnitude_A=size)
             parameters = self._parameters(
@@ -406,6 +508,70 @@ class EONBackend:
             )
         except Exception as error:
             return ProcessResult("failed", f"{type(error).__name__}: {error}", metadata=metadata)
+
+    def _guided(self, source: Atoms, fixed: np.ndarray, seed: int, metadata: dict) -> ProcessResult:
+        """A guided push, EON's saddle search along it, both sides relaxed along the saddle's own
+        mode, and the checks and prefactors of EON's own search."""
+
+        push = guided_push(source, fixed, self.settings, np.random.default_rng(seed))
+        if push is None:
+            return ProcessResult("failed", "no pair of the guide's elements", metadata=metadata)
+        positions, mode, metadata["pair"] = push
+        parameters = self._parameters(seed=seed, rotation=self.settings.rotation_for(source))
+        matter, potential = self._matter(source, fixed, parameters)
+        energy = float(matter.potential_energy)
+        matter.positions = positions
+        saddle, status = self._eon.min_mode_saddle_search(
+            matter, np.ascontiguousarray(mode), energy, parameters, potential
+        )
+        metadata["termination_reason"] = status.value
+        if status.value != 0:
+            return ProcessResult(
+                "failed", _ENDINGS.get(status.value, status.name), metadata=metadata
+            )
+        # The saddle's lowest mode, converged from the direction the search climbed. EON wraps
+        # atoms into the cell, so the climb is taken by the minimum image.
+        dimer = self._eon.ImprovedDimer(saddle, parameters, potential)
+        climb, _ = find_mic(
+            np.asarray(saddle.positions) - source.positions, source.cell, source.pbc
+        )
+        dimer.compute(saddle, np.ascontiguousarray(climb / np.linalg.norm(climb)))
+        axis = np.asarray(dimer.eigenvector).reshape(-1, 3)
+        axis /= np.linalg.norm(axis)
+        minima, converged = [], True
+        for sign in (1, -1):
+            side, _ = self._matter(source, fixed, parameters)
+            side.positions = np.asarray(saddle.positions) + sign * _OFFSET_A * axis
+            relaxed, done = side.relax()
+            minima.append((_moved(source, relaxed.positions), float(relaxed.potential_energy)))
+            converged = converged and bool(done)
+        reached = {
+            "saddle": _moved(source, saddle.positions),
+            "saddle_energy": float(saddle.potential_energy),
+        }
+        at_start = [self.same(source, energy, *minimum) for minimum in minima]
+        # As in EON, a saddle joins the start when exactly one side is the start.
+        code = 9 if not converged else 0 if sum(at_start) == 1 else NOT_CONNECTED
+        if code == 0:
+            product, product_energy = minima[1] if at_start[0] else minima[0]
+            prefactors = self.prefactors(source, reached["saddle"], product)
+            code = 7 if prefactors is None else 0
+        metadata["termination_reason"] = code
+        if code:
+            return ProcessResult(
+                "failed", _ENDINGS[code], metadata=metadata, minima=tuple(minima), **reached
+            )
+        return ProcessResult(
+            "good",
+            _ENDINGS[0],
+            product=product,
+            reactant_energy=energy,
+            product_energy=product_energy,
+            prefactor=prefactors[0],
+            reverse_prefactor=prefactors[1],
+            metadata=metadata,
+            **reached,
+        )
 
     def prefactors(self, first: Atoms, saddle: Atoms, second: Atoms) -> tuple[float, float] | None:
         """EON's harmonic prefactors from `first` over `saddle` to `second` and back, or None when
