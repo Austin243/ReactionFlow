@@ -90,9 +90,10 @@ then requires exactly one visible CUDA device.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `displace` | `"all"` | Push every free atom, or `"local"`: only atoms near one chosen atom |
-| `displace_size_A` | 0.5 | Total length of the random push, in Å |
+| `displace_size_A` | 0.5 | Total length of the random push, or how far a guided pair moves, in Å |
 | `displace_radius_A` | 4.0 | Local push: atoms within this distance of the center move |
 | `displace_centers` | `[]` | Local push: element symbols or atom indices the center is chosen from; empty means any free atom |
+| `guide` | `null` | Push one atom pair of listed element types together or apart instead of the random push; see Guided searches |
 | `force_tolerance` | 0.01 | Convergence of saddle searches and relaxations, eV/Å |
 | `force_metric` | `"norm"` | What `force_tolerance` bounds: the norm of the whole force vector, or `"max_atom"`: the largest force on any atom |
 | `max_iterations` | 1000 | Limit for each saddle search and relaxation |
@@ -146,6 +147,30 @@ breaks one: the process leads from the searched state to the second minimum. Its
 measured from the lower of the searched state and the start-side minimum, so a better conformer
 never makes a barrier look lower. Its prefactors come from the start-side minimum, or are the fixed
 `prefactor`. The attempt records the start-side energy and the process keeps its structure.
+
+## Guided searches
+
+A random push seldom finds a reaction in a molecular system: most saddles near the start move
+whole molecules, while a reaction needs two particular atoms to meet or part. When you know which
+bonds the chemistry makes or breaks, name their element pairs and each search pushes one such pair
+instead:
+
+```json
+"eon": {"guide": {"form": ["C-N", "C-C"], "break": ["C-H"], "within_A": 3.5}}
+```
+
+A search picks one pair at random among all that match. A pair to form is not bonded, is closer
+than `within_A` (3.5 Å by default), and has no bonded neighbor in common, which leaves out atoms
+already joined through a third. A pair to break is bonded. Bonds use the default distances of MD
+reaction detection. The pair moves `displace_size_A` closer or apart, each atom in proportion to
+the other's mass and a fixed atom not at all, and a random push of 0.1 Å in total over the free
+atoms makes a pair picked again start differently. The dimer starts along the pair's motion. The
+rest is EON's own search: both sides of the saddle are relaxed 0.2 Å along its mode, compared
+with the start, and given prefactors. The potential decides what each push becomes, so a guide
+only says which bonds to try. The attempt records the pair it pushed.
+
+In clusters and liquids the start usually settles into a nearby conformer during a guided search,
+so use `guide` with `basins: "bonds"` (see Chemical basins).
 
 ## Symmetry
 
