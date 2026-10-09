@@ -149,6 +149,17 @@ def test_run_resume_and_read_only_status(tmp_path, monkeypatch, capsys):
     assert before == after
 
 
+def test_a_field_on_a_freely_turning_molecule_needs_rotation_kept(tmp_path, monkeypatch):
+    from reactionflow.adapters.ase import ASECalculatorAdapter
+
+    monkeypatch.setattr(ASECalculatorAdapter, "external_field", lambda self, atoms: np.ones(3))
+    monkeypatch.setattr(search_cli, "EONBackend", Backend)
+    molecule = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]], cell=[12, 12, 12])
+    path = campaign(tmp_path, molecule, eon={"prefactor": 1e13})
+    with pytest.raises(ValueError, match="rigid_rotation false"):
+        main(["run", str(path)])
+
+
 def test_status_counts_failed_searches_that_kept_a_saddle(tmp_path, monkeypatch, capsys):
     class Rejected(Backend):
         def search(self, atoms, *, seed):

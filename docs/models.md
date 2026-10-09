@@ -153,6 +153,9 @@ This adapter does not add an extra D3 correction to MACE predictions.
 Choose `polar-1-s`, `polar-1-m`, or `polar-1-l`. Structures need explicit integer `charge` and
 positive integer `spin` (multiplicity) in `atoms.info`. Optional `atoms.info['external_field']` is a finite
 three-vector in V/Å; omitted means zero. Changes to these inputs invalidate cached predictions.
+A nonzero field has a direction in the laboratory frame, which pathway refinement and EON must
+keep: under pressure the cell must be lower-triangular (as `cell.standard_form()` gives) with
+hydrostatic NPT, and EON needs `rigid_rotation: false` for a freely turning structure.
 
 NPT and variable-cell refinement are supported with `dtype: "float64"`. The pinned upstream
 stress omits part of the long-range response, matching
@@ -187,6 +190,7 @@ so preparation installs the separately tested graph_longrange 0.4.0 revision abo
 The published checkpoint has `pt_head`, `mp-dielectric`, and `mp-ferroelectric` heads. Both `head`
 and a finite `electric_field` three-vector in V/Å are explicit options, including a zero field.
 The field stays fixed across MD, endpoint relaxation, and NEB and is part of the restart contract.
+A nonzero field has the same cell and EON requirements as MACE-POLAR's.
 The structure needs a cell with nonzero volume for the dielectric observables. Reported energies
 are electric enthalpies at the configured field; NPT refinement additionally includes PV.
 The fork's source revision is checked; official MACE cannot substitute for it. See the

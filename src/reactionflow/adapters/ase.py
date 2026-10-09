@@ -108,8 +108,24 @@ class ASELangevinBAOABAdapter:
     def _lease(self) -> AbstractContextManager[tuple[Calculator, ComponentState]]:
         raise NotImplementedError
 
+    def external_field(self, atoms: Atoms) -> np.ndarray:
+        """The laboratory-frame electric field the model sees, in V/Å."""
+
+        return np.zeros(3)
+
     def _dynamics(self, atoms: Atoms, calculator: Calculator) -> LangevinBAOAB:
         conditions = self.trajectory.conditions
+        if self.trajectory.pressure_GPa is not None and self.external_field(atoms).any():
+            # SSNEB rotates each endpoint cell into lower-triangular form but cannot rotate the
+            # field with it, so the cell must start in that form and keep its shape.
+            _, rotation = atoms.cell.standard_form()
+            if not bool(conditions.get("hydrostatic", True)) or not np.allclose(
+                rotation, np.eye(3)
+            ):
+                raise ValueError(
+                    "an external field under pressure needs hydrostatic NPT and a "
+                    "lower-triangular cell; rotate the structure and field together first"
+                )
         rng = np.random.default_rng(self.trajectory.seed)
         atoms.calc = calculator
         if "momenta" not in atoms.arrays:

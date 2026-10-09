@@ -273,3 +273,23 @@ def test_exact_restart_rejects_changed_field_head_and_weights(tmp_path, monkeypa
     changed = mace_field.create_adapter(trajectory=_trajectory(), options=options)
     with pytest.raises(ValueError, match="environment differs"), changed.restore(partial):
         pass
+
+
+def test_field_under_pressure_needs_a_cell_that_pathways_do_not_rotate(
+    tmp_path, monkeypatch, backend
+):
+    monkeypatch.setattr(_torch, "_load_torch", lambda device: backend.torch)
+    monkeypatch.setattr(_torch, "_torch_environment", lambda torch, device: {"device": device})
+    monkeypatch.setattr(_torch, "_preserve_rng", lambda torch: nullcontext())
+    monkeypatch.setattr(_torch, "version", lambda name: "fake-version")
+    # SSNEB would rotate this cell's a vector onto x, and the molecule with it, but not the field.
+    tilted = _atoms()
+    tilted.set_cell([[0, 5, 0], [-5, 0, 0], [0, 0, 5]], scale_atoms=True)
+    adapter = mace_field.create_adapter(trajectory=_trajectory(), options=_options(tmp_path))
+    with pytest.raises(ValueError, match="lower-triangular cell"), adapter.start(tilted):
+        pass
+    zero = mace_field.create_adapter(
+        trajectory=_trajectory(), options={**_options(tmp_path), "electric_field": [0, 0, 0]}
+    )
+    with zero.start(tilted) as runtime:
+        runtime.run(1)
