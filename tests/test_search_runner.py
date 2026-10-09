@@ -166,6 +166,16 @@ def test_same_state_and_out_of_window_results_do_not_build_confidence(tmp_path):
     assert state["current"] == "state-000001"
 
 
+def test_a_new_reverse_process_resets_the_confidence_of_its_state(tmp_path):
+    # A reaches confidence and steps to B. B's first search finds a second, lower route back to A,
+    # which gives A a new exit: A must be searched again before it steps.
+    backend = TwoStates(script={3: (0.7, 0, 0.4)})
+    state = run(tmp_path, backend, steps=2)
+    assert state["current"] == "state-000000"
+    assert state["states"]["state-000000"]["repeats"] == 0
+    assert len(state["states"]["state-000000"]["processes"]) == 2
+
+
 def test_a_search_rejected_after_its_saddle_keeps_the_saddle_minima_and_bond_changes(tmp_path):
     class Rejected(TwoStates):
         """The first search reaches a saddle whose minima are CH and C and H apart."""
