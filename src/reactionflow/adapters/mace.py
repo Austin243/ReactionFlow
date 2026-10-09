@@ -250,6 +250,11 @@ class MACEAdapter(TorchModelAdapter):
             kind="reactionflow.mace",
         )
 
+    def external_field(self, atoms: Atoms) -> np.ndarray:
+        if self.options.get("family") != "polar":
+            return np.zeros(3)
+        return np.asarray(atoms.info.get("external_field", [0.0, 0.0, 0.0]), dtype=float)
+
     def _new_calculator(self) -> Calculator:
         require_package("mace-torch", MACE_VERSION, "mace")
         require_package("e3nn", "0.4.4", "mace")

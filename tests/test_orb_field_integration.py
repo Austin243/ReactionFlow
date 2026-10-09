@@ -59,6 +59,8 @@ def test_real_orb_field_restart_is_bitwise_identical(backend, periodic, monkeypa
         else:
             options.update(head="mp-dielectric", electric_field=[0, 0, 0.01], dtype="float64")
             atoms = bulk("NaCl", "rocksalt", a=5.64)
+            # A field under pressure needs the lower-triangular cell pathways use.
+            atoms.set_cell(atoms.cell.standard_form()[0], scale_atoms=True)
         adapter = module.create_adapter(trajectory=trajectory, options=options)
         adapter.preflight(atoms)
         with adapter.start(atoms.copy()) as runtime:

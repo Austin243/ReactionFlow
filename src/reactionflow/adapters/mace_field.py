@@ -11,6 +11,7 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
@@ -143,6 +144,9 @@ class MACEFieldAdapter(TorchModelAdapter):
 
     def preflight(self, atoms: Atoms) -> None:
         _validate_atoms(atoms)
+
+    def external_field(self, atoms: Atoms) -> np.ndarray:
+        return np.asarray(self.options["electric_field"], dtype=float)
 
     def _new_calculator(self) -> Calculator:
         _require_fork()
