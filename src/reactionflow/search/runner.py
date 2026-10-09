@@ -9,7 +9,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from ase.io.jsonio import encode
 from .._durable import ensure_directory, file_digest, publish, sync_directory
 from ..detection import canonical_copy
 from .akmc import AKMCConfig, basin_escape, confidence, in_window, kmc_step, rate
-from .eon import validate_start
+from .eon import NOT_CONNECTED, ProcessResult, validate_start
 from .labels import bond_changes, reversed_changes
 from .records import SearchStore
 
@@ -142,6 +142,37 @@ def _reverse(
     return reverse_id
 
 
+def _joined_by_bonds(
+    backend: Any, result: ProcessResult, start: Atoms
+) -> tuple[ProcessResult, Atoms, float] | None:
+    """A search EON rejects because neither minimum matches the start still leaves the start's
+    chemical basin when one minimum keeps the start's bonds and the other changes them: on its way
+    to the saddle the start settled into another conformer. Return the search as a process to the
+    changed minimum, with the kept minimum and its energy."""
+
+    if result.metadata.get("termination_reason") != NOT_CONNECTED:
+        return None
+    kept, changed = [], []
+    for minimum, value in result.minima:
+        internal = is_internal({"bonds": bond_changes(start, minimum)})
+        (kept if internal else changed).append((minimum, value))
+    if len(kept) != 1 or len(changed) != 1:
+        return None
+    (side, side_energy), (product, product_energy) = kept[0], changed[0]
+    prefactors = backend.prefactors(side, result.saddle, product)
+    if prefactors is None:
+        return None
+    joined = replace(
+        result,
+        status="good",
+        product=product,
+        product_energy=product_energy,
+        prefactor=prefactors[0],
+        reverse_prefactor=prefactors[1],
+    )
+    return joined, side, side_energy
+
+
 def _attempt(
     store: SearchStore, state: dict[str, Any], active: dict[str, Any], backend: Any, config
 ) -> tuple[dict[str, Any], dict[str, Atoms]]:
@@ -160,6 +191,14 @@ def _attempt(
     data: dict[str, Any] = dict(active)
     result = backend.search(origin.structures["atoms"].copy(), seed=active["seed"])
     data.update(backend=result.metadata, message=result.message)
+    reference, extra = energy, {}
+    if config.basins == "bonds" and result.status != "good" and result.minima:
+        joined = _joined_by_bonds(backend, result, origin.structures["atoms"])
+        if joined is not None:
+            result, start_side, data["start_side_energy_eV"] = joined
+            # A better conformer must not make the barrier look lower than it is.
+            reference = min(energy, data["start_side_energy_eV"])
+            extra = {"start_side": start_side}
     if result.status != "good":
         if not result.minima:
             return {**data, "status": "failed"}, {}
@@ -174,7 +213,7 @@ def _attempt(
         for number, (minimum, _) in enumerate(result.minima, 1):
             structures[f"minimum_{number}"] = minimum
         return {**data, "status": "failed"}, structures
-    barrier = result.saddle_energy - energy
+    barrier = result.saddle_energy - reference
     data["barrier_eV"] = barrier
     known = _processes(store, state["states"][origin_id]["processes"])
     bonds = bond_changes(origin.structures["atoms"], result.product)
@@ -209,7 +248,7 @@ def _attempt(
             "source": active["id"],
             "search": data,
         },
-        structures={"saddle": result.saddle, "product": result.product},
+        structures={"saddle": result.saddle, "product": result.product, **extra},
     )
     reverse = _reverse(store, backend, state, forward_id, store.read("processes", forward_id))
     return {**data, "process": forward_id, "reverse": reverse}, {}
@@ -336,8 +375,9 @@ def run_exploration(
     """Run or resume one AKMC trajectory. The caller owns the backend and its calculator.
 
     The backend relaxes, searches (`search(atoms, seed=...)` returns an EON process result), and
-    compares structures. Resume reuses every published search and step exactly once; an
-    interrupted search is retried with its saved seed.
+    compares structures; with basins it also gives the prefactors of searches joined by their
+    bonds. Resume reuses every published search and step exactly once; an interrupted search is
+    retried with its saved seed.
     """
 
     config = config or AKMCConfig()

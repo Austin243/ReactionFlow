@@ -31,7 +31,8 @@ from ..detection import atom_ids, canonical_copy
 EON_VERSION = "0.4.2"
 # EON ends a search with these after its saddle converged: 6 not connected to the start,
 # 7 prefactors out of range, 9 minimizations from the saddle not converged, 10 Hessian failed.
-_AFTER_SADDLE = {6, 7, 9, 10}
+NOT_CONNECTED = 6
+_AFTER_SADDLE = {NOT_CONNECTED, 7, 9, 10}
 
 
 def _number(value: object, name: str, *, integer: bool = False) -> float:
@@ -373,8 +374,10 @@ class EONBackend:
                 job.run_from_matter(matter)
                 results = _results(Path("results.dat"))
             message = results.get("termination_reason_text", "")
-            metadata["force_calls"] = int(results.get("total_force_calls", 0))
             reason = int(results["termination_reason"])
+            metadata.update(
+                force_calls=int(results.get("total_force_calls", 0)), termination_reason=reason
+            )
             if reason in _AFTER_SADDLE:
                 return ProcessResult(
                     "failed",
@@ -403,6 +406,25 @@ class EONBackend:
             )
         except Exception as error:
             return ProcessResult("failed", f"{type(error).__name__}: {error}", metadata=metadata)
+
+    def prefactors(self, first: Atoms, saddle: Atoms, second: Atoms) -> tuple[float, float] | None:
+        """EON's harmonic prefactors from `first` over `saddle` to `second` and back, or None when
+        EON cannot compute them or they fall outside its accepted range. A fixed `prefactor` is
+        returned as is."""
+
+        if self.settings.prefactor is not None:
+            return self.settings.prefactor, self.settings.prefactor
+        parameters = self._parameters(seed=1, rotation=self.settings.rotation_for(first))
+        fixed = validate_start(first)
+        matters = [self._matter(atoms, fixed, parameters)[0] for atoms in (first, saddle, second)]
+        try:
+            # EON writes its Hessian and frequencies to the working directory.
+            with tempfile.TemporaryDirectory() as work, contextlib.chdir(work):
+                values = tuple(float(v) for v in self._eon.get_prefactors(parameters, *matters))
+        except Exception:
+            return None
+        low, high = parameters.prefactor_min_value, parameters.prefactor_max_value
+        return values if all(low <= value <= high for value in values) else None
 
     def same(self, first: Atoms, first_energy: float, second: Atoms, second_energy: float) -> bool:
         """EON's structure comparison, after an energy check that needs no calculation."""
