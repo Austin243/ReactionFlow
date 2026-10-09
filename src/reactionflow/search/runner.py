@@ -268,7 +268,9 @@ def _commit_attempt(state: dict[str, Any], result: dict[str, Any]) -> None:
         counters["repeats"] = 0
         product = state["states"].setdefault(result["product"], _new_counters())
         if result["reverse"]:
+            # A new exit from the product counts against its confidence as a found one would.
             product["processes"].append(result["reverse"])
+            product["repeats"] = 0
     elif result["status"] == "repeat" and result["relevant"]:
         counters["repeats"] += 1
     state["attempts"] += 1

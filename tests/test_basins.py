@@ -59,8 +59,9 @@ class Conformers:
             product, saddle_energy = ("C", CHEMICAL) if to_c else ("A", INTERNAL)
         else:
             product, saddle_energy = "B", CHEMICAL
+        # One saddle between each pair of states, whichever side the search starts from.
         saddle = place(atoms, product)
-        saddle.positions += [0.0, 0.0, 0.3]
+        saddle.positions = (saddle.positions + place(atoms, origin).positions) / 2 + [0, 0, 0.3]
         return ProcessResult(
             "good",
             "",
