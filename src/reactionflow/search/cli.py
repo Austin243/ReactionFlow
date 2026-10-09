@@ -310,6 +310,9 @@ def handle_command(arguments: argparse.Namespace) -> int:
     preflight = getattr(adapter, "preflight", None)
     if callable(preflight):
         preflight(atoms)
+    field = getattr(adapter, "external_field", None)
+    if campaign.eon.rotation_for(atoms) and callable(field) and field(atoms).any():
+        raise ValueError("an external field breaks rotation symmetry; set eon.rigid_rotation false")
     lease = getattr(adapter, "_lease", None)
     if lease is None:
         raise TypeError("EON needs a built-in model adapter or reactionflow.adapters.ase")

@@ -178,7 +178,8 @@ def test_real_polar_six_stress_components_and_npt_exact_restart() -> None:
     )
     atoms = molecule("H2O")
     atoms.rotate(31, [1, 2, 3])
-    atoms.set_cell([[4.6, 0.2, 0.1], [0.3, 4.8, 0.4], [0.2, 0.1, 5.0]])
+    # Triclinic, and lower-triangular so pathway refinement would not rotate it under the field.
+    atoms.set_cell([[4.6, 0.0, 0.0], [0.3, 4.8, 0.0], [0.2, 0.1, 5.0]])
     atoms.center()
     atoms.pbc = True
     atoms.info.update(charge=0, spin=1, external_field=[0.02, -0.01, 0.015])
