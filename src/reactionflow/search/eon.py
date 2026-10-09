@@ -431,8 +431,12 @@ class EONBackend:
 
         if abs(first_energy - second_energy) > self.settings.match_energy_eV:
             return False
-        parameters = self._comparison[self.settings.rotation_for(first)]
+        rotation = self.settings.rotation_for(first)
         matters = [
-            self._matter(atoms, validate_start(atoms), parameters)[0] for atoms in (first, second)
+            self._matter(atoms, validate_start(atoms), self._comparison[rotation])[0]
+            for atoms in (first, second)
         ]
-        return bool(self._eon.structures_equal(*matters, self.settings.equivalent_atoms))
+        # EON's comparison up to both rotation and exchange matches no structure of two or more
+        # elements, not even an exact copy, so such a structure is compared up to rotation only.
+        exchange = self.settings.equivalent_atoms and not (rotation and len(set(first.numbers)) > 1)
+        return bool(self._eon.structures_equal(*matters, exchange))

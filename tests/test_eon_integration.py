@@ -164,8 +164,9 @@ def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect(
     np.testing.assert_array_equal(result.saddle.arrays["atom_id"], atoms.arrays["atom_id"])
 
 
-def test_real_eon_treats_rigid_rotation_of_a_free_molecule_as_no_change():
-    atoms = assign_atom_ids(Atoms("He2", positions=[[5, 5, 5], [6.0, 5.3, 5]], cell=[12] * 3))
+@pytest.mark.parametrize("symbols", ["He2", "HeNe"])
+def test_real_eon_treats_rigid_rotation_of_a_free_molecule_as_no_change(symbols):
+    atoms = assign_atom_ids(Atoms(symbols, positions=[[5, 5, 5], [6.0, 5.3, 5]], cell=[12] * 3))
     backend = EONBackend(FreeWell(), EONSettings(prefactor=1e13), temperature_K=300)
     start, energy = backend.relax(atoms)
     result = first_good(backend, start)
