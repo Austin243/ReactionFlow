@@ -3,7 +3,7 @@
 The supported interface is pyeonclient 0.4.2, the EON 3.5.0 client. One search is EON's own
 ProcessSearchJob: a random push, a min-mode saddle search, relaxation of both sides along the
 saddle mode, the check that exactly one side is the starting minimum, the barriers, and harmonic
-transition-state prefactors. A guided search pushes one chosen atom pair instead and runs the same
+transition-state prefactors. A guided search pushes chosen atom pairs instead and runs the same
 steps from EON's saddle search, dimer, and relaxation. States are compared with EON's structure
 comparison.
 """
@@ -61,25 +61,52 @@ def _number(value: object, name: str, *, integer: bool = False) -> float:
     return int(value) if integer else float(value)
 
 
+def _guide_entry(value: object) -> str | list[int]:
+    """An element pair as 'C-N', or two atom IDs as [i, j] with i < j."""
+
+    if isinstance(value, (list, tuple)) and all(
+        isinstance(part, Integral) and not isinstance(part, bool) for part in value
+    ):
+        if len(value) != 2 or min(value) < 0 or value[0] == value[1]:
+            raise ValueError("eon.guide atom IDs come in pairs of two different IDs >= 0")
+        return sorted(int(part) for part in value)
+    return "-".join(_element_pair(value))
+
+
 def _guide(value: object) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or not set(value) <= {"form", "break", "within_A"}:
-        raise ValueError("eon.guide takes 'form', 'break', and 'within_A'")
+    if not isinstance(value, Mapping) or not set(value) <= {
+        "form",
+        "break",
+        "within_A",
+        "together",
+    }:
+        raise ValueError("eon.guide takes 'form', 'break', 'within_A', and 'together'")
+    together = value.get("together", False)
+    if type(together) is not bool:
+        raise ValueError("eon.guide.together must be true or false")
     guide: dict[str, Any] = {}
     for kind in ("form", "break"):
         pairs = value.get(kind, [])
         if isinstance(pairs, str) or not isinstance(pairs, (list, tuple)):
-            raise ValueError(f"eon.guide.{kind} must be a list of element pairs such as 'C-N'")
-        guide[kind] = sorted({"-".join(_element_pair(pair)) for pair in pairs})
+            raise ValueError(
+                f"eon.guide.{kind} must be a list of element pairs such as 'C-N' or atom ID pairs"
+            )
+        entries = sorted(map(_guide_entry, pairs), key=lambda entry: (type(entry) is list, entry))
+        # Together, each entry is one bond to change, so an entry listed twice asks for two.
+        if not together:
+            entries = [entry for n, entry in enumerate(entries) if entry not in entries[:n]]
+        guide[kind] = entries
     if not guide["form"] and not guide["break"]:
-        raise ValueError("eon.guide needs an element pair to form or break")
+        raise ValueError("eon.guide needs an element pair or atom ID pair to form or break")
     guide["within_A"] = _number(value.get("within_A", 3.5), "guide.within_A")
+    guide["together"] = together
     return guide
 
 
 @dataclass(frozen=True)
 class EONSettings:
     """Search settings. The push covers every free atom unless `displace` is "local"; with a
-    `guide` it moves one atom pair of the listed elements together or apart."""
+    `guide` it moves chosen atom pairs together or apart."""
 
     displace: str = "all"
     displace_size_A: float = 0.5
@@ -215,12 +242,15 @@ def free_rotation(atoms: Atoms) -> str | None:
 def guided_push(
     atoms: Atoms, fixed: np.ndarray, settings: EONSettings, rng: np.random.Generator
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
-    """Positions, starting direction, and record of a push that moves one pair of the guide's
-    elements together or apart, or None when the structure has no such pair.
+    """Positions, starting direction, and record of a push that moves atom pairs together or
+    apart, or None when the structure has nothing the guide selects.
 
-    A pair to form is unbonded, within `within_A`, and shares no bonded neighbor; a pair to break
-    is bonded, by the bond distances of reaction detection. The pair moves `displace_size_A`
-    along its axis, split by mass, and every free atom gets a small random push as well.
+    A guide entry is an element pair or two atom IDs. A pair to form is unbonded, within
+    `within_A`, and shares no bonded neighbor; a pair to break is bonded, by the bond distances of
+    reaction detection. A search pushes one pair that matches any entry, or with `together` one
+    pair for every entry at once, picked so the pairs link up through shared atoms. Each pair
+    moves `displace_size_A` along its axis, split by mass, and every free atom gets a small random
+    push as well.
     """
 
     guide = settings.guide
@@ -239,39 +269,96 @@ def guided_push(
     def elements(i: int, j: int) -> str:
         return "-".join(sorted((symbols[i], symbols[j])))
 
-    pairs = [
-        (i, j, vector, 1.0)
-        for i, j, vector in zip(*neighbor_list("ijD", atoms, guide["within_A"]), strict=True)
-        if i < j
-        and elements(i, j) in guide["form"]
-        and (i, j) not in bonded
-        and not neighbors[i] & neighbors[j]
+    # Every pair a guide may push, as (i, j): (vector from i to j, 1 to form or -1 to break), with
+    # the nearest periodic image of a pair to form.
+    pairs: dict[tuple[int, int], tuple[np.ndarray, float]] = {}
+    for i, j, vector in zip(*neighbor_list("ijD", atoms, guide["within_A"]), strict=True):
+        if i >= j or (i, j) in bonded or neighbors[i] & neighbors[j]:
+            continue
+        if (i, j) not in pairs or np.linalg.norm(vector) < np.linalg.norm(pairs[i, j][0]):
+            pairs[i, j] = vector, 1.0
+    for i, j in sorted(bonded):
+        pairs[i, j] = atoms.get_distance(i, j, mic=True, vector=True), -1.0
+
+    def matches(entry: str | list[int], i: int, j: int) -> bool:
+        if isinstance(entry, str):
+            return elements(i, j) == entry
+        return sorted((ids[i], ids[j])) == entry
+
+    candidates = [
+        [
+            (i, j)
+            for (i, j), (_, sign) in pairs.items()
+            if (sign > 0) == (kind == "form")
+            and not (fixed[i] and fixed[j])
+            and matches(entry, i, j)
+        ]
+        for kind in ("form", "break")
+        for entry in guide[kind]
     ]
-    pairs += [
-        (i, j, atoms.get_distance(i, j, mic=True, vector=True), -1.0)
-        for i, j in sorted(bonded)
-        if elements(i, j) in guide["break"]
-    ]
-    pairs = [pair for pair in pairs if not (fixed[pair[0]] and fixed[pair[1]])]
-    if not pairs:
+    if guide["together"]:
+        choices = _linked_sets(candidates)
+    else:
+        wanted = {pair for found in candidates for pair in found}
+        choices = [(pair,) for pair in pairs if pair in wanted]
+    if not choices:
         return None
-    i, j, vector, sign = pairs[rng.integers(len(pairs))]
+    chosen = choices[rng.integers(len(choices))]
     masses = atoms.get_masses()
-    # Each atom moves in proportion to the other's mass, and a fixed atom not at all.
-    share = np.array([masses[j], masses[i]]) * ~fixed[[i, j]]
-    share /= share.sum()
-    unit = vector / np.linalg.norm(vector)
     mode = np.zeros((len(atoms), 3))
-    mode[i], mode[j] = sign * share[0] * unit, -sign * share[1] * unit
+    records = []
+    for i, j in chosen:
+        vector, sign = pairs[i, j]
+        # Each atom moves in proportion to the other's mass, and a fixed atom not at all.
+        share = np.array([masses[j], masses[i]]) * ~fixed[[i, j]]
+        share /= share.sum()
+        unit = vector / np.linalg.norm(vector)
+        mode[i] += sign * share[0] * unit
+        mode[j] -= sign * share[1] * unit
+        records.append(
+            {
+                "push": "form" if sign > 0 else "break",
+                "atom_ids": [int(ids[i]), int(ids[j])],
+                "elements": elements(i, j),
+            }
+        )
     positions = atoms.positions + settings.displace_size_A * mode
     free = np.flatnonzero(~fixed)
     positions[free] += rng.normal(0.0, _JITTER_A / math.sqrt(3 * len(free)), (len(free), 3))
-    record = {
-        "push": "form" if sign > 0 else "break",
-        "atom_ids": [int(ids[i]), int(ids[j])],
-        "elements": elements(i, j),
-    }
+    record = {"push": "together", "pairs": records} if guide["together"] else records[0]
     return positions, mode / np.linalg.norm(mode), record
+
+
+def _linked_sets(candidates: list[list[tuple[int, int]]]) -> list[tuple[tuple[int, int], ...]]:
+    """Every set that takes one pair from each list, with no pair twice, whose pairs link up
+    through shared atoms."""
+
+    if not all(candidates):
+        return []
+    touching = []
+    for found in candidates:
+        table: dict[int, list[tuple[int, int]]] = {}
+        for pair in found:
+            for atom in pair:
+                table.setdefault(atom, []).append(pair)
+        touching.append(table)
+    sets: dict[frozenset, tuple[tuple[int, int], ...]] = {}
+
+    def grow(chosen: list[tuple[int, int]], left: frozenset) -> None:
+        if not left:
+            sets.setdefault(frozenset(chosen), tuple(sorted(chosen)))
+            return
+        atoms = sorted({atom for pair in chosen for atom in pair})
+        # A linked set can be built by adding, one at a time, pairs that touch those already in.
+        for entry in sorted(left):
+            for pair in dict.fromkeys(p for atom in atoms for p in touching[entry].get(atom, ())):
+                if pair not in chosen:
+                    grow([*chosen, pair], left - {entry})
+
+    first = min(range(len(candidates)), key=lambda entry: len(candidates[entry]))
+    for pair in candidates[first]:
+        grow([pair], frozenset(range(len(candidates))) - {first})
+    return list(sets.values())
 
 
 class _PreservingCalculator(Calculator):
@@ -522,7 +609,7 @@ class EONBackend:
 
         push = guided_push(source, fixed, self.settings, np.random.default_rng(seed))
         if push is None:
-            return ProcessResult("no_push", "no pair of the guide's elements", metadata=metadata)
+            return ProcessResult("no_push", "nothing here matches eon.guide", metadata=metadata)
         positions, mode, metadata["pair"] = push
         parameters = self._parameters(seed=seed, rotation=self.settings.rotation_for(source))
         matter, potential = self._matter(source, fixed, parameters)
