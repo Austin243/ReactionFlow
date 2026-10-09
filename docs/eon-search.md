@@ -100,7 +100,7 @@ then requires exactly one visible CUDA device.
 | `prefactor` | `null` | `null` computes harmonic prefactors; a number in 1/s fixes them |
 | `match_distance_A` | 0.1 | Largest atom displacement between two structures counted as the same |
 | `match_energy_eV` | 0.01 | Largest energy difference between two structures counted as the same |
-| `equivalent_atoms` | true | Atoms of one element may exchange places, so a methyl group turned by 120° is the same state |
+| `equivalent_atoms` | true | Atoms of one element may exchange places, so a methyl group turned by 120° is the same state; not in a freely turning structure of two or more elements (see Symmetry) |
 | `rigid_rotation` | `"auto"` | Treat turning the whole structure as no change; see Symmetry |
 | `log` | `"file"` | EON's own log goes to `eon.log` in the output directory; `"terminal"` prints it |
 
@@ -158,7 +158,8 @@ no vibrational frequency.
   can turn freely. With `rigid_rotation: "auto"`, saddle searches then project rotation out of each
   step and structures are compared up to a rotation. EON can do this only when no atom is fixed,
   so fixed atoms fewer than three, or all on one line, leave a rotation free; `validate` and `run`
-  warn about that case.
+  warn about that case. EON's comparison up to both a rotation and exchanged atoms fails for two or
+  more elements, so such a structure is compared without `equivalent_atoms`.
 - Harmonic prefactors require a structure that cannot turn as a whole. A free molecule's rate also
   depends on how its rotations change between the minimum and the saddle, which EON does not
   compute, so such a campaign needs a fixed `prefactor`; `init` asks for one.
