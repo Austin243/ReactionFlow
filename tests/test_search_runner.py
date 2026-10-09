@@ -132,6 +132,13 @@ def test_resume_after_each_publication_matches_an_uninterrupted_run(
     assert records(tmp_path / "run") == records(tmp_path / "reference")
 
 
+def test_a_state_with_nothing_to_push_stops_the_run(tmp_path):
+    backend = TwoStates()
+    backend.search = lambda atoms, *, seed: ProcessResult("no_push", "nothing selected")
+    state = run(tmp_path, backend)
+    assert state["stop_reason"] == "no_push" and state["attempts"] == 1
+
+
 def test_interrupted_search_retries_its_seed(tmp_path):
     backend = TwoStates()
     original = backend.search

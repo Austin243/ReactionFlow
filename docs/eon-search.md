@@ -169,6 +169,9 @@ rest is EON's own search: both sides of the saddle are relaxed 0.2 Å along its 
 with the start, and given prefactors. The potential decides what each push becomes, so a guide
 only says which bonds to try. The attempt records the pair it pushed.
 
+A state with no matching pair, or with no free atom matching `displace_centers` for a local push,
+would fail every search, so the run stops there with `no_push`.
+
 In clusters and liquids the start usually settles into a nearby conformer during a guided search,
 so use `guide` with `basins: "bonds"` (see Chemical basins).
 

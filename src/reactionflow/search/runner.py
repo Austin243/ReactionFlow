@@ -191,6 +191,8 @@ def _attempt(
     data: dict[str, Any] = dict(active)
     result = backend.search(origin.structures["atoms"].copy(), seed=active["seed"])
     data.update(backend=result.metadata, message=result.message)
+    if result.status == "no_push":
+        return {**data, "status": "no_push"}, {}
     reference, extra = energy, {}
     if config.basins == "bonds" and result.status != "good" and result.minima:
         joined = _joined_by_bonds(backend, result, origin.structures["atoms"])
@@ -454,6 +456,11 @@ def run_exploration(
                 result, structures = _attempt(store, state, active, backend, config)
                 store.write("attempts", active["id"], result, structures=structures)
             _commit_attempt(state, result)
+            if result["status"] == "no_push":
+                # Every later search from this state would select nothing as well.
+                state["stop_reason"] = "no_push"
+                _save_state(root, state)
+                return state
             _save_state(root, state)
         state["stop_reason"] = "steps_completed"
         _save_state(root, state)
