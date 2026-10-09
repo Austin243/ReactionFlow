@@ -80,7 +80,7 @@ then requires exactly one visible CUDA device.
 | --- | --- | --- |
 | `temperature_K` | 300 | Temperature of the rates |
 | `steps` | 100 | Kinetic Monte Carlo steps to take |
-| `confidence` | 0.95 | Search a state until 1 - 1/N reaches this, N being consecutive repeats of known processes in the window (EON's rule; its default is 0.99) |
+| `confidence` | 0.95 | Search a state until 1 - 1/N reaches this, N being consecutive repeats of known processes in the window (EON's rule; its default is 0.99). A new process from the state, including the reverse of one found elsewhere, sets N back to 0 |
 | `thermal_window_kT` | 20 | Keep processes up to this many kT above the state's lowest barrier |
 | `seed` | 1 | Seeds every search and every step |
 | `basins` | `"none"` | `"bonds"` merges states joined without a bond change into one chemical basin, so `steps` counts only chemical steps; see Chemical basins |
