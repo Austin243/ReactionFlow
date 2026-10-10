@@ -44,13 +44,14 @@ once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the movi
 ## Scientific workflow
 
 - Product atoms are aligned to reactant order by stable ID, not array position.
-- NVT retains the fixed reactant cell and configured cell-drift mapping limits. NPT retains and
-  relaxes both endpoint cells at the target pressure, with no fixed-cell mapping limit. SSNEB
-  requires fully periodic, nonsingular, right-handed cells and removes rigid cell rotation.
+- NVT retains the fixed reactant cell and configured cell-drift mapping limits. NPT relaxes each
+  endpoint cell at the target pressure, with no fixed-cell mapping limit. SSNEB requires fully
+  periodic, nonsingular, right-handed cells and removes rigid cell rotation.
 - Every atom relaxes, in the endpoints, the NEB or SSNEB band, and the connectivity check; for NPT
-  the cell relaxes too. The product keeps its own coordinates for atoms in changed bonds and
-  neighbors within `active_radius`. Its other atoms start from the reactant's positions for NVT,
-  or its fractional coordinates for NPT, so both endpoints relax from the same surroundings.
+  the cell relaxes too. The reactant relaxes first. The product then starts from the relaxed
+  reactant, cell included, with the atoms in changed bonds and their neighbors within
+  `active_radius` moved as they moved between the two MD frames. Every other atom starts at the
+  same minimum in both endpoints, so a hot frame cannot relax its surroundings differently in each.
 - Both endpoints are relaxed and checked against the exact bond thresholds used for detection.
   Collapsed, ambiguous, and unexpectedly changed endpoints do not proceed to NEB. Neither does a
   pair of endpoints whose bonds differ anywhere else in the cell: relaxation that forms or breaks

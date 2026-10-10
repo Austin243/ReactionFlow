@@ -42,6 +42,26 @@ class ConstantForce(Calculator):
         self.results = {"energy": 0.0, "forces": forces}
 
 
+class TiltedSpectator(Calculator):
+    """Atom 1 crosses a double well; spectator 2 has its own double well that atom 1 tilts."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", "stress"]
+    coupling = 0.3
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        ids = atom_ids(self.atoms)
+        mover, spectator = ids.index(1), ids.index(2)
+        x, y, z = self.atoms.positions[mover] - (5, 15, 15)
+        u, v, w = self.atoms.positions[spectator] - (15, 15, 15)
+        energy = (x * x - 1) ** 2 + (u * u - 1) ** 2 + self.coupling * x * u
+        forces = np.zeros((len(self.atoms), 3))
+        forces[mover] = (-4 * x * (x * x - 1) - self.coupling * u, -2 * y, -2 * z)
+        forces[spectator] = (-4 * u * (u * u - 1) - self.coupling * x, -2 * v, -2 * w)
+        energy += y * y + z * z + v * v + w * w
+        self.results = {"energy": float(energy), "forces": forces, "stress": np.zeros(6)}
+
+
 def pathway_candidate(*, resolved: bool = True, collapsed: bool = False) -> ReactionCandidate:
     reactant = Atoms(
         "He3",
@@ -160,6 +180,60 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
         [image.positions[2] for image in outcome.images],
         np.repeat([outcome.images[0].positions[2]], 5, axis=0),
     )
+
+
+@pytest.mark.parametrize("pressure", [None, 0.0])
+def test_product_starts_from_the_relaxed_reactant_so_spectators_settle_alike(pressure) -> None:
+    # Atom 1 leaves atom 0. Spectator 2 sits on the ridge between its two wells, as it can in a
+    # hot frame: bonded to atom 3 in one well and not in the other. Atom 1 tilts that ridge
+    # oppositely in the two frames, so relaxed separately the endpoints settle 2 differently.
+    reactant = Atoms(
+        "He4",
+        positions=[[2, 15, 15], [4.1, 15, 15], [15, 15, 15], [18, 15, 15]],
+        cell=[30, 30, 30],
+        pbc=True,
+    )
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1, 0] = 6.1
+    candidate = ReactionCandidate(
+        reactant=reactant,
+        product=product,
+        atom_ids=(0, 1),
+        reactant_bonds=frozenset({(0, 1)}),
+        product_bonds=frozenset(),
+        reactant_frame=0,
+        product_frame=1,
+        observed_frame=2,
+        resolved=True,
+    )
+
+    @contextmanager
+    def provider(_stage: str):
+        yield TiltedSpectator()
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=provider,
+        config=PathwayConfig(
+            active_radius=0.5,
+            relax_fmax=0.01,
+            relax_steps=500,
+            images=5,
+            neb_fmax=0.03,
+            neb_steps=500,
+            ci_neb_steps=500,
+        ),
+        detector_config=BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)}),
+        pressure_GPa=pressure,
+    )
+
+    assert outcome.converged, outcome.message
+    first, last = outcome.images[0], outcome.images[-1]
+    assert first.get_distance(0, 1) < 2.5 < 3 < last.get_distance(0, 1)
+    assert first.get_distance(2, 3) < 2.5 and last.get_distance(2, 3) < 2.5
+    assert outcome.connectivity is not None
+    assert outcome.connectivity.status == "connects_endpoints"
 
 
 def test_refinement_returns_small_bounded_failure_outcomes() -> None:
