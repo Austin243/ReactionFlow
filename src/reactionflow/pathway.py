@@ -209,17 +209,6 @@ def _prepare_endpoints(
                 for index, distance in enumerate(distances)
                 if distance <= config.active_radius
             )
-
-    # Atoms away from the reaction start from the reactant's positions in both endpoints, so both
-    # relax from the same surroundings. Nothing is constrained: every atom and, for NPT, the cell
-    # relax.
-    environment = sorted(set(range(len(reactant))) - active)
-    if environment:
-        product.positions[environment] = (
-            reactant.get_scaled_positions(wrap=False)[environment] @ product.cell
-            if variable_cell
-            else reactant.positions[environment]
-        )
     return reactant, product, tuple(sorted(active))
 
 
@@ -513,6 +502,10 @@ def _refine_pathway(
             candidate, options, variable_cell=pressure_GPa is not None
         )
         images = [reactant, product]
+        active = list(active_indices)
+        shift = (
+            product.get_scaled_positions(wrap=False) - reactant.get_scaled_positions(wrap=False)
+        )[active]
         reactant_converged = _relax(
             reactant,
             stage="relax_reactant",
@@ -520,6 +513,14 @@ def _refine_pathway(
             config=options,
             pressure_GPa=pressure_GPa,
         )
+        # The product starts from the relaxed reactant, cell included, with only the active atoms
+        # moved as they moved between the MD frames. Every other atom starts at the same minimum
+        # in both endpoints, so a hot frame cannot relax its surroundings differently in each.
+        # Nothing is constrained: every atom and, for NPT, the cell relax.
+        start = reactant.get_scaled_positions(wrap=False)
+        start[active] += shift
+        product.set_cell(reactant.cell)
+        product.set_scaled_positions(start)
         product_converged = _relax(
             product,
             stage="relax_product",
