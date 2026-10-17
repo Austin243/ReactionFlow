@@ -1,9 +1,10 @@
 # Pathway refinement
 
 `refine_pathway()` relaxes one resolved candidate, runs NEB and climbing-image NEB (SSNEB for NPT),
-then applies the constrained frequency diagnostic to the highest-energy or highest-enthalpy interior
-image and checks where that saddle leads. It is an in-memory scientific primitive; `ReactionRun`
-publishes its outcome while direct callers retain ownership of artifacts and retry policy.
+then tests whether the highest-energy or highest-enthalpy interior image is a saddle between the
+band's two ends. Only a band that passes that test records a barrier. It is an in-memory scientific
+primitive; `ReactionRun` publishes its outcome while direct callers retain ownership of artifacts
+and retry policy.
 
 ```python
 from contextlib import contextmanager
@@ -38,7 +39,7 @@ detector_config = store.load_detector_config(occurrence_id)
 
 The provider is entered sequentially for `relax_reactant`, `relax_product`, and `neb`. Only one
 calculator lease is live at a time. The NEB images share one calculator in serial execution, and
-frequency validation reuses that lease before it is released. The fixed endpoints are evaluated
+the saddle check reuses that lease before it is released. The fixed endpoints are evaluated
 once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the moving images.
 
 ## Scientific workflow
@@ -60,58 +61,99 @@ once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the movi
 - NVT uses ASE IDPP interpolation; NPT interpolates reference-cell atomic and deformation coordinates
   after periodic alignment. Improved-tangent NEB converges before climbing is enabled. SSNEB includes
   both atomic and cell forces in its tangent and climbing projection, using enthalpy E + PV.
-- After CI-NEB convergence, central finite differences displace only atoms in changed bonds and
-  neighbors within `active_radius`, holding the rest of the relaxed cell fixed. Frequencies with
-  imaginary magnitude at or above the configured cutoff are counted, while the complete signed
-  spectrum remains available for diagnosing small numerical modes.
 
-`PathwayOutcome.status` is one of `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
-`ci_neb_failed`, `ci_neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB
-snapshots as far as the attempt progressed. Only `ci_neb_converged` includes image energies and a
-forward barrier in eV: potential energy for NVT, enthalpy for NPT. A saddle lies above both
-endpoints, so when an endpoint is the highest point of a converged band, the band has not found
-one. That outcome keeps its image energies but has no barrier, frequency diagnostic, or
-connectivity check, and its message says why. The `frequency_validation` diagnostic is classified
-as zero, one, or multiple significant imaginary modes, or `failed`. That nested status does not
-change the successful pathway status or prevent MD from resuming.
+`PathwayOutcome.status` is `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
+`ci_neb_failed`, or `failed` when refinement stops before the band converges. A converged band ends
+with the saddle check's verdict below. Outcomes retain calculator-free endpoint or NEB snapshots as
+far as the attempt progressed. Every converged band keeps its image energies, and only
+`saddle_validated` adds a forward barrier in eV: potential energy for NVT, enthalpy for NPT. No
+status stops MD from resuming.
 
-The diagnostic records the saddle-image index, active atom IDs, finite-difference displacement,
-imaginary-mode cutoff, active-atom residual force, complete signed spectrum, significant mode
-indices, and the primary imaginary-mode displacement when present. It is a partial Hessian with a
-fixed environment and fixed cell. One significant imaginary mode is consistent with a constrained
-first-order saddle, not proof of connectivity. A coupled atom/cell SSNEB saddle can have zero
-imaginary modes in this fixed-cell diagnostic.
+## Saddle check
 
-`frequency_delta` defaults to `0.01` Å and `imaginary_frequency_cutoff_cm1` defaults to
-`50.0` cm⁻¹. Imaginary frequencies are stored as negative real values. The primary mode vector is
-normalized over its active Cartesian components, and its sign is arbitrary.
+`check_saddle()` tests a converged band. It runs inside the NEB calculator lease after every
+CI-NEB, and on any band file through `reactionflow check`. The saddle is the highest interior image
+of the profile: energy for NVT, enthalpy for NPT.
+
+- **Active atoms.** The atoms that move more than 0.05 Å between the two images next to the saddle.
+  When fewer than six move, the six that move most.
+- **Modes.** Central differences of the forces, with `frequency_delta` steps (0.01 Å), give the
+  Hessian over the active atoms, with the cell and every other atom fixed. A mode is an eigenvalue
+  below `-curvature_cutoff_eV_A2` (0.05 eV/Å² by default). A curvature cutoff treats every element
+  alike, where a frequency cutoff counts more hydrogen noise as a mode.
+- **Connectivity.** When there is a mode, the saddle is moved both ways along the lowest one and each
+  side is relaxed, as described below.
+
+The check ends a converged band as one of these:
+
+| Status | When |
+| --- | --- |
+| `saddle_validated` | one mode, and the two sides relax to the band's two ends |
+| `no_saddle` | an endpoint is the highest point, or the saddle image has no mode |
+| `saddle_rejected` | more than one mode, or the sides do not reach both ends |
+| `saddle_unchecked` | the Hessian failed, or the connectivity check failed or was inconclusive |
+
+The outcome's message says which case applies. A saddle lies above both endpoints, so when an
+endpoint is the highest point of the band, there is no saddle to test, and the outcome has no
+frequency diagnostic or connectivity check.
+
+`frequency_validation` records the saddle-image index, active atom IDs, finite-difference step,
+curvature cutoff, active-atom residual force, and every Hessian eigenvalue in eV/Å², in ascending
+order. It also records the frequencies of the same Hessian with mass weighting, in cm⁻¹ with
+imaginary frequencies as negative values. A Hessian has the same number of negative eigenvalues
+with or without mass weighting. The lowest mode's overlap with the band tangent at the saddle (the
+displacement between the images on either side, over the active atoms) is recorded too, and so is
+the lowest mode itself when it counts as a mode. The mode is normalized over its active Cartesian
+components, and its sign is arbitrary. Its status is `zero_imaginary_modes`, `one_imaginary_mode`,
+`multiple_imaginary_modes`, or `failed`.
+
+The Hessian is partial, with a fixed environment and a fixed cell. A saddle that is mostly a change
+of cell, which SSNEB can find, may have no mode at fixed cell; it then ends as `no_saddle`.
 
 ## Saddle connectivity
 
-When the frequency diagnostic finds a significant imaginary mode, the saddle is displaced 0.1 Å
-each way along its primary mode, as the total displacement of the active atoms. Each copy is then
-relaxed exactly like the endpoints: every atom free, the same `relax_fmax` and `relax_steps`, and
-the cell filter at the target pressure for NPT. Each relaxed side is classified with the detector's
-bond thresholds:
+The saddle is moved each way along its lowest mode until the atom that moves most has moved 0.1 Å.
+Each copy is then relaxed exactly like the endpoints: every atom free, the same `relax_fmax` and
+`relax_steps`, and the cell filter at the target pressure for NPT. Each relaxed side is classified
+with the detector's bond thresholds:
 
 - `reactant`, `product`, or `other`;
 - `ambiguous` when any atom pair stays inside its hysteresis gap;
 - `not_converged` when the relaxation does not converge; and
-- `no_step` when the displaced copy already meets the force tolerance, so the mode is too soft to
-  test at this displacement.
+- `no_step` when the moved copy already meets the force tolerance, so the mode is too soft to test
+  at this displacement.
 
 A side is labeled `reactant` or `product` only when its whole-cell bond topology matches the
-corresponding relaxed NEB endpoint. A bond change elsewhere in the cell makes that side `other`.
-A relaxed endpoint with any pair in the hysteresis gap makes the check `inconclusive` before
-launching the descents. Matching unambiguous bond topology does not establish identical conformations.
+corresponding end of the band. A bond change elsewhere in the cell makes that side `other`. When
+both ends have the same bonds, as in a conformer change, a side reaches the end it lies nearer to
+by root-mean-square displacement. An end with any pair in the hysteresis gap makes the check
+`inconclusive` before launching the descents. Matching unambiguous bond topology does not establish
+identical conformations.
 
 `connectivity.status` is `connects_endpoints` when one side reaches the reactant and the other the
 product. It is `inconclusive` when either side is `ambiguous`, `not_converged`, or `no_step`,
-`does_not_connect` otherwise, and `failed` if the check raises. The check runs inside the NEB
-calculator lease and is recorded in `result.json`. It never changes the top-level
-`ci_neb_converged` status, and it is null when no significant imaginary mode was found. A saddle
-with one imaginary mode that connects both endpoints is strong evidence for the transition state
-of the detected reaction, but it is not an intrinsic reaction coordinate.
+`does_not_connect` otherwise, and `failed` if the check raises. A saddle with one mode that
+connects both ends is strong evidence for the transition state of the detected reaction, but it is
+not an intrinsic reaction coordinate.
+
+## Checking a band
+
+```bash
+reactionflow check campaign.json runs/<trajectory>/pathways/<occurrence>/images.traj
+```
+
+`reactionflow check` runs the same check on any band file ASE can read, both ends included: a
+pathway's `images.traj`, a band from another code, or an EON saddle written as three images
+(minimum, saddle, minimum). The campaign supplies the model, the bond thresholds, and the pathway
+settings. `--index` picks the trajectory whose model and pressure are used; a campaign with several
+trajectories needs it, even inside a Slurm job. `--pressure` replaces that pressure. The verdict is written beside the band as `<band>.check.json`, in the form
+of a pathway's `result.json`, and its status, barrier, and message are printed.
+
+Campaign and state files written before the saddle check may name `active_radius` and
+`imaginary_frequency_cutoff_cm1`. They still open, and those two settings are ignored. A trajectory
+started before the check cannot resume under it, because its pathway settings, and so its campaign
+contract, have changed. Finish it with the version that started it, and test its bands with
+`reactionflow check`. Its results keep their `ci_neb_converged` status.
 
 ## Constant-pressure SSNEB
 

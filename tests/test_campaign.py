@@ -9,7 +9,7 @@ import pytest
 from ase import Atoms
 from ase.io import write
 
-from reactionflow import ComponentState, ExactRestartSnapshot
+from reactionflow import ComponentState, ExactRestartSnapshot, PathwayConfig
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main, resolve_task_index, run_selected_trajectory, visible_gpu
 from reactionflow.run import ReactionRun
@@ -189,6 +189,21 @@ def test_campaign_rejects_invalid_profile_configuration(tmp_path) -> None:
         path.write_text(json.dumps(value), encoding="utf-8")
         with pytest.raises(ValueError, match=message):
             CampaignConfig.load(path)
+
+
+def test_campaign_opens_with_settings_of_the_retired_frequency_check(tmp_path) -> None:
+    path = _campaign(tmp_path)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    pathway = {"active_radius": 4.0, "imaginary_frequency_cutoff_cm1": 50.0, "images": 5}
+    value["reaction_run"]["pathway"] = pathway
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    assert CampaignConfig.load(path).reaction_run.pathway == PathwayConfig(images=5)
+
+    value["reaction_run"]["pathway"] = {"active_radii": 4.0}
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown reaction_run\.pathway keys"):
+        CampaignConfig.load(path)
 
 
 def test_contract_uses_resolved_adapter_not_profile_name(tmp_path) -> None:

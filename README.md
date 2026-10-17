@@ -112,17 +112,18 @@ detector and tracker with the default settings.
 
 Both MD snapshots are relaxed first, cell included at constant pressure, and checked again with
 the detection thresholds. A seven-image band is interpolated between them and relaxed with NEB,
-and then the highest image climbs to the saddle. A finite-difference frequency calculation over
-the reacting atoms and their neighbors within 4 Å counts the imaginary modes. The saddle is then
-pushed 0.1 Å each way along its mode and relaxed, which shows whether it connects the reactant
-to the product. Panels b and c show a `refine_pathway()` run with default settings on a
+and then the highest image climbs to the saddle. A finite-difference Hessian over the atoms that
+move through the saddle counts its modes, the curvatures below -0.05 eV/Å². The saddle is then
+pushed each way along its lowest mode, 0.1 Å for the atom that moves most, and relaxed, which
+shows whether it connects the reactant to the product. Only a saddle with one mode that connects
+both ends gives a barrier. Panels b and c show a `refine_pathway()` run with default settings on a
 two-dimensional model potential. Its barrier is 0.62 eV and its mode is 476i cm⁻¹. See
 [pathway refinement](docs/pathway-refinement.md).
 
 ## Refinement outcomes
 
-A refinement either reaches `ci_neb_converged` or stops at the first stage that fails, with a
-status that says why.
+A refinement either converges its band and ends with the saddle check's verdict, or stops at the
+first stage that fails, with a status that says why.
 
 | Stage | Ends the refinement as |
 | --- | --- |
@@ -131,16 +132,20 @@ status that says why.
 | Check bonds | `collapsed` or `unresolved` |
 | NEB or SSNEB | `neb_failed` |
 | Climbing image | `ci_neb_failed` |
+| Saddle check | `saddle_validated`, `no_saddle`, `saddle_rejected`, or `saddle_unchecked` |
 
 `collapsed` means both endpoints relaxed to the same bond topology. `unresolved` means the change
 could not be mapped onto the relaxed endpoints, because a bond stayed between the two thresholds,
 the change disappeared, or relaxation changed bonds elsewhere in the cell. `failed` means an
-unexpected error. In every case the result is saved, the checkpoint is restored, and MD continues.
+unexpected error. The saddle check's four verdicts are described in [pathway
+refinement](docs/pathway-refinement.md#saddle-check). In every case the result is saved, the
+checkpoint is restored, and MD continues.
 A trajectory itself stops only if it cannot save its own state.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
-frequency and connectivity checks are stored with each result and do not change its status.
+saddle check's details are stored with each result, and only `saddle_validated` records a barrier.
+`reactionflow check` runs the same check on any band file.
 
 ## Reaction classes
 
@@ -348,8 +353,8 @@ Records and checkpoints are written under a temporary name and renamed into plac
 an interrupted job leaves no partial record. MD frames are appended to the segment's
 `trajectory.traj`. A detected occurrence and its refinement share one occurrence ID.
 `candidate.json` lists the reacting atoms, the bonds before and after, and the observation frames
-the endpoints came from. `result.json` holds the status, barrier, image energies, frequency check,
-and connectivity check, and `images.traj` holds the band.
+the endpoints came from. `result.json` holds the status, barrier, image energies, and the saddle
+check's Hessian and connectivity results, and `images.traj` holds the band.
 
 An EON campaign writes a different layout.
 
@@ -388,10 +393,10 @@ checkout, downloads the ANI-1xnr weights, and validates the campaign. Results go
 ## Limits
 
 A detected change only means that two atoms crossed a distance threshold. ReactionFlow does not
-assign bond orders, compute free energies, or run an IRC, and MD mode gives no rates. The
-frequency check holds atoms beyond 4 Å and the cell fixed, so one imaginary mode is consistent with
-a saddle but does not prove one. The thresholds and observation interval need checking for each
-system.
+assign bond orders, compute free energies, or run an IRC, and MD mode gives no rates. The saddle
+check's Hessian holds the atoms that do not move through the saddle and the cell fixed, so one mode
+that connects both ends is strong evidence for a saddle but does not prove one. The thresholds and
+observation interval need checking for each system.
 
 EON rates come from harmonic transition-state theory, which suits barriers well above kT in stiff
 solids and on surfaces. Without `basins`, states joined by a very low barrier are not merged, so

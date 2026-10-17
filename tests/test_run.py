@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
-from ase.io import read
+from ase.io import read, write
 
 from reactionflow import (
     BondDetectorConfig,
@@ -21,9 +21,9 @@ from reactionflow import (
     ReactionRunConfig,
     assign_atom_ids,
 )
-from reactionflow.pathway import Vibrations
+from reactionflow.campaign import CampaignConfig
 from reactionflow.run import refine_pathway
-from reactionflow.status import _trajectory
+from reactionflow.status import _trajectory, campaign_status, format_status
 
 
 class PairDoubleWell(Calculator):
@@ -73,7 +73,6 @@ def run_config(
         ),
         candidate_stability_frames=1,
         pathway=PathwayConfig(
-            active_radius=2,
             relax_fmax=0.005,
             relax_steps=100,
             images=3,
@@ -197,17 +196,17 @@ def test_run_detects_refines_and_resumes(tmp_path) -> None:
     assert {path.name for path in result_dir.iterdir()} == {"result.json", "images.traj"}
     result = json.loads((result_dir / "result.json").read_text())
     assert result["schema_version"] == 1
-    assert result["status"] == "ci_neb_converged"
+    assert result["status"] == "saddle_validated"
     assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
     frequency = result["frequency_validation"]
     assert frequency["status"] == "one_imaginary_mode"
     assert frequency["scope"] == "active_atoms_fixed_environment"
     assert frequency["transition_state_index"] == 1
     assert frequency["active_atom_ids"] == [0, 1]
-    assert frequency["imaginary_mode_indices"] == [0]
-    assert frequency["frequencies_cm1"][0] < -frequency["imaginary_cutoff_cm1"]
-    assert frequency["primary_mode_index"] == 0
+    assert frequency["eigenvalues_eV_A2"][0] < -frequency["curvature_cutoff_eV_A2"]
+    assert frequency["frequencies_cm1"][0] < 0
     assert np.linalg.norm(frequency["primary_mode"]) == pytest.approx(1)
+    assert result["connectivity"]["status"] == "connects_endpoints"
     assert len(read(result_dir / "images.traj", ":")) == 3
     assert (tmp_path / "segments/0000/trajectory.traj").is_file()
     assert (tmp_path / "segments/0001/trajectory.traj").is_file()
@@ -215,11 +214,58 @@ def test_run_detects_refines_and_resumes(tmp_path) -> None:
     assert leases.live == 0 and leases.max_live == 1
 
 
+def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
+    write(tmp_path / "start.extxyz", pair(0.6))
+    campaign = {
+        "schema_version": 2,
+        "structure": "start.extxyz",
+        "output_root": "runs",
+        "require_gpu": False,
+        "adapter_profiles": {"pair": {"factory": "never_imported:create_adapter", "options": {}}},
+        "trajectories": [
+            {
+                "id": "pair",
+                "adapter_profile": "pair",
+                "total_steps": 18,
+                "timestep_fs": 1.0,
+                "temperature_K": 300.0,
+                "pressure_GPa": None,
+                "seed": 1,
+            }
+        ],
+    }
+    (tmp_path / "campaign.json").write_text(json.dumps(campaign))
+    leases = LeaseCounter()
+    ReactionRun.create(tmp_path / "runs/pair", config=run_config()).run(
+        pair(0.6),
+        runtime_provider=ScriptedRuntimeProvider(leases),
+        pathway_calculator_provider=leases,
+        total_steps=18,
+    )
+    loaded = CampaignConfig.load(tmp_path / "campaign.json")
+
+    report = campaign_status(loaded)
+    (reaction,) = report["reactions"]
+    assert reaction["pathways"] == {"saddle_validated": 1}
+    assert reaction["barriers_eV"] == [pytest.approx(0.0625, abs=2e-4)]
+    text = format_status(report)
+    assert "Saddle check: 1 validated, 0 no saddle, 0 rejected, 0 unchecked." in text
+
+    # A result from before the saddle check keeps its status and gives no barrier.
+    (path,) = (tmp_path / "runs/pair/pathways").glob("*/result.json")
+    path.write_text(json.dumps({**json.loads(path.read_text()), "status": "ci_neb_converged"}))
+    report = campaign_status(loaded)
+    assert report["reactions"][0]["barriers_eV"] == []
+    assert report["trajectories"][0]["pathways"] == {"ci_neb_converged": 1}
+    text = format_status(report)
+    assert "; 1 converged before the check, without a verdict." in text
+
+
 def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -> None:
-    def fail_frequencies(_vibrations) -> None:
+    def fail_frequencies(*_args, **_kwargs):
         raise RuntimeError("synthetic frequency failure")
 
-    monkeypatch.setattr(Vibrations, "run", fail_frequencies)
+    monkeypatch.setattr("reactionflow.pathway._hessian", fail_frequencies)
     leases = LeaseCounter()
     run = ReactionRun.create(tmp_path, config=run_config())
 
@@ -234,8 +280,9 @@ def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -
     assert run.failure is None
     result_path = next((tmp_path / "pathways").glob("*/result.json"))
     result = json.loads(result_path.read_text())
-    assert result["status"] == "ci_neb_converged"
-    assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
+    assert result["status"] == "saddle_unchecked"
+    assert result["barrier_eV"] is None
+    assert len(result["energies_eV"]) == 3
     assert result["frequency_validation"]["status"] == "failed"
     assert result["frequency_validation"]["message"] == "synthetic frequency failure"
     assert result["frequency_validation"]["frequencies_cm1"] == []
@@ -297,11 +344,11 @@ def test_every_occurrence_is_refined_after_a_failure_and_replays(
             return PathwayOutcome(status=failure_status, images=(candidate.reactant,))
         return refine_pathway(candidate, **kwargs)
 
-    def fail_frequencies(_vibrations):
-        raise RuntimeError("diagnostics remain separate from pathway convergence")
+    def fail_frequencies(*_args, **_kwargs):
+        raise RuntimeError("the saddle check can fail without stopping the run")
 
     monkeypatch.setattr("reactionflow.run.refine_pathway", fail_first)
-    monkeypatch.setattr(Vibrations, "run", fail_frequencies)
+    monkeypatch.setattr("reactionflow.pathway._hessian", fail_frequencies)
     leases = LeaseCounter()
 
     def advance(run, atoms=None):
@@ -352,17 +399,17 @@ def test_every_occurrence_is_refined_after_a_failure_and_replays(
     assert len(attempts) == 3  # Reopen reused the published outcome.
     assert first_result.read_bytes() == original_result
     retried = json.loads((tmp_path / "pathways" / retry.occurrence_id / "result.json").read_text())
-    assert retried["status"] == "ci_neb_converged"
+    assert retried["status"] == "saddle_unchecked"
     assert retried["frequency_validation"]["status"] == "failed"
     # The third occurrence repeats a converged reaction and is refined as well.
     assert (summary.phase, summary.occurrences, summary.pathways) == ("completed", 3, 3)
     assert run.pending_pathway_ids == ()
     row = {}
     (reaction,) = _trajectory(tmp_path, row)
-    assert row["pathways"] == {failure_status: 1, "ci_neb_converged": 2}
+    assert row["pathways"] == {failure_status: 1, "saddle_unchecked": 2}
     assert reaction[1] == 3
     statuses = [result["status"] for result in reaction[2]]
-    assert statuses == [failure_status, "ci_neb_converged", "ci_neb_converged"]
+    assert statuses == [failure_status, "saddle_unchecked", "saddle_unchecked"]
 
 
 @pytest.mark.parametrize("pressure", [None, 0.0])
@@ -415,7 +462,7 @@ def test_run_restores_pending_monitor_then_refines_and_continues(tmp_path, press
     assert final_snapshot.calculator == control_snapshot.calculator
     result = json.loads(next((tmp_path / "pathways").glob("*/result.json")).read_text())
     if pressure is None:
-        assert result["status"] == "ci_neb_converged"
+        assert result["status"] == "saddle_validated"
         assert result["method"] == "neb" and result["barrier_quantity"] == "potential_energy"
     else:
         # This calculator has no stress. Record the SSNEB failure and resume

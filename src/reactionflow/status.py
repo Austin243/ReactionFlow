@@ -15,7 +15,11 @@ from ase.formula import Formula
 from .campaign import CampaignConfig
 from .candidates import ReactionCandidate, ReactionClasses, _reaction_graph
 from .detection import atom_ids
+from .pathway import CONVERGED_STATUSES
 from .store import _read_bundle
+
+# Converged bands, including those refined before the saddle check, which have no verdict.
+_CONVERGED = CONVERGED_STATUSES | {"ci_neb_converged"}
 
 
 def _read_json(path: Path) -> Any:
@@ -165,7 +169,7 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                 connectivity = result.get("connectivity")
                 if connectivity:
                     entry["connectivity"][connectivity["status"]] += 1
-                if result["status"] == "ci_neb_converged" and result.get("barrier_eV") is not None:
+                if result["status"] == "saddle_validated":
                     entry["barriers_eV"].append(result["barrier_eV"])
     reactions = [
         {
@@ -207,12 +211,8 @@ def _pressure(value: float | None) -> str:
 
 def _converged(pathways: dict[str, int]) -> str:
     total = sum(pathways.values())
-    return f"{pathways.get('ci_neb_converged', 0)}/{total}" if total else "-"
-
-
-def _connects(checks: dict[str, int]) -> str:
-    total = sum(checks.values())
-    return f"{checks.get('connects_endpoints', 0)}/{total}" if total else "-"
+    converged = sum(count for status, count in pathways.items() if status in _CONVERGED)
+    return f"{converged}/{total}" if total else "-"
 
 
 def format_status(report: dict[str, Any]) -> str:
@@ -256,8 +256,7 @@ def format_status(report: dict[str, Any]) -> str:
                 str(len(entry["trajectories"])),
                 str(entry["events"]),
                 _converged(entry["pathways"]),
-                str(entry["frequency"].get("one_imaginary_mode", 0)),
-                _connects(entry["connectivity"]),
+                str(entry["pathways"].get("saddle_validated", 0)),
                 "-"
                 if not barriers
                 else " / ".join(
@@ -275,21 +274,24 @@ def format_status(report: dict[str, Any]) -> str:
                 "trajectories",
                 "events",
                 "converged",
-                "one imaginary mode",
-                "saddle connects",
+                "validated",
                 "barrier eV (min / median / max)",
             ],
             reaction_rows,
         )
     )
     lines.append("")
-    checks = sum((Counter(entry["connectivity"]) for entry in report["reactions"]), Counter())
-    if checks:
-        lines.append(
-            f"Saddle connectivity checks: {checks['connects_endpoints']} connect, "
-            f"{checks['does_not_connect']} do not connect, {checks['inconclusive']} inconclusive, "
-            f"{checks['failed']} failed."
+    verdicts = sum((Counter(entry["pathways"]) for entry in report["reactions"]), Counter())
+    if any(verdicts[status] for status in _CONVERGED):
+        line = (
+            f"Saddle check: {verdicts['saddle_validated']} validated, "
+            f"{verdicts['no_saddle']} no saddle, {verdicts['saddle_rejected']} rejected, "
+            f"{verdicts['saddle_unchecked']} unchecked"
         )
+        earlier = verdicts["ci_neb_converged"]
+        if earlier:
+            line += f"; {earlier} converged before the check, without a verdict"
+        lines.append(line + ". Barriers come only from validated saddles.")
     radius = report["radius"]
     lines.append(
         f"A class is a bond change with the atoms within {radius} bond{'' if radius == 1 else 's'}"
