@@ -20,11 +20,12 @@ match exactly.
 
 ## Local classes
 
-By default the graph covers the candidate's whole bonded region, every atom connected to a changed
-bond. In a polymer or network solid that region grows with each reaction, so two copies of the same
-local step, such as one more molecule adding to chains of different length, do not match.
-`radius` limits the graph to the atoms of the changed bonds and the atoms within that many bonds of
-them:
+By default the graph covers the candidate's whole region: the atoms of the changed bonds and the
+atoms within two bonds of them ([candidate tracking](candidate-tracking.md)), or a whole bonded
+component for a run that sets `candidate_region_radius` to `null`. In a polymer or network solid
+that component grows with each reaction, so two copies of the same local step, such as one more
+molecule adding to chains of different length, do not match. `radius` limits the graph to the
+atoms of the changed bonds and the atoms within that many bonds of them:
 
 ```python
 same_reaction(first, second, radius=2)

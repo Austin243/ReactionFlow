@@ -91,11 +91,11 @@ data for scripts.
 
 Each trajectory runs in its own process. Every `observation_interval` MD steps, the bond monitor
 compares interatomic distances with the covalent radii of each pair. A bond change is accepted
-after it persists for three observations, and it becomes a reaction candidate once the new bond
-topology has been stable for three observations. The trajectory then writes a checkpoint, relaxes
-the reactant and product, runs NEB and CI-NEB, checks the saddle, and records the result. MD
-resumes from the checkpoint, not from a relaxed structure, so it continues the trajectory that
-would have run without the pause.
+after it persists for three observations, and it becomes a reaction candidate once the bonding
+within two bonds of it has been stable for three observations. The trajectory then writes a
+checkpoint, relaxes the reactant and product, runs NEB and CI-NEB, checks the saddle, and records
+the result. MD resumes from the checkpoint, not from a relaxed structure, so it continues the
+trajectory that would have run without the pause.
 
 ## Bond detection
 
@@ -149,12 +149,12 @@ saddle check's details are stored with each result, and only `saddle_validated` 
 
 ## Reaction classes
 
-A reaction is stored as a graph of the bonded region that contains the changed bonds. Nodes carry
-the element and edges are marked unchanged, formed, or broken. Two occurrences are the same
+A reaction is stored as a graph of the changed bonds and the atoms within two bonds of them. Nodes
+carry the element and edges are marked unchanged, formed, or broken. Two occurrences are the same
 reaction when their graphs are isomorphic, whatever the atom numbering, the geometry, or the
 direction (panel d). `reactions.sqlite3` keeps every occurrence with its class.
-`reactionflow status` compares only the changed bonds and the atoms within two bonds of them
-(`--radius`), so a step that repeats in molecules or polymers of different size is one class. It
+`reactionflow status` compares the same atoms (`--radius`), also for runs that keep whole bonded
+components, so a step that repeats in molecules or polymers of different size is one class. It
 merges classes across trajectories that use the same model and pressure, so each class shows how
 often it happened and the range of its barriers. Classes only group results and do not decide what
 is refined. See [reaction identity](docs/reaction-identity.md).

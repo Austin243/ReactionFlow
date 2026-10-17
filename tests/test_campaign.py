@@ -12,7 +12,7 @@ from ase.io import write
 from reactionflow import ComponentState, ExactRestartSnapshot, PathwayConfig
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main, resolve_task_index, run_selected_trajectory, visible_gpu
-from reactionflow.run import ReactionRun
+from reactionflow.run import ReactionRun, ReactionRunConfig
 
 
 class _TestRuntime:
@@ -132,6 +132,22 @@ def test_campaign_loads_relative_paths_and_arbitrary_trajectory_count(tmp_path) 
     assert campaign.reaction_run.observation_interval == 1
     assert campaign.adapter_for(129) == campaign.adapter_profiles["test"]
     assert campaign.adapter_profile_for(129) == "test"
+
+
+def test_reaction_regions_reach_two_bonds_unless_a_run_predates_them(tmp_path) -> None:
+    path = _campaign(tmp_path)
+    assert CampaignConfig.load(path).reaction_run.candidate_region_radius == 2
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["reaction_run"]["candidate_region_radius"] = None
+    path.write_text(json.dumps(value), encoding="utf-8")
+    assert CampaignConfig.load(path).reaction_run.candidate_region_radius is None
+
+    # The state of a run started before local regions names no radius.
+    stored = ReactionRunConfig().to_dict()
+    del stored["candidate_region_radius"]
+    assert ReactionRunConfig.from_dict(stored).candidate_region_radius is None
+    with pytest.raises(ValueError, match="candidate_region_radius"):
+        ReactionRunConfig(candidate_region_radius=-1)
 
 
 def test_campaign_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:

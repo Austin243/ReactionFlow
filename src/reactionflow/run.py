@@ -35,6 +35,7 @@ class ReactionRunConfig:
     observation_interval: int = 100
     detector: BondDetectorConfig = field(default_factory=BondDetectorConfig)
     candidate_stability_frames: int = 3
+    candidate_region_radius: int | None = 2
     pathway: PathwayConfig = field(default_factory=PathwayConfig)
 
     def __post_init__(self) -> None:
@@ -44,12 +45,18 @@ class ReactionRunConfig:
         ):
             if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        radius = self.candidate_region_radius
+        if radius is not None and (
+            isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 0
+        ):
+            raise ValueError("candidate_region_radius must be a non-negative integer or null")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "observation_interval": int(self.observation_interval),
             "detector": self.detector.to_dict(),
             "candidate_stability_frames": int(self.candidate_stability_frames),
+            "candidate_region_radius": self.candidate_region_radius,
             "pathway": asdict(self.pathway),
         }
 
@@ -59,6 +66,8 @@ class ReactionRunConfig:
             observation_interval=value["observation_interval"],
             detector=BondDetectorConfig.from_dict(value["detector"]),
             candidate_stability_frames=value["candidate_stability_frames"],
+            # Runs started before local regions took whole bonded components.
+            candidate_region_radius=value.get("candidate_region_radius"),
             pathway=PathwayConfig.from_dict(value["pathway"]),
         )
 
@@ -258,6 +267,8 @@ class ReactionRun:
             self._active_checkpoint / "tracker",
             stability_frames=self.config.candidate_stability_frames,
         )
+        if tracker.region_radius != self.config.candidate_region_radius:
+            raise ValueError("reaction-tracker checkpoint configuration does not match")
         if not self._detector.last_frame == tracker.last_frame == self._global_frame:
             raise ValueError("runtime checkpoint monitor does not match the resume boundary")
         self._tracker = tracker
@@ -281,7 +292,10 @@ class ReactionRun:
         with self._fatal("start"):
             initial = canonical_copy(atoms)
             self._detector = BondChangeDetector(self.config.detector)
-            self._tracker = ReactionTracker(stability_frames=self.config.candidate_stability_frames)
+            self._tracker = ReactionTracker(
+                stability_frames=self.config.candidate_stability_frames,
+                region_radius=self.config.candidate_region_radius,
+            )
             self._detector.process(initial, frame=0)
             self._tracker.process(
                 initial,
