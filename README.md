@@ -219,7 +219,9 @@ exit. Only a `repeat` of a process inside the window adds to N, and a `new` proc
 
 A random push seldom brings two particular atoms together. With
 `"guide": {"form": ["C-N"], "break": ["C-H"]}` in `eon`, each search instead pushes one pair of
-the named element types together or apart and starts the dimer along that motion. See
+the named element types together or apart and starts the dimer along that motion. Pairs can
+also be named by atom ID, and with `"together": true` a search pushes one pair for every entry at
+once, for steps that make and break several bonds. See
 [guided searches](docs/eon-search.md#guided-searches).
 
 ## Kinetic Monte Carlo steps

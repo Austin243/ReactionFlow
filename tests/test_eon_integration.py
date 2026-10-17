@@ -107,7 +107,7 @@ def first_good(backend, start):
 
 
 # A guided push of the He pair climbs to the same saddle as EON's own random push.
-@pytest.mark.parametrize("guide", [None, {"form": ["He-He"]}])
+@pytest.mark.parametrize("guide", [None, {"form": ["He-He"]}, {"form": [[0, 1]], "together": True}])
 def test_real_eon_finds_analytic_barriers_and_harmonic_prefactors(guide):
     atoms = assign_atom_ids(Atoms("He2", positions=[[5, 5, 5], [4.1, 5.05, 5]], cell=[12] * 3))
     atoms.pbc = True
