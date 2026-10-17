@@ -93,6 +93,7 @@ def _changed_regions(
     reactant: frozenset[Bond],
     product: frozenset[Bond],
     stable: frozenset[Bond] | None = None,
+    radius: int | None = None,
 ) -> tuple[tuple[int, ...], ...]:
     stable = product if stable is None else stable
     changed_atoms = {
@@ -102,6 +103,20 @@ def _changed_regions(
     for first, second in reactant | product | stable:
         neighbors.setdefault(first, set()).add(second)
         neighbors.setdefault(second, set()).add(first)
+
+    if radius is not None:
+        # Each changed atom and the atoms within `radius` bonds of it; overlapping ones merge.
+        merged: list[set[int]] = []
+        for atom_id in sorted(changed_atoms):
+            region = frontier = {atom_id}
+            for _ in range(radius):
+                frontier = {n for current in frontier for n in neighbors.get(current, ())} - region
+                region = region | frontier
+            for other in [item for item in merged if item & region]:
+                merged.remove(other)
+                region |= other
+            merged.append(region)
+        return tuple(sorted(tuple(sorted(region)) for region in merged))
 
     regions: list[tuple[int, ...]] = []
     unseen = set(changed_atoms)
@@ -242,16 +257,28 @@ class ReactionClasses:
 
 
 class ReactionTracker:
-    """Confirm connected topology changes independently of activity elsewhere."""
+    """Confirm local topology changes independently of activity elsewhere.
 
-    def __init__(self, *, stability_frames: int = 3) -> None:
+    A region is the changed atoms and the atoms within ``region_radius`` bonds of them, and
+    regions that share an atom merge. ``region_radius=None`` takes the whole bonded component
+    instead, which in a polymer, network, or slab holds every change in it.
+    """
+
+    def __init__(self, *, stability_frames: int = 3, region_radius: int | None = 2) -> None:
         if (
             isinstance(stability_frames, bool)
             or not isinstance(stability_frames, Integral)
             or stability_frames < 1
         ):
             raise ValueError("stability_frames must be a positive integer")
+        if region_radius is not None and (
+            isinstance(region_radius, bool)
+            or not isinstance(region_radius, Integral)
+            or region_radius < 0
+        ):
+            raise ValueError("region_radius must be a non-negative integer or None")
         self.stability_frames = int(stability_frames)
+        self.region_radius = None if region_radius is None else int(region_radius)
         self._symbols: dict[int, str] | None = None
         self._accepted_bonds: frozenset[Bond] | None = None
         # The latest frame seeds newly changing regions; pending regions keep their own endpoints.
@@ -317,7 +344,9 @@ class ReactionTracker:
             self._accepted_bonds = bonds
         else:
             assert self._accepted is not None and self._accepted_frame is not None
-            for region in _changed_regions(self._accepted_bonds, proposal, bonds):
+            for region in _changed_regions(
+                self._accepted_bonds, proposal, bonds, self.region_radius
+            ):
                 overlaps = [
                     item for item in self._pending if set(item.atom_ids).intersection(region)
                 ]
@@ -449,6 +478,7 @@ class ReactionTracker:
         value = {
             "schema_version": 2,
             "stability_frames": self.stability_frames,
+            "region_radius": self.region_radius,
             "symbols": None if self._symbols is None else list(self._symbols.items()),
             "accepted_bonds": _checkpoint_bonds(self._accepted_bonds),
             "accepted_frame": self._accepted_frame,
@@ -485,7 +515,8 @@ class ReactionTracker:
                 raise ValueError(f"reaction-tracker checkpoint failed integrity check: {name}")
             snapshots[name] = canonical_copy(read(snapshot_path))
 
-        tracker = cls(stability_frames=stored_stability)
+        # Checkpoints written before local regions took whole bonded components.
+        tracker = cls(stability_frames=stored_stability, region_radius=value.get("region_radius"))
         symbols = value["symbols"]
         tracker._symbols = (
             None if symbols is None else {int(key): str(symbol) for key, symbol in symbols}
