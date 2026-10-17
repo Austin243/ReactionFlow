@@ -11,6 +11,7 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from .pathway import _RETIRED_KEYS
 from .run import ReactionRunConfig
 
 _TRAJECTORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
@@ -143,7 +144,10 @@ def _run_config(value: object) -> ReactionRunConfig:
     for key, item in overrides.items():
         if key in {"detector", "pathway"}:
             nested = _mapping(item, f"reaction_run.{key}")
-            unknown_nested = set(nested) - set(merged[key])  # type: ignore[arg-type]
+            known = set(merged[key])  # type: ignore[arg-type]
+            if key == "pathway":
+                known |= _RETIRED_KEYS
+            unknown_nested = set(nested) - known
             if unknown_nested:
                 raise ValueError(f"unknown reaction_run.{key} keys: {sorted(unknown_nested)}")
             merged[key] = {**merged[key], **nested}  # type: ignore[dict-item]

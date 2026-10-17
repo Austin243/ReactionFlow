@@ -89,7 +89,7 @@ The same representation works for 8, 200, or 500 trajectories: add one trajector
 task and assign any profile to each object. A profile can be referenced once or hundreds of times,
 and profiles may use different adapter factories as well as different options. Each worker imports
 and loads only its selected profile. That profile supplies the calculators for MD, endpoint
-relaxation, NEB, CI-NEB, and frequency validation before the worker restores and continues the same
+relaxation, NEB, CI-NEB, and the saddle check before the worker restores and continues the same
 MD trajectory.
 
 The assignment is intentionally explicit rather than inferred from trajectory order, task rank, or
@@ -230,14 +230,14 @@ The second table merges reaction classes across trajectories that share a model 
 pressure, because only those barriers are comparable. Classes merge by the local change: the
 changed bonds and the atoms within `--radius` bonds of them (default 2), including forward/reverse
 equivalence ([local classes](reaction-identity.md#local-classes)). Each row lists the bond changes
-with the formula of those atoms, the number of trajectories and events, converged pathways,
-frequency diagnostics with one significant imaginary mode, saddle connectivity checks that
-connected out of those run, and the minimum, median, and maximum barrier. A converged band whose
-highest point is an endpoint found no saddle and adds no barrier. A line below the table totals the
-connectivity outcomes (connect, do not connect, inconclusive, failed) across the campaign. NVT
-barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,
-including every barrier value, connectivity status count, trajectory ID, and one example occurrence
-per class, for scripted analysis.
+with the formula of those atoms, the number of trajectories and events, converged bands out of
+those refined, validated saddles, and the minimum, median, and maximum barrier. Barriers come only
+from validated saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
+totals the saddle check's verdicts across the campaign (validated, no saddle, rejected, unchecked)
+and counts separately the bands that converged before the check existed, which carry no verdict.
+NVT barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,
+including every barrier value, the counts of each pathway, frequency and connectivity status,
+trajectory ID, and one example occurrence per class, for scripted analysis.
 
 ## Perlmutter mapping
 

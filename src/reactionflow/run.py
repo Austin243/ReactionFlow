@@ -59,7 +59,7 @@ class ReactionRunConfig:
             observation_interval=value["observation_interval"],
             detector=BondDetectorConfig.from_dict(value["detector"]),
             candidate_stability_frames=value["candidate_stability_frames"],
-            pathway=PathwayConfig(**value["pathway"]),
+            pathway=PathwayConfig.from_dict(value["pathway"]),
         )
 
 
@@ -397,23 +397,7 @@ class ReactionRun:
                 "occurrence_id": occurrence_id,
                 "reactionflow_version": __version__,
                 "class_id": self.occurrences.record(occurrence_id).class_id,
-                "status": outcome.status,
-                "barrier_eV": outcome.barrier,
-                "energies_eV": list(outcome.energies),
-                "method": outcome.method,
-                "pressure_GPa": outcome.pressure_GPa,
-                "barrier_quantity": outcome.barrier_quantity,
-                "enthalpies_eV": list(outcome.enthalpies),
-                "volumes_A3": list(outcome.volumes),
-                "message": outcome.message,
-                "frequency_validation": (
-                    None
-                    if outcome.frequency_validation is None
-                    else asdict(outcome.frequency_validation)
-                ),
-                "connectivity": (
-                    None if outcome.connectivity is None else asdict(outcome.connectivity)
-                ),
+                **outcome.to_dict(),
             }
             (temporary / "result.json").write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n",

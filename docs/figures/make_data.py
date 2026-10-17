@@ -239,7 +239,7 @@ def pathway() -> None:
     finally:
         pathway_module.FIRE = original
 
-    assert outcome.status == "ci_neb_converged", (outcome.status, outcome.message)
+    assert outcome.status == "saddle_validated", (outcome.status, outcome.message)
     assert [run["kind"] for run in runs] == ["relax", "relax", "neb", "ci_neb", "relax", "relax"]
     validation = outcome.frequency_validation
     connectivity = outcome.connectivity
@@ -335,15 +335,17 @@ def ssneb() -> None:
             calculator_provider=provider,
             pressure_GPa=pressure_GPa,
             detector_config=BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.2)}),
-            config=PathwayConfig(active_radius=0.2, relax_fmax=0.001, images=7, neb_fmax=0.002),
+            config=PathwayConfig(relax_fmax=0.001, images=7, neb_fmax=0.002),
         )
-        assert outcome.status == "ci_neb_converged", (outcome.status, outcome.message)
+        # The saddle check finds no mode at fixed cell for this cell-coupled saddle
+        # (tests/test_ssneb.py), so the barrier is read from the band.
+        assert outcome.converged, (outcome.status, outcome.message)
         results.append(
             {
                 "pressure_GPa": pressure_GPa,
                 "method": outcome.method,
                 "barrier_quantity": outcome.barrier_quantity,
-                "barrier_eV": outcome.barrier,
+                "barrier_eV": max(outcome.enthalpies) - outcome.enthalpies[0],
                 "energies_eV": list(outcome.energies),
                 "enthalpies_eV": list(outcome.enthalpies),
                 "volumes_A3": list(outcome.volumes),
