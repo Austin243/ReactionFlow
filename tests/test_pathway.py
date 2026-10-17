@@ -21,14 +21,15 @@ from reactionflow.pathway import FIRE, NEB, _check_connectivity, _classify_frequ
 
 class DoubleWell(Calculator):
     implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+    tilt = 0.0
 
     def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
         index = atom_ids(self.atoms).index(1)
         x, y, z = self.atoms.positions[index]
-        energy = (x * x - 1) ** 2 + y * y + z * z
+        energy = (x * x - 1) ** 2 + self.tilt * x + y * y + z * z
         forces = np.zeros((len(self.atoms), 3))
-        forces[index] = (-4 * x * (x * x - 1), -2 * y, -2 * z)
+        forces[index] = (-4 * x * (x * x - 1) - self.tilt, -2 * y, -2 * z)
         self.results = {"energy": float(energy), "forces": forces}
 
 
@@ -40,6 +41,47 @@ class ConstantForce(Calculator):
         forces = np.zeros((len(self.atoms), 3))
         forces[0, 0] = 1
         self.results = {"energy": 0.0, "forces": forces}
+
+
+class TiltedSpectator(Calculator):
+    """Atom 1 crosses a double well; spectator 2 has its own double well that atom 1 tilts."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", "stress"]
+    coupling = 0.3
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        ids = atom_ids(self.atoms)
+        mover, spectator = ids.index(1), ids.index(2)
+        x, y, z = self.atoms.positions[mover] - (5, 15, 15)
+        u, v, w = self.atoms.positions[spectator] - (15, 15, 15)
+        energy = (x * x - 1) ** 2 + (u * u - 1) ** 2 + self.coupling * x * u
+        forces = np.zeros((len(self.atoms), 3))
+        forces[mover] = (-4 * x * (x * x - 1) - self.coupling * u, -2 * y, -2 * z)
+        forces[spectator] = (-4 * u * (u * u - 1) - self.coupling * x, -2 * v, -2 * w)
+        energy += y * y + z * z + v * v + w * w
+        self.results = {"energy": float(energy), "forces": forces, "stress": np.zeros(6)}
+
+
+class Wells(Calculator):
+    """Each atom in its own harmonic well; keeps every geometry it is asked about."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", "stress"]
+
+    def __init__(self, centers) -> None:
+        super().__init__()
+        self.centers = np.asarray(centers, dtype=float)
+        self.seen: list[np.ndarray] = []
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        self.seen.append(self.atoms.positions.copy())
+        offset = self.atoms.positions - self.centers
+        self.results = {
+            "energy": float((offset * offset).sum()),
+            "forces": -2 * offset,
+            "stress": np.zeros(6),
+        }
 
 
 def pathway_candidate(*, resolved: bool = True, collapsed: bool = False) -> ReactionCandidate:
@@ -160,6 +202,161 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
         [image.positions[2] for image in outcome.images],
         np.repeat([outcome.images[0].positions[2]], 5, axis=0),
     )
+
+
+@pytest.mark.parametrize("pressure", [None, 0.0])
+@pytest.mark.parametrize("hop", [0.0, -1.0])
+def test_product_moves_only_the_reacting_atoms_so_spectators_settle_alike(pressure, hop) -> None:
+    # Atom 1 leaves atom 0. Spectator 2 sits on the ridge between its two wells, as it can in a
+    # hot frame: bonded to atom 3 in one well and not in the other. Atom 1 tilts that ridge
+    # oppositely in the two frames, so relaxed separately the endpoints settle 2 differently.
+    # With a hop, 2 has also dropped into its unbonded well by the product frame. It lies within
+    # active_radius but is bonded to neither reacting atom, so that move must not reach the product.
+    reactant = Atoms(
+        "He4",
+        positions=[[2, 15, 15], [4.1, 15, 15], [15, 15, 15], [18, 15, 15]],
+        cell=[30, 30, 30],
+        pbc=True,
+    )
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1, 0] = 6.1
+    product.positions[2, 0] += hop
+    candidate = ReactionCandidate(
+        reactant=reactant,
+        product=product,
+        atom_ids=(0, 1),
+        reactant_bonds=frozenset({(0, 1)}),
+        product_bonds=frozenset(),
+        reactant_frame=0,
+        product_frame=1,
+        observed_frame=2,
+        resolved=True,
+    )
+
+    @contextmanager
+    def provider(_stage: str):
+        yield TiltedSpectator()
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=provider,
+        config=PathwayConfig(
+            active_radius=10.0,
+            relax_fmax=0.01,
+            relax_steps=500,
+            images=5,
+            neb_fmax=0.03,
+            neb_steps=500,
+            ci_neb_steps=500,
+        ),
+        detector_config=BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)}),
+        pressure_GPa=pressure,
+    )
+
+    assert outcome.converged, outcome.message
+    first, last = outcome.images[0], outcome.images[-1]
+    assert first.get_distance(0, 1) < 2.5 < 3 < last.get_distance(0, 1)
+    assert first.get_distance(2, 3) < 2.5 and last.get_distance(2, 3) < 2.5
+    assert outcome.connectivity is not None
+    assert outcome.connectivity.status == "connects_endpoints"
+
+
+@pytest.mark.parametrize("pressure", [None, 0.0])
+def test_product_start_places_the_reacting_atoms_where_the_product_frame_has_them(pressure) -> None:
+    # Atom 1 leaves atom 0, taking its partner 2 along. Atom 2 is stretched in the reactant
+    # frame, so relaxing the reactant swings it round to the far side of atom 1. The product
+    # relaxation must start with 0, 1 and 2 where the product frame has them and spectator 3
+    # where the relaxed reactant has it. Adding the move between the frames to 2's relaxed
+    # position instead would set it 2.2 A from atom 3, inside bonding distance.
+    reactant = Atoms(
+        "He4",
+        positions=[[2, 15, 15], [4.1, 15, 15], [4.1, 17.4, 15], [6.5, 10.5, 15]],
+        cell=[30, 30, 30],
+        pbc=True,
+    )
+    reactant.set_array("atom_id", np.arange(4))
+    product = reactant.copy()
+    product.positions[1:3, 0] = 6.5
+    candidate = ReactionCandidate(
+        reactant=reactant,
+        product=product,
+        atom_ids=(0, 1, 2),
+        reactant_bonds=frozenset({(0, 1), (1, 2)}),
+        product_bonds=frozenset({(1, 2)}),
+        reactant_frame=0,
+        product_frame=1,
+        observed_frame=2,
+        resolved=True,
+    )
+    relaxed = reactant.positions.copy()
+    relaxed[2, 1] = 12.7
+    wells = {"relax_reactant": Wells(relaxed), "relax_product": Wells(product.positions)}
+
+    @contextmanager
+    def provider(stage: str):
+        if stage not in wells:
+            raise RuntimeError("stop after the endpoints")
+        yield wells[stage]
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=provider,
+        config=PathwayConfig(relax_fmax=0.01, relax_steps=500),
+        detector_config=BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)}),
+        pressure_GPa=pressure,
+    )
+
+    assert outcome.message == "stop after the endpoints"
+    start = wells["relax_product"].seen[0]
+    assert np.allclose(start[:3], product.positions[:3], atol=1e-6)
+    assert np.allclose(start[3], relaxed[3], atol=1e-6)
+
+
+def test_band_whose_highest_point_is_an_endpoint_reports_no_barrier(monkeypatch) -> None:
+    # Atom 1's product well sits about 2 eV above its reactant well, with the barrier close to
+    # it. The band is left as interpolated, so its one middle image stays below the product,
+    # as when a band jumps across the reaction between two neighboring images.
+    original_run = FIRE.run
+
+    def leave_band_as_interpolated(self, *args, **kwargs):
+        return True if isinstance(self.atoms, NEB) else original_run(self, *args, **kwargs)
+
+    monkeypatch.setattr(FIRE, "run", leave_band_as_interpolated)
+    reactant = Atoms("He2", positions=[[-3, 0, 0], [-1.1, 0, 0]], cell=[30, 30, 30], pbc=True)
+    reactant.set_array("atom_id", np.arange(2))
+    product = reactant.copy()
+    product.positions[1, 0] = 0.84
+    candidate = ReactionCandidate(
+        reactant=reactant,
+        product=product,
+        atom_ids=(0, 1),
+        reactant_bonds=frozenset({(0, 1)}),
+        product_bonds=frozenset(),
+        reactant_frame=0,
+        product_frame=1,
+        observed_frame=2,
+        resolved=True,
+    )
+
+    @contextmanager
+    def uphill(_stage: str):
+        calculator = DoubleWell()
+        calculator.tilt = 1.0
+        yield calculator
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=uphill,
+        config=PathwayConfig(active_radius=0.5, relax_fmax=0.01, relax_steps=500, images=3),
+        detector_config=BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)}),
+    )
+
+    assert outcome.status == "ci_neb_converged"
+    assert outcome.energies[1] < outcome.energies[-1] == max(outcome.energies)
+    assert outcome.barrier is None
+    assert outcome.frequency_validation is None and outcome.connectivity is None
+    assert outcome.message == "an endpoint is the highest point, so the band holds no saddle"
 
 
 def test_refinement_returns_small_bounded_failure_outcomes() -> None:

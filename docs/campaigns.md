@@ -232,11 +232,12 @@ changed bonds and the atoms within `--radius` bonds of them (default 2), includi
 equivalence ([local classes](reaction-identity.md#local-classes)). Each row lists the bond changes
 with the formula of those atoms, the number of trajectories and events, converged pathways,
 frequency diagnostics with one significant imaginary mode, saddle connectivity checks that
-connected out of those run, and the minimum, median, and maximum barrier. A line below the table
-totals the connectivity outcomes (connect, do not connect, inconclusive, failed) across the
-campaign. NVT barriers are potential energies; NPT barriers are enthalpies. `--json` prints the
-same data, including every barrier value, connectivity status count, trajectory ID, and one example
-occurrence per class, for scripted analysis.
+connected out of those run, and the minimum, median, and maximum barrier. A converged band whose
+highest point is an endpoint found no saddle and adds no barrier. A line below the table totals the
+connectivity outcomes (connect, do not connect, inconclusive, failed) across the campaign. NVT
+barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,
+including every barrier value, connectivity status count, trajectory ID, and one example occurrence
+per class, for scripted analysis.
 
 ## Perlmutter mapping
 

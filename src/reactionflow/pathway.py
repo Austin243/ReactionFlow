@@ -209,17 +209,6 @@ def _prepare_endpoints(
                 for index, distance in enumerate(distances)
                 if distance <= config.active_radius
             )
-
-    # Atoms away from the reaction start from the reactant's positions in both endpoints, so both
-    # relax from the same surroundings. Nothing is constrained: every atom and, for NPT, the cell
-    # relax.
-    environment = sorted(set(range(len(reactant))) - active)
-    if environment:
-        product.positions[environment] = (
-            reactant.get_scaled_positions(wrap=False)[environment] @ product.cell
-            if variable_cell
-            else reactant.positions[environment]
-        )
     return reactant, product, tuple(sorted(active))
 
 
@@ -513,6 +502,20 @@ def _refine_pathway(
             candidate, options, variable_cell=pressure_GPa is not None
         )
         images = [reactant, product]
+        reacting = {
+            atom_id
+            for bond in candidate.reactant_bonds ^ candidate.product_bonds
+            for atom_id in bond
+        }
+        index = {atom_id: position for position, atom_id in enumerate(atom_ids(reactant))}
+        moved = sorted(
+            {
+                index[atom_id]
+                for bond in candidate.reactant_bonds | candidate.product_bonds
+                if reacting.intersection(bond)
+                for atom_id in bond
+            }
+        )
         reactant_converged = _relax(
             reactant,
             stage="relax_reactant",
@@ -520,6 +523,18 @@ def _refine_pathway(
             config=options,
             pressure_GPa=pressure_GPa,
         )
+        # The product starts from the relaxed reactant, cell included, with only the atoms in
+        # changed bonds and the atoms bonded to them where they sat in the product frame. Every
+        # other atom starts at the same minimum in both endpoints, so the band spends its images
+        # on the reaction rather than on hot-frame motion around it, and a hot frame cannot relax
+        # the surroundings differently in each. Those atoms are placed, not moved by how far they
+        # went between the frames: relaxing the reactant can swing a stretched atom round its
+        # partner, and that move added on can land it on a neighbor. Nothing is constrained:
+        # every atom and, for NPT, the cell relax.
+        start = reactant.get_scaled_positions(wrap=False)
+        start[moved] = product.get_scaled_positions(wrap=False)[moved]
+        product.set_cell(reactant.cell)
+        product.set_scaled_positions(start)
         product_converged = _relax(
             product,
             stage="relax_product",
@@ -601,6 +616,17 @@ def _refine_pathway(
                     )
                 )
                 profile = energies if pressure_GPa is None else enthalpies
+                # A saddle between two minima lies above both. When an endpoint is the highest
+                # point, the band has not found one, so there is no barrier or saddle to check.
+                if max(profile[1:-1]) <= max(profile[0], profile[-1]):
+                    return PathwayOutcome(
+                        "ci_neb_converged",
+                        energies=energies,
+                        enthalpies=enthalpies,
+                        volumes=volumes,
+                        images=_snapshots(images),
+                        message="an endpoint is the highest point, so the band holds no saddle",
+                    )
                 frequency_validation = _validate_frequencies(
                     images,
                     profile,
