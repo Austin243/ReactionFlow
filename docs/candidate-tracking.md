@@ -1,7 +1,7 @@
 # Reaction candidate tracking
 
-`ReactionTracker` groups stable bond topologies into connected reactant/product candidates. It is
-an in-memory layer between bond detection and later reaction identity or pathway refinement.
+`ReactionTracker` groups stable bond topologies into local reactant/product candidates. It is an
+in-memory layer between bond detection and later reaction identity or pathway refinement.
 
 ```python
 from reactionflow import BondChangeDetector, ReactionTracker
@@ -30,8 +30,15 @@ Start the detector and tracker together so the tracker sees a baseline before an
 ## Tracking semantics
 
 - The first stable topology establishes the accepted reactant basin.
-- Each connected changed region has its own stability window. Connectivity uses the union of
-  accepted, stable, and provisional bonds, so interacting changes stay together.
+- Each changed region has its own stability window. A region is the changed atoms and the atoms
+  within `region_radius` bonds of them (2 by default), over the union of accepted, stable, and
+  provisional bonds. Regions that share an atom merge, so interacting changes stay together.
+- `region_radius=None` makes a region the whole bonded component instead. In a polymer, network,
+  or slab that component holds every change in it, so unrelated changes merge and a crossing
+  anywhere holds back a finished one. A campaign sets the radius as
+  `reaction_run.candidate_region_radius`. A campaign trajectory started before local regions
+  cannot resume under them, because its campaign contract has changed; a run resumed through
+  `ReactionRun.open` keeps whole components.
 - `pending_bonds` freezes each region's last pre-crossing frame. Only provisional detector changes
   in that region block its confirmation; unrelated bond flicker does not delay a stable reaction.
 - A product topology must repeat for `stability_frames` consecutive confirmed observations in its
@@ -46,7 +53,7 @@ Start the detector and tracker together so the tracker sees a baseline before an
 - `finish()` returns incomplete product topologies with `resolved=False` and drains them once.
 
 A candidate contains full, calculator-free copies of the reactant and product structures. Its
-`atom_ids`, `reactant_bonds`, and `product_bonds` describe one connected changed region. The frame
+`atom_ids`, `reactant_bonds`, and `product_bonds` describe one changed region. The frame
 fields record the retained reactant, first observation of the accepted product proposal, and the
 observation that confirmed or drained it.
 

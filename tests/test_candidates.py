@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -198,6 +200,52 @@ def test_independent_noise_does_not_delay_a_stable_local_change() -> None:
     (terminal,) = tracker.finish()
     assert terminal.atom_ids == (2, 3) and not terminal.resolved
     assert tracker.finish() == ()
+
+
+@pytest.mark.parametrize(
+    ("region_radius", "emitted"),
+    [
+        (2, [(3, (0, 1, 2, 3), True)]),
+        # The whole chain is one region, so the flicker holds the break back until the end.
+        (None, [(None, tuple(range(10)), False)]),
+    ],
+)
+def test_flicker_elsewhere_in_a_molecule_does_not_hold_back_a_change(
+    region_radius, emitted
+) -> None:
+    # A ten-atom chain: bond 0-1 breaks for good while bond 8-9, seven bonds away, flickers.
+    ids = tuple(range(10))
+    chain = {(index, index + 1) for index in range(9)}
+    broken = chain - {(0, 1)}
+    tracker = ReactionTracker(stability_frames=3, region_radius=region_radius)
+    tracker.process(tracked_frame("C10", 0, ids), frame=0, stable_bonds=chain, pending_bonds=None)
+    found = []
+    for frame in range(1, 13):
+        atoms = tracked_frame("C10", frame, ids)
+        pending = broken - {(8, 9)} if frame % 2 else None
+        candidates = tracker.process(atoms, frame=frame, stable_bonds=broken, pending_bonds=pending)
+        found += [(frame, candidate) for candidate in candidates]
+    found += [(None, candidate) for candidate in tracker.finish()]
+
+    assert [(frame, item.atom_ids, item.resolved) for frame, item in found] == emitted
+    assert all(item.reactant_bonds ^ item.product_bonds == {(0, 1)} for _, item in found)
+
+
+def test_tracker_checkpoint_keeps_its_region_rule(tmp_path) -> None:
+    for radius in (None, 1):
+        tracker = ReactionTracker(region_radius=radius)
+        atoms = tracked_frame("H2", 0, (1, 2))
+        tracker.process(atoms, frame=0, stable_bonds=[], pending_bonds=None)
+        path = tracker.write_checkpoint(tmp_path / f"radius-{radius}")
+        assert ReactionTracker.read_checkpoint(path).region_radius == radius
+
+    # A checkpoint written before local regions took whole bonded components.
+    value = json.loads((path / "tracker.json").read_text())
+    del value["region_radius"]
+    (path / "tracker.json").write_text(json.dumps(value))
+    assert ReactionTracker.read_checkpoint(path).region_radius is None
+    with pytest.raises(ValueError, match="region_radius"):
+        ReactionTracker(region_radius=-1)
 
 
 def test_detector_pending_regions_survive_independent_confirmation_and_checkpoint(tmp_path) -> None:
