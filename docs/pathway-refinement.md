@@ -44,13 +44,15 @@ once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the movi
 ## Scientific workflow
 
 - Product atoms are aligned to reactant order by stable ID, not array position.
-- NVT retains the fixed reactant cell and configured cell-drift mapping limits. NPT retains and
-  relaxes both endpoint cells at the target pressure, with no fixed-cell mapping limit. SSNEB
-  requires fully periodic, nonsingular, right-handed cells and removes rigid cell rotation.
+- NVT retains the fixed reactant cell and configured cell-drift mapping limits. NPT relaxes each
+  endpoint cell at the target pressure, with no fixed-cell mapping limit. SSNEB requires fully
+  periodic, nonsingular, right-handed cells and removes rigid cell rotation.
 - Every atom relaxes, in the endpoints, the NEB or SSNEB band, and the connectivity check; for NPT
-  the cell relaxes too. The product keeps its own coordinates for atoms in changed bonds and
-  neighbors within `active_radius`. Its other atoms start from the reactant's positions for NVT,
-  or its fractional coordinates for NPT, so both endpoints relax from the same surroundings.
+  the cell relaxes too. The reactant relaxes first. The product then starts from the relaxed
+  reactant, cell included, with only the atoms in changed bonds and the atoms bonded to them placed
+  where they sat in the product frame. Every other atom starts at the same minimum in both
+  endpoints, so the band spends its images on the reaction rather than on hot-frame motion around
+  it, and a hot frame cannot relax the surroundings differently in each.
 - Both endpoints are relaxed and checked against the exact bond thresholds used for detection.
   Collapsed, ambiguous, and unexpectedly changed endpoints do not proceed to NEB. Neither does a
   pair of endpoints whose bonds differ anywhere else in the cell: relaxation that forms or breaks
@@ -66,9 +68,12 @@ once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the movi
 `PathwayOutcome.status` is one of `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
 `ci_neb_failed`, `ci_neb_converged`, or `failed`. Outcomes retain calculator-free endpoint or NEB
 snapshots as far as the attempt progressed. Only `ci_neb_converged` includes image energies and a
-forward barrier in eV: potential energy for NVT, enthalpy for NPT. The `frequency_validation`
-diagnostic is classified as zero, one, or multiple significant imaginary modes, or `failed`.
-That nested status does not change the successful pathway status or prevent MD from resuming.
+forward barrier in eV: potential energy for NVT, enthalpy for NPT. A saddle lies above both
+endpoints, so when an endpoint is the highest point of a converged band, the band has not found
+one. That outcome keeps its image energies but has no barrier, frequency diagnostic, or
+connectivity check, and its message says why. The `frequency_validation` diagnostic is classified
+as zero, one, or multiple significant imaginary modes, or `failed`. That nested status does not
+change the successful pathway status or prevent MD from resuming.
 
 The diagnostic records the saddle-image index, active atom IDs, finite-difference displacement,
 imaginary-mode cutoff, active-atom residual force, complete signed spectrum, significant mode
