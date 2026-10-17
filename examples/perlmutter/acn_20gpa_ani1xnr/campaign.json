@@ -23,7 +23,6 @@
       "persistence_frames": 3
     },
     "pathway": {
-      "active_radius": 4.0,
       "relax_fmax": 0.05,
       "relax_steps": 2000,
       "images": 7,

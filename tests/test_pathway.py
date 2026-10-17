@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from typing import ClassVar
 
@@ -7,6 +8,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
+from ase.io import write
 
 from reactionflow import (
     BondDetectorConfig,
@@ -15,8 +17,9 @@ from reactionflow import (
     atom_ids,
     refine_pathway,
 )
+from reactionflow.cli import main
 from reactionflow.detection import classify_bonds
-from reactionflow.pathway import FIRE, NEB, _check_connectivity, _classify_frequencies
+from reactionflow.pathway import FIRE, NEB, _check_connectivity, check_saddle
 
 
 class DoubleWell(Calculator):
@@ -160,7 +163,6 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
         pathway_candidate(),
         calculator_provider=provider,
         config=PathwayConfig(
-            active_radius=0.2,
             relax_fmax=0.02,
             relax_steps=100,
             images=5,
@@ -171,25 +173,30 @@ def test_refinement_aligns_ids_freezes_spectators_and_finds_double_well_barrier(
         detector_config=BondDetectorConfig(pair_thresholds={"He-He": (5.07, 5.13)}),
     )
 
-    assert outcome.converged, outcome.message
+    assert outcome.status == "saddle_validated", outcome.message
+    assert outcome.converged
     assert outcome.barrier == pytest.approx(1.0, abs=0.02)
     assert len(outcome.energies) == len(outcome.images) == 5
     validation = outcome.frequency_validation
     assert validation is not None
     assert validation.status == "one_imaginary_mode"
     assert validation.transition_state_index == 1 + int(np.argmax(outcome.energies[1:-1]))
-    assert validation.active_atom_ids == (0, 1)
+    # Only atom 1 moves through the saddle, so the six atoms that move most are all three.
+    assert validation.active_atom_ids == (0, 1, 2)
     assert validation.active_max_force_eV_A is not None
     assert validation.active_max_force_eV_A < 0.03
-    assert len(validation.frequencies_cm1) == 3 * len(validation.active_atom_ids)
-    assert validation.imaginary_mode_indices == (0,)
+    assert len(validation.eigenvalues_eV_A2) == len(validation.frequencies_cm1) == 9
+    # The well curves by -4 eV/Å² at its top, which is 521i cm⁻¹ for helium.
+    assert validation.eigenvalues_eV_A2[0] == pytest.approx(-4, abs=0.05)
+    assert validation.eigenvalues_eV_A2[1] > -validation.curvature_cutoff_eV_A2
     assert validation.frequencies_cm1[0] == pytest.approx(-521.3, abs=2)
-    assert validation.primary_mode_index == 0
+    assert validation.tangent_overlap == pytest.approx(1)
     assert outcome.connectivity is not None
     assert outcome.connectivity.status == "connects_endpoints"
     assert set(outcome.connectivity.sides) == {"reactant", "product"}
     np.testing.assert_allclose(validation.primary_mode[0], 0, atol=1e-10)
     np.testing.assert_allclose(np.abs(validation.primary_mode[1]), [1, 0, 0], atol=1e-10)
+    np.testing.assert_allclose(validation.primary_mode[2], 0, atol=1e-10)
     assert stages == ["relax_reactant", "relax_product", "neb"]
     assert interpolation == {"method": "idpp", "mic": True}
     assert climbing_stages == [False, True]
@@ -210,8 +217,8 @@ def test_product_moves_only_the_reacting_atoms_so_spectators_settle_alike(pressu
     # Atom 1 leaves atom 0. Spectator 2 sits on the ridge between its two wells, as it can in a
     # hot frame: bonded to atom 3 in one well and not in the other. Atom 1 tilts that ridge
     # oppositely in the two frames, so relaxed separately the endpoints settle 2 differently.
-    # With a hop, 2 has also dropped into its unbonded well by the product frame. It lies within
-    # active_radius but is bonded to neither reacting atom, so that move must not reach the product.
+    # With a hop, 2 has also dropped into its unbonded well by the product frame. It is bonded to
+    # neither reacting atom, so that move must not reach the product.
     reactant = Atoms(
         "He4",
         positions=[[2, 15, 15], [4.1, 15, 15], [15, 15, 15], [18, 15, 15]],
@@ -242,7 +249,6 @@ def test_product_moves_only_the_reacting_atoms_so_spectators_settle_alike(pressu
         candidate,
         calculator_provider=provider,
         config=PathwayConfig(
-            active_radius=10.0,
             relax_fmax=0.01,
             relax_steps=500,
             images=5,
@@ -254,7 +260,7 @@ def test_product_moves_only_the_reacting_atoms_so_spectators_settle_alike(pressu
         pressure_GPa=pressure,
     )
 
-    assert outcome.converged, outcome.message
+    assert outcome.status == "saddle_validated", outcome.message
     first, last = outcome.images[0], outcome.images[-1]
     assert first.get_distance(0, 1) < 2.5 < 3 < last.get_distance(0, 1)
     assert first.get_distance(2, 3) < 2.5 and last.get_distance(2, 3) < 2.5
@@ -348,11 +354,11 @@ def test_band_whose_highest_point_is_an_endpoint_reports_no_barrier(monkeypatch)
     outcome = refine_pathway(
         candidate,
         calculator_provider=uphill,
-        config=PathwayConfig(active_radius=0.5, relax_fmax=0.01, relax_steps=500, images=3),
+        config=PathwayConfig(relax_fmax=0.01, relax_steps=500, images=3),
         detector_config=BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)}),
     )
 
-    assert outcome.status == "ci_neb_converged"
+    assert outcome.status == "no_saddle"
     assert outcome.energies[1] < outcome.energies[-1] == max(outcome.energies)
     assert outcome.barrier is None
     assert outcome.frequency_validation is None and outcome.connectivity is None
@@ -386,7 +392,7 @@ def test_refinement_returns_small_bounded_failure_outcomes() -> None:
     collapsed = refine_pathway(
         pathway_candidate(collapsed=True),
         calculator_provider=double_well,
-        config=PathwayConfig(active_radius=0.2, relax_fmax=0.02, relax_steps=100),
+        config=PathwayConfig(relax_fmax=0.02, relax_steps=100),
         detector_config=thresholds,
     )
 
@@ -397,7 +403,7 @@ def test_refinement_returns_small_bounded_failure_outcomes() -> None:
     relaxation_failed = refine_pathway(
         pathway_candidate(),
         calculator_provider=constant_force,
-        config=PathwayConfig(active_radius=0.2, relax_fmax=1e-12, relax_steps=1),
+        config=PathwayConfig(relax_fmax=1e-12, relax_steps=1),
         detector_config=thresholds,
     )
 
@@ -419,49 +425,155 @@ def test_refinement_returns_small_bounded_failure_outcomes() -> None:
     assert failed.status == "failed" and "calculator unavailable" in failed.message
 
 
+class Saddle(Calculator):
+    """Atom 1 crosses (curvature / 4)(x² - 1)² along x, which curves by -curvature at x = 0."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def __init__(self, curvature: float = 4.0, bend: float = 2.0) -> None:
+        super().__init__()
+        self.curvature = curvature
+        self.bend = bend
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        index = atom_ids(self.atoms).index(1)
+        x, y, z = self.atoms.positions[index]
+        energy = self.curvature / 4 * (x * x - 1) ** 2 + self.bend / 2 * y * y + z * z
+        forces = np.zeros((len(self.atoms), 3))
+        forces[index] = (-self.curvature * x * (x * x - 1), -self.bend * y, -2 * z)
+        self.results = {"energy": float(energy), "forces": forces}
+
+
+# Atom 0 is bonded to atom 1 at x = -1 (5.06 A) and not at x = +1 (5.14 A).
+SADDLE_BONDS = BondDetectorConfig(pair_thresholds={"He-He": (5.07, 5.13)})
+
+
+def band(*xs: float, spectators: tuple = ()) -> list[Atoms]:
+    """Atom 1 at each x; each spectator gives atom 2's position in the image with the same index."""
+
+    images = []
+    for index, x in enumerate(xs):
+        positions = [[-0.2, 5, 0], [x, 0, 0], *spectators[index : index + 1]]
+        atoms = Atoms(f"He{len(positions)}", positions=positions, cell=[10, 10, 10], pbc=True)
+        atoms.set_array("atom_id", np.arange(len(atoms)))
+        images.append(atoms)
+    return images
+
+
 @pytest.mark.parametrize(
-    ("raw", "expected_signed", "expected_indices", "expected_status"),
+    ("curvature", "bend", "status", "modes"),
     [
-        (
-            np.asarray([100.0 + 0j, 49.0j]),
-            (100.0, -49.0),
-            (),
-            "zero_imaginary_modes",
-        ),
-        (
-            np.asarray([50.0j, 100.0 + 0j]),
-            (-50.0, 100.0),
-            (0,),
-            "one_imaginary_mode",
-        ),
-        (
-            np.asarray([60.0j, -75.0j]),
-            (-60.0, -75.0),
-            (0, 1),
-            "multiple_imaginary_modes",
-        ),
+        (4.0, 2.0, "saddle_validated", "one_imaginary_mode"),
+        # 52i cm⁻¹ for helium, beyond the old 50 cm⁻¹ rule, but flatter than -0.05 eV/Å².
+        (0.04, 2.0, "no_saddle", "zero_imaginary_modes"),
+        (4.0, -2.0, "saddle_rejected", "multiple_imaginary_modes"),
     ],
 )
-def test_frequency_classification_uses_a_significant_imaginary_cutoff(
-    raw,
-    expected_signed,
-    expected_indices,
-    expected_status,
-) -> None:
-    signed, indices, status = _classify_frequencies(raw, cutoff_cm1=50.0)
+def test_saddle_gate_counts_curvatures_beyond_the_cutoff(curvature, bend, status, modes) -> None:
+    outcome = check_saddle(band(-1, 0, 1), Saddle(curvature, bend), detector_config=SADDLE_BONDS)
 
-    assert signed == expected_signed
-    assert indices == expected_indices
-    assert status == expected_status
+    assert outcome.status == status, outcome.message
+    validation = outcome.frequency_validation
+    assert validation is not None and validation.status == modes
+    if status == "saddle_validated":
+        assert outcome.barrier == pytest.approx(curvature / 4)
+        assert outcome.connectivity is not None
+        assert outcome.connectivity.status == "connects_endpoints"
+    else:
+        assert outcome.barrier is None
+    if status == "no_saddle":
+        assert validation.frequencies_cm1[0] == pytest.approx(-52.1, abs=0.5)
+        assert outcome.connectivity is None
 
 
-def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> None:
-    def fail_frequency_setup(atoms):
-        if atoms.calc is not None:
-            raise RuntimeError("frequency setup unavailable")
-        return atom_ids(atoms)
+def test_saddle_that_misses_an_end_of_the_band_is_rejected() -> None:
+    # The band's product end also bonds atom 2 to atom 0, which the saddle never leads to.
+    images = band(-1, 0, 1, spectators=([5, 5, 5], [5, 5, 5], [-0.2, 5, 5]))
 
-    monkeypatch.setattr("reactionflow.pathway.atom_ids", fail_frequency_setup)
+    outcome = check_saddle(images, Saddle(), detector_config=SADDLE_BONDS)
+
+    assert outcome.status == "saddle_rejected", outcome.message
+    assert outcome.barrier is None
+    assert outcome.connectivity is not None
+    assert outcome.connectivity.status == "does_not_connect"
+    assert sorted(outcome.connectivity.sides) == ["other", "reactant"]
+
+
+def test_ends_with_the_same_bonds_are_told_apart_by_distance() -> None:
+    # No pair is bonded anywhere, as in a conformer change, so each side reaches the nearer end.
+    unbonded = BondDetectorConfig(pair_thresholds={"He-He": (1.0, 1.1)})
+
+    outcome = check_saddle(band(-1, 0, 1), Saddle(), detector_config=unbonded)
+
+    assert outcome.status == "saddle_validated", outcome.message
+    assert outcome.connectivity is not None
+    assert sorted(outcome.connectivity.sides) == ["product", "reactant"]
+
+
+def test_check_leaves_the_band_unchanged() -> None:
+    images = band(-1, 0.3, 1)
+    before = [image.positions.copy() for image in images]
+
+    outcome = check_saddle(images, Saddle(), detector_config=SADDLE_BONDS)
+
+    assert outcome.frequency_validation is not None
+    for image, positions in zip(images, before, strict=True):
+        assert image.calc is None
+        np.testing.assert_array_equal(image.positions, positions)
+
+
+def test_cli_check_writes_the_verdict_beside_the_band(tmp_path, monkeypatch, capsys) -> None:
+    # A check inside a Slurm job takes its trajectory from --index, not from the job's tasks.
+    monkeypatch.setenv("SLURM_NTASKS", "4")
+    monkeypatch.setenv("SLURM_PROCID", "3")
+    images = band(-1, 0, 1)
+    write(tmp_path / "path.extxyz", images)
+    write(tmp_path / "start.extxyz", images[0])
+    campaign = {
+        "schema_version": 2,
+        "structure": "start.extxyz",
+        "output_root": "runs",
+        "require_gpu": False,
+        "adapter_profiles": {
+            "saddle": {
+                "factory": "reactionflow.adapters.ase:create_adapter",
+                "options": {"calculator_factory": f"{__name__}:Saddle"},
+            }
+        },
+        "reaction_run": {"detector": {"pair_thresholds": {"He-He": [5.07, 5.13]}}},
+        "trajectories": [
+            {
+                "id": "only",
+                "adapter_profile": "saddle",
+                "total_steps": 1,
+                "timestep_fs": 1.0,
+                "temperature_K": 300.0,
+                "pressure_GPa": None,
+                "seed": 1,
+            }
+        ],
+    }
+    (tmp_path / "campaign.json").write_text(json.dumps(campaign))
+
+    assert main(["check", str(tmp_path / "campaign.json"), str(tmp_path / "path.extxyz")]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "saddle_validated"
+    assert printed["barrier_eV"] == pytest.approx(1.0)
+    written = json.loads((tmp_path / "path.check.json").read_text())
+    assert printed["check"] == str(tmp_path / "path.check.json")
+    assert written["trajectory_id"] == "only" and written["status"] == "saddle_validated"
+    assert written["frequency_validation"]["status"] == "one_imaginary_mode"
+    assert written["connectivity"]["status"] == "connects_endpoints"
+    assert "method" not in written
+
+
+def test_hessian_failure_leaves_the_saddle_unchecked(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("synthetic Hessian failure")
+
+    monkeypatch.setattr("reactionflow.pathway._hessian", fail)
 
     @contextmanager
     def provider(_stage: str):
@@ -471,7 +583,6 @@ def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> Non
         pathway_candidate(),
         calculator_provider=provider,
         config=PathwayConfig(
-            active_radius=0.2,
             relax_fmax=0.02,
             relax_steps=100,
             images=5,
@@ -482,14 +593,16 @@ def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> Non
         detector_config=BondDetectorConfig(pair_thresholds={"He-He": (5.07, 5.13)}),
     )
 
-    assert outcome.status == "ci_neb_converged"
-    assert outcome.converged
-    assert len(outcome.images) == 5
+    assert outcome.status == "saddle_unchecked"
+    assert outcome.converged and outcome.barrier is None
+    assert len(outcome.images) == len(outcome.energies) == 5
     assert all(image.calc is None for image in outcome.images)
     validation = outcome.frequency_validation
     assert validation is not None
     assert validation.status == "failed"
-    assert "frequency setup unavailable" in validation.message
+    assert validation.message == "synthetic Hessian failure"
+    assert "synthetic Hessian failure" in outcome.message
+    assert outcome.connectivity is None
 
 
 @pytest.mark.parametrize(
@@ -497,13 +610,21 @@ def test_frequency_failure_does_not_discard_a_converged_path(monkeypatch) -> Non
     [
         ("frequency_delta", np.nan),
         ("frequency_delta", np.inf),
-        ("imaginary_frequency_cutoff_cm1", np.nan),
-        ("imaginary_frequency_cutoff_cm1", np.inf),
+        ("curvature_cutoff_eV_A2", np.nan),
+        ("curvature_cutoff_eV_A2", np.inf),
     ],
 )
 def test_frequency_config_rejects_non_finite_controls(field, value) -> None:
     with pytest.raises(ValueError):
         PathwayConfig(**{field: value})
+
+
+def test_settings_of_the_retired_frequency_check_are_ignored() -> None:
+    old = {"active_radius": 4.0, "imaginary_frequency_cutoff_cm1": 50.0, "relax_fmax": 0.02}
+
+    assert PathwayConfig.from_dict(old) == PathwayConfig(relax_fmax=0.02)
+    with pytest.raises(TypeError):
+        PathwayConfig.from_dict({"active_radii": 4.0})
 
 
 class IndependentReactions(Calculator):

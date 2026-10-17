@@ -16,6 +16,7 @@ from .pathway import (
     FrequencyValidation,
     PathwayConfig,
     PathwayOutcome,
+    check_saddle,
     refine_pathway,
 )
 from .restart import ComponentState, ExactRestartSnapshot
@@ -46,6 +47,7 @@ __all__ = [
     "__version__",
     "assign_atom_ids",
     "atom_ids",
+    "check_saddle",
     "load_mlip_adapter",
     "refine_pathway",
     "same_reaction",

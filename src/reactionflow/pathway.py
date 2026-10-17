@@ -1,13 +1,13 @@
-"""Endpoint relaxation, NVT NEB or constant-pressure SSNEB, and frequencies."""
+"""Endpoint relaxation, NVT NEB or constant-pressure SSNEB, and the saddle check."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from itertools import product
 from numbers import Integral
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from typing import Any
 
 import numpy as np
 from ase import Atoms, units
@@ -16,7 +16,6 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from ase.geometry import find_mic
 from ase.mep import NEB
 from ase.optimize import FIRE
-from ase.vibrations import Vibrations
 
 from .candidates import ReactionCandidate
 from .detection import Bond, BondDetectorConfig, atom_ids, canonical_copy, classify_bonds
@@ -24,8 +23,22 @@ from .ssneb import SSNEB, cell_filter
 
 CalculatorProvider = Callable[[str], AbstractContextManager[Calculator]]
 
-# Total displacement of the saddle along its unit imaginary mode before each side is relaxed.
+# The saddle's Hessian covers the atoms that move more than _ACTIVE_MOTION_A between the images
+# either side of it, and at least _MIN_ACTIVE_ATOMS atoms. Each side of the connectivity check
+# starts from the saddle moved along its lowest mode until the atom that moves most has moved
+# _CONNECTIVITY_DISPLACEMENT_A.
+_ACTIVE_MOTION_A = 0.05
+_MIN_ACTIVE_ATOMS = 6
 _CONNECTIVITY_DISPLACEMENT_A = 0.1
+
+# A converged CI-NEB band ends as one of these, and only saddle_validated carries a barrier.
+CONVERGED_STATUSES = frozenset(
+    {"saddle_validated", "no_saddle", "saddle_rejected", "saddle_unchecked"}
+)
+
+# Settings of the frequency check that the saddle check replaced. Campaign and state files that
+# still name them open, and the settings are ignored.
+_RETIRED_KEYS = frozenset({"active_radius", "imaginary_frequency_cutoff_cm1"})
 
 
 class _EndpointUnresolved(ValueError):
@@ -34,9 +47,8 @@ class _EndpointUnresolved(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PathwayConfig:
-    """Small set of controls for endpoint relaxation, CI-NEB, and frequencies."""
+    """Small set of controls for endpoint relaxation, CI-NEB, and the saddle check."""
 
-    active_radius: float = 4.0
     relax_fmax: float = 0.05
     relax_steps: int = 2000
     images: int = 7
@@ -46,17 +58,16 @@ class PathwayConfig:
     max_volume_change_fraction: float = 0.05
     max_cell_strain: float = 0.05
     frequency_delta: float = 0.01
-    imaginary_frequency_cutoff_cm1: float = 50.0
+    curvature_cutoff_eV_A2: float = 0.05
 
     def __post_init__(self) -> None:
         if (
-            self.active_radius <= 0
-            or self.relax_fmax <= 0
+            self.relax_fmax <= 0
             or self.neb_fmax <= 0
             or not np.isfinite(self.frequency_delta)
             or self.frequency_delta <= 0
         ):
-            raise ValueError("radii, force tolerances, and frequency delta must be positive")
+            raise ValueError("force tolerances and frequency delta must be positive")
         counts = (self.relax_steps, self.images, self.neb_steps, self.ci_neb_steps)
         if any(isinstance(count, bool) or not isinstance(count, Integral) for count in counts):
             raise ValueError("step counts and images must be whole numbers")
@@ -65,37 +76,48 @@ class PathwayConfig:
         if (
             self.max_volume_change_fraction < 0
             or self.max_cell_strain < 0
-            or not np.isfinite(self.imaginary_frequency_cutoff_cm1)
-            or self.imaginary_frequency_cutoff_cm1 < 0
+            or not np.isfinite(self.curvature_cutoff_eV_A2)
+            or self.curvature_cutoff_eV_A2 < 0
         ):
-            raise ValueError("cell-change limits and the imaginary cutoff must be non-negative")
+            raise ValueError("cell-change limits and the curvature cutoff must be non-negative")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> PathwayConfig:
+        return cls(**{key: item for key, item in value.items() if key not in _RETIRED_KEYS})
 
 
 @dataclass(frozen=True, slots=True)
 class FrequencyValidation:
-    """Constrained active-region frequency result for one climbing image."""
+    """Fixed-cell Hessian of the saddle image over the atoms that move through it.
+
+    Modes are the eigenvalues of the Cartesian Hessian below -curvature_cutoff_eV_A2.
+    frequencies_cm1 comes from the same Hessian with mass weighting, with imaginary frequencies
+    as negative values; a Hessian has the same number of negative eigenvalues either way.
+    """
 
     status: str
     transition_state_index: int | None
     active_atom_ids: tuple[int, ...]
     displacement_A: float
-    imaginary_cutoff_cm1: float
+    curvature_cutoff_eV_A2: float
     scope: str = "active_atoms_fixed_environment"
     active_max_force_eV_A: float | None = None
+    eigenvalues_eV_A2: tuple[float, ...] = ()
     frequencies_cm1: tuple[float, ...] = ()
-    imaginary_mode_indices: tuple[int, ...] = ()
-    primary_mode_index: int | None = None
+    tangent_overlap: float | None = None
     primary_mode: tuple[tuple[float, float, float], ...] = ()
     message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class ConnectivityCheck:
-    """Where the saddle relaxes when displaced both ways along its primary imaginary mode.
+    """Where the saddle relaxes when moved both ways along its lowest mode.
 
-    Each side is "reactant", "product", "other", "ambiguous" (a pair left inside the
-    hysteresis gap), "not_converged", or "no_step" (the displaced copy already met the force
-    tolerance, so the mode is too soft to test at this displacement).
+    displacement_A is how far the atom that moves most is moved. Each side is "reactant",
+    "product", "other", "ambiguous" (a pair left inside the hysteresis gap), "not_converged", or
+    "no_step" (the moved copy already met the force tolerance, so the mode is too soft to test at
+    this displacement). When both ends of the band have the same bonds, a side reaches the end
+    nearer to it.
     """
 
     status: str
@@ -126,7 +148,26 @@ class PathwayOutcome:
 
     @property
     def converged(self) -> bool:
-        return self.status in {"neb_converged", "ci_neb_converged"}
+        return self.status in CONVERGED_STATUSES
+
+    def to_dict(self) -> dict[str, Any]:
+        """The outcome without its images, as result.json and check.json store it."""
+
+        return {
+            "status": self.status,
+            "barrier_eV": self.barrier,
+            "energies_eV": list(self.energies),
+            "method": self.method,
+            "pressure_GPa": self.pressure_GPa,
+            "barrier_quantity": self.barrier_quantity,
+            "enthalpies_eV": list(self.enthalpies),
+            "volumes_A3": list(self.volumes),
+            "message": self.message,
+            "frequency_validation": (
+                None if self.frequency_validation is None else asdict(self.frequency_validation)
+            ),
+            "connectivity": None if self.connectivity is None else asdict(self.connectivity),
+        }
 
 
 def _prepare_endpoints(
@@ -134,7 +175,7 @@ def _prepare_endpoints(
     config: PathwayConfig,
     *,
     variable_cell: bool = False,
-) -> tuple[Atoms, Atoms, tuple[int, ...]]:
+) -> tuple[Atoms, Atoms]:
     reactant = canonical_copy(candidate.reactant)
     product = canonical_copy(candidate.product)
     reactant.set_constraint()
@@ -193,23 +234,9 @@ def _prepare_endpoints(
             displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
         product.positions = reactant.positions + displacement
 
-    indices = {atom_id: index for index, atom_id in enumerate(first_ids)}
-    if not set(candidate.atom_ids) <= indices.keys():
+    if not set(candidate.atom_ids) <= set(first_ids):
         raise ValueError("candidate atom IDs are missing from its endpoints")
-    changed_atoms = {
-        atom_id for bond in candidate.reactant_bonds ^ candidate.product_bonds for atom_id in bond
-    }
-    centers = {indices[atom_id] for atom_id in changed_atoms}
-    active = set(centers)
-    for center in centers:
-        for endpoint in (reactant, product):
-            distances = endpoint.get_distances(center, range(len(endpoint)), mic=True)
-            active.update(
-                index
-                for index, distance in enumerate(distances)
-                if distance <= config.active_radius
-            )
-    return reactant, product, tuple(sorted(active))
+    return reactant, product
 
 
 def _endpoint_status(
@@ -255,99 +282,80 @@ def _snapshots(images: list[Atoms]) -> tuple[Atoms, ...]:
     return tuple(image.copy() for image in images)
 
 
-def _classify_frequencies(
-    frequencies: np.ndarray,
-    cutoff_cm1: float,
-) -> tuple[tuple[float, ...], tuple[int, ...], str]:
-    values = np.asarray(frequencies, dtype=complex).reshape(-1)
-    if not np.isfinite(values.real).all() or not np.isfinite(values.imag).all():
-        raise ValueError("frequency calculation produced non-finite values")
+def _hessian(
+    atoms: Atoms, active: Sequence[int], calculator: Calculator, step: float
+) -> np.ndarray:
+    """Symmetrized central-difference Hessian in eV/Å² over the active atoms, cell fixed."""
 
-    signed = tuple(
-        -float(abs(value.imag)) if value.imag != 0 else float(value.real) for value in values
-    )
-    imaginary = tuple(
-        index
-        for index, value in enumerate(values)
-        if abs(value.imag) > 0 and abs(value.imag) >= cutoff_cm1
-    )
-    status = (
-        "zero_imaginary_modes"
-        if not imaginary
-        else "one_imaginary_mode"
-        if len(imaginary) == 1
-        else "multiple_imaginary_modes"
-    )
-    return signed, imaginary, status
+    columns = []
+    for atom, axis in product(active, range(3)):
+        gradients = []
+        for sign in (1.0, -1.0):
+            trial = atoms.copy()
+            trial.positions[atom, axis] += sign * step
+            trial.calc = calculator
+            gradients.append(-trial.get_forces(apply_constraint=False)[active].reshape(-1))
+        columns.append((gradients[0] - gradients[1]) / (2 * step))
+    hessian = np.column_stack(columns)
+    return 0.5 * (hessian + hessian.T)
 
 
 def _validate_frequencies(
-    images: list[Atoms],
-    energies: tuple[float, ...],
-    active_indices: tuple[int, ...],
+    images: Sequence[Atoms],
+    profile: Sequence[float],
     calculator: Calculator,
     config: PathwayConfig,
 ) -> FrequencyValidation:
     transition_state_index: int | None = None
-    transition_state: Atoms | None = None
     active_atom_ids: tuple[int, ...] = ()
     active_max_force: float | None = None
     try:
-        transition_state_index = 1 + int(np.argmax(energies[1:-1]))
-        transition_state = images[transition_state_index].copy()
-        transition_state.calc = calculator
-        active_atom_ids = tuple(atom_ids(transition_state)[index] for index in active_indices)
-        forces = transition_state.get_forces(apply_constraint=False)[list(active_indices)]
+        transition_state_index = 1 + int(np.argmax(profile[1:-1]))
+        saddle = images[transition_state_index]
+        before, after = images[transition_state_index - 1], images[transition_state_index + 1]
+        tangent = after.positions - before.positions
+        if saddle.pbc.any():
+            tangent = find_mic(tangent, cell=saddle.cell, pbc=saddle.pbc)[0]
+        moves = np.linalg.norm(tangent, axis=1)
+        active = np.flatnonzero(moves > _ACTIVE_MOTION_A)
+        if len(active) < _MIN_ACTIVE_ATOMS:  # a very local mode: keep the atoms that move most
+            active = np.sort(np.argsort(moves)[-_MIN_ACTIVE_ATOMS:])
+        active_atom_ids = tuple(atom_ids(saddle)[index] for index in active)
+        evaluated = saddle.copy()
+        evaluated.calc = calculator
+        forces = evaluated.get_forces(apply_constraint=False)[active]
         active_max_force = float(np.linalg.norm(forces, axis=1).max())
-        if not np.isfinite(active_max_force):
-            raise ValueError("transition-state forces are non-finite")
+        hessian = _hessian(saddle, active, calculator, config.frequency_delta)
+        if not np.isfinite(active_max_force) or not np.isfinite(hessian).all():
+            raise ValueError("saddle forces or Hessian are non-finite")
 
-        with TemporaryDirectory(prefix="reactionflow-frequencies-") as temporary:
-            vibrations = Vibrations(
-                transition_state,
-                indices=active_indices,
-                name=str(Path(temporary) / "vibrations"),
-                delta=config.frequency_delta,
-                nfree=2,
-            )
-            vibrations.run()
-            vibration_data = vibrations.get_vibrations(
-                method="standard",
-                direction="central",
-            )
-            raw_frequencies = vibration_data.get_frequencies()
-            frequencies, imaginary_indices, status = _classify_frequencies(
-                raw_frequencies,
-                config.imaginary_frequency_cutoff_cm1,
-            )
-
-            primary_index: int | None = None
-            primary_mode: tuple[tuple[float, float, float], ...] = ()
-            if imaginary_indices:
-                primary_index = min(imaginary_indices, key=frequencies.__getitem__)
-                vector = np.asarray(
-                    vibration_data.get_modes(all_atoms=False)[primary_index],
-                    dtype=float,
-                )
-                norm = float(np.linalg.norm(vector))
-                if not np.isfinite(vector).all() or not np.isfinite(norm) or norm == 0:
-                    raise ValueError("primary imaginary mode is not finite and non-zero")
-                vector /= norm
-                primary_mode = tuple(
-                    tuple(float(component) for component in displacement) for displacement in vector
-                )
-
+        values, vectors = np.linalg.eigh(hessian)
+        modes = int((values < -config.curvature_cutoff_eV_A2).sum())
+        weights = np.repeat(saddle.get_masses()[active] ** -0.5, 3)
+        weighted = np.linalg.eigvalsh(hessian * np.outer(weights, weights))
+        # hbar sqrt(eV / Å² / amu) in cm⁻¹
+        scale = units._hbar * 1e10 / np.sqrt(units._e * units._amu) / units.invcm
+        along = tangent[active].reshape(-1)
+        length = float(np.linalg.norm(along))
         return FrequencyValidation(
-            status=status,
+            status={0: "zero_imaginary_modes", 1: "one_imaginary_mode"}.get(
+                modes, "multiple_imaginary_modes"
+            ),
             transition_state_index=transition_state_index,
             active_atom_ids=active_atom_ids,
             displacement_A=config.frequency_delta,
-            imaginary_cutoff_cm1=config.imaginary_frequency_cutoff_cm1,
+            curvature_cutoff_eV_A2=config.curvature_cutoff_eV_A2,
             active_max_force_eV_A=active_max_force,
-            frequencies_cm1=frequencies,
-            imaginary_mode_indices=imaginary_indices,
-            primary_mode_index=primary_index,
-            primary_mode=primary_mode,
+            eigenvalues_eV_A2=tuple(map(float, values)),
+            frequencies_cm1=tuple(
+                map(float, np.sign(weighted) * scale * np.sqrt(np.abs(weighted)))
+            ),
+            tangent_overlap=float(abs(vectors[:, 0] @ along) / length) if length else None,
+            primary_mode=(
+                tuple(tuple(map(float, row)) for row in vectors[:, 0].reshape(-1, 3))
+                if modes
+                else ()
+            ),
         )
     except Exception as exc:
         return FrequencyValidation(
@@ -355,13 +363,10 @@ def _validate_frequencies(
             transition_state_index=transition_state_index,
             active_atom_ids=active_atom_ids,
             displacement_A=config.frequency_delta,
-            imaginary_cutoff_cm1=config.imaginary_frequency_cutoff_cm1,
+            curvature_cutoff_eV_A2=config.curvature_cutoff_eV_A2,
             active_max_force_eV_A=active_max_force,
             message=str(exc),
         )
-    finally:
-        if transition_state is not None:
-            transition_state.calc = None
 
 
 def _minimize(
@@ -396,6 +401,13 @@ def _relax(
         return _minimize(atoms, calculator, config, pressure_GPa)[0]
 
 
+def _rmsd(atoms: Atoms, reference: Atoms) -> float:
+    difference = atoms.positions - reference.positions
+    if reference.pbc.any():
+        difference = find_mic(difference, cell=reference.cell, pbc=reference.pbc)[0]
+    return float(np.sqrt((difference**2).sum(axis=1).mean()))
+
+
 def _check_connectivity(
     saddle: Atoms,
     mode: tuple[tuple[float, float, float], ...],
@@ -407,7 +419,7 @@ def _check_connectivity(
     *,
     endpoints: tuple[Atoms, Atoms],
 ) -> ConnectivityCheck:
-    """Relax the saddle displaced both ways along its imaginary mode and classify each side."""
+    """Relax the saddle moved both ways along its lowest mode and classify each side."""
 
     sides: list[str] = []
     try:
@@ -420,11 +432,11 @@ def _check_connectivity(
                 _CONNECTIVITY_DISPLACEMENT_A,
                 message="a relaxed endpoint contains atom pairs inside the hysteresis gap",
             )
+        vectors = np.asarray(mode, dtype=float)
+        step = _CONNECTIVITY_DISPLACEMENT_A * vectors / np.linalg.norm(vectors, axis=1).max()
         for sign in (-1.0, 1.0):
             side = saddle.copy()
-            side.positions[list(active_indices)] += (
-                sign * _CONNECTIVITY_DISPLACEMENT_A * np.asarray(mode, dtype=float)
-            )
+            side.positions[list(active_indices)] += sign * step
             converged, steps = _minimize(side, calculator, config, pressure_GPa)
             if not converged:
                 sides.append("not_converged")
@@ -437,10 +449,14 @@ def _check_connectivity(
             bonds, gap = classify_bonds(side, detector_config)
             if gap:
                 sides.append("ambiguous")
-                continue
-            sides.append(
-                "reactant" if bonds == reactant else "product" if bonds == product else "other"
-            )
+            elif bonds == reactant == product:
+                # A step that changes no bond, such as a conformer change: the nearer end.
+                nearer = _rmsd(side, endpoints[0]) <= _rmsd(side, endpoints[1])
+                sides.append("reactant" if nearer else "product")
+            else:
+                sides.append(
+                    "reactant" if bonds == reactant else "product" if bonds == product else "other"
+                )
     except Exception as exc:
         return ConnectivityCheck(
             "failed", _CONNECTIVITY_DISPLACEMENT_A, tuple(sides), message=str(exc)
@@ -454,6 +470,104 @@ def _check_connectivity(
     return ConnectivityCheck(status, _CONNECTIVITY_DISPLACEMENT_A, tuple(sides))
 
 
+def _verdict(
+    validation: FrequencyValidation, connectivity: ConnectivityCheck | None
+) -> tuple[str, str]:
+    if validation.status == "failed":
+        return "saddle_unchecked", f"the Hessian failed: {validation.message}"
+    if validation.status == "zero_imaginary_modes":
+        return "no_saddle", "the highest image has no negative curvature beyond the cutoff"
+    if validation.status == "multiple_imaginary_modes":
+        return "saddle_rejected", "the highest image has more than one negative curvature"
+    assert connectivity is not None
+    if connectivity.status == "connects_endpoints":
+        return "saddle_validated", ""
+    if connectivity.status == "does_not_connect":
+        return "saddle_rejected", "the saddle does not relax to both ends of the band"
+    if connectivity.status == "failed":
+        return "saddle_unchecked", f"the connectivity check failed: {connectivity.message}"
+    detail = f": {connectivity.message}" if connectivity.message else ""
+    return "saddle_unchecked", f"the connectivity check was inconclusive{detail}"
+
+
+def check_saddle(
+    images: Sequence[Atoms],
+    calculator: Calculator,
+    *,
+    detector_config: BondDetectorConfig,
+    config: PathwayConfig | None = None,
+    pressure_GPa: float | None = None,
+) -> PathwayOutcome:
+    """Test whether a converged band's highest interior image is a saddle between its two ends.
+
+    The image must have exactly one negative curvature in its fixed-cell Hessian, and the saddle
+    moved both ways along that mode must relax to the two ends; only then does the outcome carry a
+    barrier. The profile is the energy, or the enthalpy at ``pressure_GPa``, where the sides also
+    relax the cell. The images are not changed.
+    """
+
+    options = config or PathwayConfig()
+    band = [canonical_copy(image) for image in images]
+    if len(band) < 3:
+        raise ValueError("a band needs its two ends and at least one image between them")
+    energies = []
+    for image in band:
+        image.calc = calculator
+        try:
+            energies.append(float(image.get_potential_energy()))
+        finally:
+            image.calc = None
+    volumes = () if pressure_GPa is None else tuple(float(image.get_volume()) for image in band)
+    enthalpies = (
+        ()
+        if pressure_GPa is None
+        else tuple(
+            energy + pressure_GPa * units.GPa * volume
+            for energy, volume in zip(energies, volumes, strict=True)
+        )
+    )
+    profile = energies if pressure_GPa is None else enthalpies
+    common: dict[str, Any] = {
+        "energies": tuple(energies),
+        "enthalpies": enthalpies,
+        "volumes": volumes,
+        "images": tuple(band),
+        "pressure_GPa": pressure_GPa,
+    }
+    # A saddle between two minima lies above both. When an endpoint is the highest point, the band
+    # has not found one, so there is no barrier or saddle to check.
+    if max(profile[1:-1]) <= max(profile[0], profile[-1]):
+        return PathwayOutcome(
+            "no_saddle",
+            message="an endpoint is the highest point, so the band holds no saddle",
+            **common,
+        )
+    validation = _validate_frequencies(band, profile, calculator, options)
+    connectivity = None
+    if validation.primary_mode:
+        assert validation.transition_state_index is not None
+        index = {atom_id: position for position, atom_id in enumerate(atom_ids(band[0]))}
+        connectivity = _check_connectivity(
+            band[validation.transition_state_index],
+            validation.primary_mode,
+            tuple(index[atom_id] for atom_id in validation.active_atom_ids),
+            calculator,
+            options,
+            pressure_GPa,
+            detector_config,
+            endpoints=(band[0], band[-1]),
+        )
+    status, message = _verdict(validation, connectivity)
+    return PathwayOutcome(
+        status,
+        barrier=max(profile) - profile[0] if status == "saddle_validated" else None,
+        message=message,
+        frequency_validation=validation,
+        connectivity=connectivity,
+        **common,
+    )
+
+
 def refine_pathway(
     candidate: ReactionCandidate,
     *,
@@ -462,7 +576,8 @@ def refine_pathway(
     detector_config: BondDetectorConfig,
     pressure_GPa: float | None = None,
 ) -> PathwayOutcome:
-    """Run NVT NEB, or SSNEB when a target pressure (including zero) is supplied."""
+    """Run NVT NEB, or SSNEB when a target pressure (including zero) is supplied, then gate the
+    converged band with ``check_saddle``."""
 
     if pressure_GPa is not None and (
         isinstance(pressure_GPa, bool) or not np.isfinite(pressure_GPa)
@@ -498,7 +613,7 @@ def _refine_pathway(
     options = config or PathwayConfig()
     images: list[Atoms] = []
     try:
-        reactant, product, active_indices = _prepare_endpoints(
+        reactant, product = _prepare_endpoints(
             candidate, options, variable_cell=pressure_GPa is not None
         )
         images = [reactant, product]
@@ -603,59 +718,12 @@ def _refine_pathway(
                         images=_snapshots(images),
                         message="climbing-image NEB did not converge",
                     )
-                energies = tuple(float(image.get_potential_energy()) for image in images)
-                volumes = (
-                    () if pressure_GPa is None else tuple(image.get_volume() for image in images)
-                )
-                enthalpies = (
-                    ()
-                    if pressure_GPa is None
-                    else tuple(
-                        energy + pressure_GPa * units.GPa * volume
-                        for energy, volume in zip(energies, volumes, strict=True)
-                    )
-                )
-                profile = energies if pressure_GPa is None else enthalpies
-                # A saddle between two minima lies above both. When an endpoint is the highest
-                # point, the band has not found one, so there is no barrier or saddle to check.
-                if max(profile[1:-1]) <= max(profile[0], profile[-1]):
-                    return PathwayOutcome(
-                        "ci_neb_converged",
-                        energies=energies,
-                        enthalpies=enthalpies,
-                        volumes=volumes,
-                        images=_snapshots(images),
-                        message="an endpoint is the highest point, so the band holds no saddle",
-                    )
-                frequency_validation = _validate_frequencies(
+                return check_saddle(
                     images,
-                    profile,
-                    active_indices,
                     calculator,
-                    options,
-                )
-                connectivity = None
-                if frequency_validation.primary_mode:
-                    assert frequency_validation.transition_state_index is not None
-                    connectivity = _check_connectivity(
-                        images[frequency_validation.transition_state_index],
-                        frequency_validation.primary_mode,
-                        active_indices,
-                        calculator,
-                        options,
-                        pressure_GPa,
-                        detector_config,
-                        endpoints=(images[0], images[-1]),
-                    )
-                return PathwayOutcome(
-                    "ci_neb_converged",
-                    barrier=max(profile) - profile[0],
-                    energies=energies,
-                    enthalpies=enthalpies,
-                    volumes=volumes,
-                    images=_snapshots(images),
-                    frequency_validation=frequency_validation,
-                    connectivity=connectivity,
+                    detector_config=detector_config,
+                    config=options,
+                    pressure_GPa=pressure_GPa,
                 )
             finally:
                 for image in images:
@@ -667,10 +735,12 @@ def _refine_pathway(
 
 
 __all__ = [
+    "CONVERGED_STATUSES",
     "CalculatorProvider",
     "ConnectivityCheck",
     "FrequencyValidation",
     "PathwayConfig",
     "PathwayOutcome",
+    "check_saddle",
     "refine_pathway",
 ]

@@ -19,9 +19,11 @@ from uuid import uuid4
 from ase.io import read
 
 from ._durable import ensure_directory, file_digest, publish, sync_directory
+from ._version import __version__
 from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
+from .pathway import check_saddle
 from .run import ReactionRun, RunSummary
 from .status import campaign_status, format_status
 from .wizard import create_campaign
@@ -179,6 +181,43 @@ def run_selected_trajectory(
     )
 
 
+def check_band(
+    campaign: CampaignConfig,
+    band: Path,
+    *,
+    index: int,
+    pressure_GPa: float | None,
+) -> tuple[Path, dict[str, object]]:
+    """Test a band's saddle with one trajectory's model and write the verdict beside the band."""
+
+    images = read(band, ":")
+    trajectory = campaign.trajectory(index)
+    adapter = load_mlip_adapter(campaign.adapter_for(index), trajectory)
+    with adapter.calculator("check") as calculator:
+        outcome = check_saddle(
+            images,
+            calculator,
+            detector_config=campaign.reaction_run.detector,
+            config=campaign.reaction_run.pathway,
+            pressure_GPa=pressure_GPa,
+        )
+    result: dict[str, object] = {
+        "band": str(band.resolve()),
+        "trajectory_id": trajectory.id,
+        "reactionflow_version": __version__,
+        **outcome.to_dict(),
+    }
+    del result["method"]  # how the band was made is not known here
+    path = band.with_name(f"{band.stem}.check.json")
+    temporary = path.with_name(f".{path.name}-{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        publish(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path, result
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reactionflow")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -214,6 +253,14 @@ def _parser() -> argparse.ArgumentParser:
         "--install", action="store_true", help="install the selected optional backend packages"
     )
 
+    check = commands.add_parser(
+        "check", help="test whether a band's highest image is a saddle between its two ends"
+    )
+    check.add_argument("campaign", type=Path)
+    check.add_argument("band", type=Path, help="a band file ASE can read, both ends included")
+    check.add_argument("--index", type=int, help="the trajectory whose model and pressure to use")
+    check.add_argument("--pressure", type=float, help="GPa, in place of the trajectory's pressure")
+
     status = commands.add_parser(
         "status", help="summarize trajectories and reactions without changing any run"
     )
@@ -244,6 +291,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isinstance(raw, dict):
         raise ValueError("campaign must be a JSON object")
     mode = raw.get("mode", "md")
+    if arguments.command == "check" and mode != "md":
+        parser.error("check takes an MD campaign file; it supplies the model and bond thresholds")
     if mode == "eon":
         from .search.cli import handle_command
 
@@ -290,6 +339,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, sort_keys=True))
         return 0
 
+    if arguments.command == "check":
+        if arguments.index is None and len(campaign.trajectories) > 1:
+            parser.error("--index picks the trajectory when a campaign has several")
+        # Slurm tasks pick trajectories for run only, so a check inside any job reads --index.
+        index = resolve_task_index(len(campaign.trajectories), arguments.index, environment={})
+        pressure = arguments.pressure
+        if pressure is None:
+            pressure = campaign.trajectory(index).pressure_GPa
+        elif not math.isfinite(pressure):
+            parser.error("--pressure must be a finite number")
+        path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
+        summary = {key: result[key] for key in ("status", "barrier_eV", "message")}
+        print(json.dumps({"check": str(path), **summary}, sort_keys=True))
+        return 0
+
     index = resolve_task_index(len(campaign.trajectories), arguments.index)
     trajectory_id = campaign.trajectory(index).id
     payload: dict[str, object] = {
@@ -326,4 +390,4 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["main", "resolve_task_index", "run_selected_trajectory", "visible_gpu"]
+__all__ = ["check_band", "main", "resolve_task_index", "run_selected_trajectory", "visible_gpu"]
