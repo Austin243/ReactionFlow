@@ -370,10 +370,9 @@ def test_new_run_preflight_failure_leaves_no_trajectory_contract(tmp_path, monke
 
 
 def test_models_command_needs_neither_campaign_nor_optional_packages(capsys):
-    assert cli.main(["models", "--backend", "chgnet"]) == 0
+    assert cli.main(["models", "--backend", "ani1xnr"]) == 0
     result = json.loads(capsys.readouterr().out)["backends"]
-    assert len(result) == 1 and result[0]["backend"] == "chgnet"
-    assert {model["name"] for model in result[0]["models"]} == {"0.3.0", "r2scan"}
+    assert len(result) == 1 and result[0]["backend"] == "ani1xnr"
 
 
 def test_models_rejects_unknown_backend(capsys):
@@ -394,12 +393,6 @@ def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
         "mace",
         "fairchem",
         "aimnet",
-        "orb_models",
-        "mattersim",
-        "chgnet",
-        "sevenn",
-        "calorine",
-        "_nepy",
     }
 
     def guarded_import(name, *args, **kwargs):
@@ -414,24 +407,13 @@ def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
         "mace",
         "uma",
         "aimnet2",
-        "orb",
-        "mattersim",
-        "chgnet",
-        "sevennet",
-        "nep",
         "ani1xnr",
     }
 
 
-@pytest.mark.parametrize("backend", ["mattersim", "sevennet"])
-def test_install_rejects_incompatible_e3nn_before_pip(tmp_path, monkeypatch, backend):
+def test_install_rejects_incompatible_e3nn_before_pip(tmp_path, monkeypatch):
     campaign = _campaign(
-        tmp_path,
-        {
-            "mace": {"factory": MACE},
-            "other": {"factory": f"reactionflow.adapters.{backend}:create_adapter"},
-        },
-        ["mace", "other"],
+        tmp_path, {"mace": {"factory": MACE}, "uma": {"factory": UMA}}, ["mace", "uma"]
     )
     monkeypatch.setattr(
         model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
@@ -440,27 +422,15 @@ def test_install_rejects_incompatible_e3nn_before_pip(tmp_path, monkeypatch, bac
         model_setup.install_and_prepare(campaign)
 
 
-@pytest.mark.parametrize(
-    ("backend", "package", "pinned"),
-    [("uma", "fairchem-core", "2.23.0"), ("mattersim", "mattersim", "1.2.5")],
-)
-@pytest.mark.parametrize("selection", ["both", "orb", "other"])
-def test_installer_preserves_incompatible_neighbor_runtime(
-    tmp_path, monkeypatch, backend, package, pinned, selection
-):
-    profiles = {
-        "orb": {"factory": "reactionflow.adapters.orb:create_adapter"},
-        "other": {"factory": f"reactionflow.adapters.{backend}:create_adapter"},
-    }
-    campaign = _campaign(
-        tmp_path, profiles, ["orb", "other"] if selection == "both" else [selection]
-    )
+@pytest.mark.parametrize("selection", ["mace", "uma"])
+def test_installer_preserves_incompatible_neighbor_runtime(tmp_path, monkeypatch, selection):
+    profiles = {"mace": {"factory": MACE}, "uma": {"factory": UMA}}
+    campaign = _campaign(tmp_path, profiles, [selection])
+    installed = {"mace": ("fairchem-core", "2.23.0"), "uma": ("mace-torch", "0.3.16")}[selection]
 
     def version(name):
-        if selection == "orb" and name == package:
-            return pinned
-        if selection == "other" and name == "orb-models":
-            return "0.7.0"
+        if name == installed[0]:
+            return installed[1]
         raise model_setup.PackageNotFoundError
 
     monkeypatch.setattr(model_setup, "version", version)
@@ -496,7 +466,7 @@ def test_polar_installs_compatible_electrostatics_only_when_selected(tmp_path, m
 
 @pytest.mark.parametrize(
     ("backend", "packages"),
-    [("sevennet", ["sevenn==0.13.0", "torch>=2.8,<3"]), ("nep", ["calorine==4.0"])],
+    [("ani1xnr", ["torchani==2.8.4", "torch==2.11.0"]), ("aimnet2", ["aimnet[ase]==0.2.0"])],
 )
 def test_selected_setup_includes_backend_runtime_dependencies(
     tmp_path, monkeypatch, backend, packages

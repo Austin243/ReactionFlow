@@ -28,6 +28,7 @@ _ALLOWED_OPTIONS = {
     "calculator_kwargs",
     "model_files",
     "packages",
+    "torch_device",
 }
 _ALLOWED_CONDITIONS = {
     "barostat_mass",
@@ -220,6 +221,9 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
             for item in _string_sequence(options.get("model_files", []), "model_files")
         )
         self.packages = _string_sequence(options.get("packages", []), "packages")
+        self.torch_device = options.get("torch_device")
+        if self.torch_device not in {None, "cpu", "cuda"}:
+            raise ValueError("torch_device must be 'cpu' or 'cuda'")
         self._model_hashes: dict[str, str] | None = None
         self._contract: ComponentState | None = None
 
@@ -255,7 +259,9 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
                 ) from error
         return versions
 
-    def _calculator_state(self, module: Any, calculator: Calculator) -> ComponentState:
+    def _calculator_state(
+        self, module: Any, calculator: Calculator, torch_environment: Mapping[str, object]
+    ) -> ComponentState:
         calculator_type = f"{type(calculator).__module__}:{type(calculator).__qualname__}"
         if self._contract is not None:
             if self._contract.metadata["calculator_type"] != calculator_type:
@@ -279,6 +285,7 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
                 "python_version": platform.python_version(),
                 "ase_version": ase.__version__,
                 "numpy_version": np.__version__,
+                **torch_environment,
             },
         )
         return self._contract
@@ -287,13 +294,22 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
     def _lease(self) -> Iterator[tuple[Calculator, ComponentState]]:
         self._model_file_hashes()
         module, factory = self._factory()
-        calculator = factory(**self.calculator_kwargs)
+        torch_environment: Mapping[str, object] = {}
+        if self.torch_device is None:
+            calculator = factory(**self.calculator_kwargs)
+        else:
+            from ._torch import _load_torch, _preserve_rng, _torch_environment
+
+            torch = _load_torch(self.torch_device)
+            with _preserve_rng(torch):
+                calculator = factory(**self.calculator_kwargs)
+            torch_environment = _torch_environment(torch, self.torch_device)
         if not isinstance(calculator, Calculator):
             raise TypeError(
                 f"ASE calculator factory {self.calculator_factory!r} returned "
                 f"{type(calculator).__name__}, not an ASE Calculator"
             )
-        state = self._calculator_state(module, calculator)
+        state = self._calculator_state(module, calculator, torch_environment)
         try:
             yield calculator, state
         finally:

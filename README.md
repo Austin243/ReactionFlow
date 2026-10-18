@@ -8,7 +8,7 @@ bonds while a trajectory runs. When a bond forms or breaks and stays that way, t
 pauses at an exact checkpoint, ReactionFlow refines the minimum-energy path of that change with
 NEB and climbing-image NEB, and the trajectory continues from the same state. The dynamics and the
 refinement use the same machine-learned interatomic potential (MLIP), which can come from any of
-ten built-in model families or from any ASE calculator.
+four built-in model families or from any ASE calculator.
 
 For reactions too rare to see in MD, ReactionFlow can run adaptive kinetic Monte Carlo with EON
 instead. EON finds the saddles that lead out of each state, and ReactionFlow moves from state to

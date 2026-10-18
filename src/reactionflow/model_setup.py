@@ -20,11 +20,6 @@ _PACKAGES = {
     "reactionflow.adapters.mace:create_adapter": "mace-torch==0.3.16",
     "reactionflow.adapters.uma:create_adapter": "fairchem-core==2.23.0",
     "reactionflow.adapters.aimnet2:create_adapter": "aimnet[ase]==0.2.0",
-    "reactionflow.adapters.orb:create_adapter": "orb-models==0.7.0",
-    "reactionflow.adapters.mattersim:create_adapter": "mattersim==1.2.5",
-    "reactionflow.adapters.chgnet:create_adapter": "chgnet==0.4.2",
-    "reactionflow.adapters.sevennet:create_adapter": "sevenn==0.13.0",
-    "reactionflow.adapters.nep:create_adapter": "calorine==4.0",
     "reactionflow.adapters.ani1xnr:create_adapter": "torchani==2.8.4",
 }
 
@@ -103,14 +98,9 @@ def backend_conflict(factories: Iterable[str]) -> str | None:
     packages = {_PACKAGES[factory] for factory in factories if factory in _PACKAGES}
     mace = "mace-torch==0.3.16" in packages
     uma = "fairchem-core==2.23.0" in packages
-    orb = "orb-models==0.7.0" in packages
-    mattersim = "mattersim==1.2.5" in packages
-    sevennet = "sevenn==0.13.0" in packages
     ani = "torchani==2.8.4" in packages
-    if mace and (uma or mattersim or sevennet):
-        return "MACE requires e3nn==0.4.4, but UMA, MatterSim and SevenNet require e3nn>=0.5"
-    if orb and (uma or mattersim):
-        return "UMA/MatterSim and ORB use different tested nvalchemi dependency stacks"
+    if mace and uma:
+        return "MACE requires e3nn==0.4.4, but UMA requires e3nn>=0.5"
     if ani and uma:
         return "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13"
     return None
@@ -135,9 +125,6 @@ def install_and_prepare(
     )
     mace = "mace-torch==0.3.16" in packages
     uma = "fairchem-core==2.23.0" in packages
-    orb = "orb-models==0.7.0" in packages
-    mattersim = "mattersim==1.2.5" in packages
-    sevennet = "sevenn==0.13.0" in packages
     ani = "torchani==2.8.4" in packages
     conflicts = []
     if ani:
@@ -146,16 +133,8 @@ def install_and_prepare(
         conflicts.extend(
             [("mace-torch", "0.3.16"), ("mace-torch", "0.3.15"), ("torchani", "2.8.4")]
         )
-    if mattersim or sevennet:
-        conflicts.extend([("mace-torch", "0.3.16"), ("mace-torch", "0.3.15")])
-    if uma or mattersim:
-        conflicts.append(("orb-models", "0.7.0"))
-    if orb:
-        conflicts.extend([("fairchem-core", "2.23.0"), ("mattersim", "1.2.5")])
     if mace:
-        conflicts.extend(
-            [("fairchem-core", "2.23.0"), ("mattersim", "1.2.5"), ("sevenn", "0.13.0")]
-        )
+        conflicts.append(("fairchem-core", "2.23.0"))
     for name, pinned in conflicts:
         try:
             installed_version = version(name)
@@ -172,8 +151,6 @@ def install_and_prepare(
         for spec in selected
     ):
         packages.append(_POLAR_PACKAGE)
-    if sevennet:
-        packages.append("torch>=2.8,<3")
     if ani:
         packages.append("torch==2.11.0")
     packages.extend(extra_packages)

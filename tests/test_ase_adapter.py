@@ -189,6 +189,32 @@ def test_generic_adapter_requires_each_declared_model_file(tmp_path) -> None:
         pass
 
 
+def test_torch_device_sets_deterministic_inference_and_records_it(tmp_path, monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    from reactionflow.adapters import _torch
+
+    model = tmp_path / "model.ckpt"
+    model.write_bytes(b"weights")
+    loaded = []
+    monkeypatch.setattr(_torch, "_load_torch", lambda device: loaded.append(device) or "torch")
+    monkeypatch.setattr(_torch, "_preserve_rng", lambda torch: nullcontext())
+    monkeypatch.setattr(_torch, "_torch_environment", lambda torch, device: {"device": device})
+    adapter = ASECalculatorAdapter(
+        trajectory=_trajectory(), options={**_options(model), "torch_device": "cpu"}
+    )
+
+    with adapter.start(_atoms()) as runtime:
+        checkpoint = runtime.snapshot()
+
+    assert loaded == ["cpu"]
+    assert checkpoint.calculator.metadata["device"] == "cpu"
+    with pytest.raises(ValueError, match="torch_device"):
+        ASECalculatorAdapter(
+            trajectory=_trajectory(), options={**_options(model), "torch_device": "gpu"}
+        )
+
+
 def test_perlmutter_setup_keeps_torchani_as_the_default() -> None:
     root = Path(__file__).parents[1]
     setup = (root / "scripts/setup-perlmutter-ani1xnr.sh").read_text(encoding="utf-8")
