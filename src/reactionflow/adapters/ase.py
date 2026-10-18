@@ -53,6 +53,33 @@ def _optional_positive_float(value: object, name: str) -> float | None:
     return None if value is None else _positive_float(value, name)
 
 
+# Calculator fields that describe the software and hardware rather than the potential. A restore
+# continues when only these differ, and the run records the change; any other difference refuses.
+ENVIRONMENT_FIELDS = frozenset(
+    {
+        "package_versions",
+        "python_version",
+        "ase_version",
+        "numpy_version",
+        "factory_source",
+        "factory_source_sha256",
+        "adapter_source_sha256",
+        "torch_adapter_source_sha256",
+        "ase_runtime_source_sha256",
+        "integrator_source_sha256",
+        "torch_version",
+        "device",
+        "num_threads",
+        "num_interop_threads",
+        "cublas_workspace_config",
+        "platform",
+        "cuda_version",
+        "device_name",
+        "compute_capability",
+    }
+)
+
+
 def _differences(recorded: ComponentState, current: ComponentState) -> str:
     """Name each calculator field that differs, as checkpoint value -> installed value."""
 
@@ -62,6 +89,19 @@ def _differences(recorded: ComponentState, current: ComponentState) -> str:
         if recorded.metadata.get(key) != current.metadata.get(key)
     ]
     return "; ".join(changed) or f"component {recorded.kind!r} -> {current.kind!r}"
+
+
+def _same_potential(recorded: ComponentState, current: ComponentState) -> bool:
+    """Whether two calculator states differ, if at all, only in their environment fields."""
+
+    if (recorded.kind, recorded.version, recorded.exact) != (
+        current.kind,
+        current.version,
+        current.exact,
+    ):
+        return False
+    keys = (recorded.metadata.keys() | current.metadata.keys()) - ENVIRONMENT_FIELDS
+    return all(recorded.metadata.get(key) == current.metadata.get(key) for key in keys)
 
 
 def _string_sequence(value: object, name: str) -> tuple[str, ...]:
@@ -179,9 +219,9 @@ class ASELangevinBAOABAdapter:
     @contextmanager
     def restore(self, snapshot: ExactRestartSnapshot) -> Iterator[_ASERuntime]:
         with self._lease() as (calculator, state):
-            if snapshot.calculator != state:
+            if not _same_potential(snapshot.calculator, state):
                 raise ValueError(
-                    "exact calculator environment differs from the checkpoint: "
+                    "calculator differs from the checkpoint: "
                     + _differences(snapshot.calculator, state)
                 )
             dynamics = restore_langevin_baoab(snapshot.atoms, calculator, snapshot.dynamics)

@@ -142,7 +142,7 @@ def test_model_file_and_environment_are_bound_to_exact_restart(tmp_path) -> None
     model.write_bytes(b"weights-v2")
     changed_adapter = ASECalculatorAdapter(trajectory=_trajectory(), options=_options(model))
     with (
-        pytest.raises(ValueError, match="environment differs"),
+        pytest.raises(ValueError, match="differs from the checkpoint"),
         changed_adapter.restore(checkpoint),
     ):
         pass

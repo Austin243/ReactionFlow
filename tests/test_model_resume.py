@@ -133,7 +133,7 @@ def test_reopened_refinement_checks_model_before_publishing_and_failure_is_retry
     weights.write_text("2.0")
     reopened = ReactionRun.open(root)
     changed = create()
-    with pytest.raises(ValueError, match="environment differs"):
+    with pytest.raises(ValueError, match="differs from the checkpoint"):
         reopened.run(
             runtime_provider=changed,
             pathway_calculator_provider=changed.calculator,
@@ -157,3 +157,31 @@ def test_reopened_refinement_checks_model_before_publishing_and_failure_is_retry
     assert refinements == [1.0]
     assert advances == ([] if total_steps == 1 else [(1, 1)])
     assert restored._contract == snapshot.calculator
+
+
+def test_resume_under_new_package_versions_continues_and_records_them(tmp_path, monkeypatch, model):
+    _weights, create = model
+    root = tmp_path / "run"
+    pending_run(root, create(), monkeypatch)
+
+    def refine(candidate, **kwargs):
+        return PathwayOutcome(status="no_saddle", images=(candidate.reactant, candidate.product))
+
+    monkeypatch.setattr("reactionflow.run.refine_pathway", refine)
+    monkeypatch.setattr(_torch, "version", lambda name: "newer-version")
+    reopened = ReactionRun.open(root)
+    changed = create()
+    with pytest.warns(UserWarning, match="no longer bitwise exact: package_versions"):
+        reopened.run(
+            runtime_provider=changed,
+            pathway_calculator_provider=changed.calculator,
+            total_steps=2,
+        )
+
+    assert reopened.phase == "completed"
+    (record,) = [
+        json.loads(line) for line in (root / "restart-environment.jsonl").read_text().splitlines()
+    ]
+    assert record["step"] == 1
+    old, new = record["changed"]["package_versions"]
+    assert set(old.values()) == {"test-version"} and set(new.values()) == {"newer-version"}
