@@ -35,8 +35,8 @@ acceleration, cell momentum, cell force, barostat drag, and every constructor va
 recreate ASE's `LangevinBAOAB`. `restore_langevin_baoab()` reconstructs the integrator around a
 caller-restored calculator and resumes at the next numerical step.
 
-Exact continuation requires the same ASE and NumPy versions, so the codec records and verifies
-both. Observer callbacks and output handles are intentionally recreated by the runner because they
+Bitwise continuation requires the same ASE and NumPy versions, so the codec records both, and
+`ReactionRun` reports a resume under other versions (below). Observer callbacks and output handles are intentionally recreated by the runner because they
 do not influence the propagated state.
 
 Calculator state is not guessed. An MLIP adapter must either serialize all mutable state or
@@ -51,9 +51,18 @@ use a custom adapter that snapshots that state explicitly.
 The built-in Torch adapters, ANI-1xnr included, use deterministic PyTorch execution, disable TF32,
 and fix the cuBLAS workspace configuration. They record the model-file SHA-256 values, options,
 package versions, the Torch, CUDA, GPU, and platform environment, and hashes of the adapter,
-runtime, and integrator source. Restore refuses any change to that calculator contract. A refused
-restore names each changed field with its checkpoint and installed values. The ASE/NumPy codec
-checks above protect the remaining integrator, thermostat, barostat, and RNG state.
+runtime, and integrator source.
+
+Restore refuses a change to anything that defines the potential: the model files, the options or
+calculator kwargs, the extra model metadata an adapter records, or the component kind. A refused
+restore names each changed field with its checkpoint and installed values. A change to the
+environment alone (package, Python, ASE, NumPy, and Torch versions, adapter, runtime, and
+integrator source hashes, thread counts, device, platform, CUDA version, and GPU model) does not
+stop the run. The trajectory continues from the same state, but its next steps are no longer
+guaranteed to match an uninterrupted run bit for bit. `ReactionRun` then warns and appends one line
+to `restart-environment.jsonl` in the run directory, with the generation, the step, and each changed
+field as `[checkpoint value, new value]`. That file is the run's record that it crossed an
+environment change.
 
 ## Exact ReactionRun execution
 

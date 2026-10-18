@@ -139,7 +139,10 @@ def test_adapter_rejects_changed_calculator_contract(monkeypatch, tmp_path) -> N
         _torch, "_torch_environment", lambda torch, device: {"device": device, "changed": True}
     )
     resubmitted = ANI1xnrAdapter(trajectory=_trajectory(), options=options)
-    with pytest.raises(ValueError, match="environment differs"), resubmitted.restore(checkpoint):
+    with (
+        pytest.raises(ValueError, match="differs from the checkpoint"),
+        resubmitted.restore(checkpoint),
+    ):
         pass
 
 

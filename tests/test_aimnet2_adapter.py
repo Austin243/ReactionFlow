@@ -313,5 +313,8 @@ def test_restart_is_exact_and_binds_model_and_dispersion_data(backend, pressure)
         np.testing.assert_array_equal(resumed.dynamics.arrays[name], full.dynamics.arrays[name])
     assert "dftd3" in full.calculator.metadata["model_files"]
     backend.data.write_bytes(b"changed dispersion parameters")
-    with pytest.raises(ValueError, match="environment differs"), _adapter(backend).restore(split):
+    with (
+        pytest.raises(ValueError, match="differs from the checkpoint"),
+        _adapter(backend).restore(split),
+    ):
         pass

@@ -149,7 +149,10 @@ def test_changed_weights_rejected_between_leases_and_on_restore(tmp_path, fake_t
     path.write_bytes(b"different checkpoint")
     with pytest.raises(ValueError, match="changed during"), adapter.calculator("neb"):
         pass
-    with pytest.raises(ValueError, match="environment differs"), _model(path).restore(snapshot):
+    with (
+        pytest.raises(ValueError, match="differs from the checkpoint"),
+        _model(path).restore(snapshot),
+    ):
         pass
 
 
@@ -200,7 +203,7 @@ def test_model_construction_preserves_all_rng_states_and_default_dtype(fake_torc
 
 
 @pytest.mark.parametrize("field", ["num_threads", "num_interop_threads"])
-def test_changed_cpu_parallelism_is_rejected_on_restart(tmp_path, monkeypatch, field):
+def test_changed_cpu_parallelism_restores_and_reports_the_new_value(tmp_path, monkeypatch, field):
     torch = FakeTorch()
     monkeypatch.setattr(backend, "_load_torch", lambda device: torch)
     path = tmp_path / "weights"
@@ -209,8 +212,8 @@ def test_changed_cpu_parallelism_is_rejected_on_restart(tmp_path, monkeypatch, f
         snapshot = runtime.snapshot()
     assert snapshot.calculator.metadata[field] == 1
     setattr(torch, field, 2)
-    with pytest.raises(ValueError, match="environment differs"), _model(path).restore(snapshot):
-        pass
+    with _model(path).restore(snapshot) as runtime:
+        assert runtime.snapshot().calculator.metadata[field] == 2
 
 
 @pytest.mark.parametrize(

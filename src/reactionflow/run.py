@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -383,6 +384,8 @@ class ReactionRun:
                 self._checkpoint(runtime)
             elif int(runtime.nsteps) != self._global_step:
                 raise ValueError("exact runtime step counter does not match the durable run")
+            else:
+                self._record_environment_change(runtime.snapshot())
 
             path = self.root / f"segments/{self._generation:04d}/trajectory.traj"
             ensure_directory(path.parent)
@@ -410,6 +413,33 @@ class ReactionRun:
                     # A checkpoint survives a crash, so the frames written before it must too.
                     flush_to_disk(path)
                     self._checkpoint(runtime)
+
+    def _record_environment_change(self, resumed: ExactRestartSnapshot) -> None:
+        """Log a restore under other software or hardware than the checkpoint recorded."""
+
+        assert self._snapshot is not None
+        before = {
+            **self._snapshot.calculator.metadata,
+            **_dynamics_versions(self._snapshot.dynamics.metadata),
+        }
+        after = {**resumed.calculator.metadata, **_dynamics_versions(resumed.dynamics.metadata)}
+        changed = {
+            key: [before.get(key), after.get(key)]
+            for key in sorted(before.keys() | after.keys())
+            if before.get(key) != after.get(key)
+        }
+        if not changed:
+            return
+        record = {"generation": self._generation, "step": self._global_step, "changed": changed}
+        path = self.root / "restart-environment.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+        flush_to_disk(path)
+        warnings.warn(
+            f"resumed at step {self._global_step} with a different environment, so the run is "
+            f"no longer bitwise exact: {', '.join(changed)} (recorded in {path.name})",
+            stacklevel=2,
+        )
 
     def _saved_frames(self, first: int, last: int) -> dict[int, Atoms]:
         """The saved observations from global frame ``first`` to ``last`` that are on disk."""
@@ -557,6 +587,10 @@ class ReactionRun:
                     self._phase = "running"
                 self._run_segment(int(total_steps), runtime_provider)
         return self.summary()
+
+
+def _dynamics_versions(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    return {f"dynamics_{key}": metadata.get(key) for key in ("ase_version", "numpy_version")}
 
 
 __all__ = ["ReactionRun", "ReactionRunConfig", "RunSummary"]

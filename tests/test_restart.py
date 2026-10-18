@@ -135,7 +135,7 @@ def test_exact_snapshot_rejects_inexact_components() -> None:
         )
 
 
-def test_langevin_restart_rejects_runtime_version_drift() -> None:
+def test_langevin_restart_continues_under_another_ase_version() -> None:
     atoms = _atoms()
     dynamics = _dynamics(atoms, seed=9)
     state = snapshot_langevin_baoab(dynamics)
@@ -145,5 +145,6 @@ def test_langevin_restart_rejects_runtime_version_drift() -> None:
         arrays=state.arrays,
     )
 
-    with pytest.raises(ValueError, match="requires ASE different"):
-        restore_langevin_baoab(_atoms(), HarmonicSolid(), changed)
+    restored = restore_langevin_baoab(_atoms(), HarmonicSolid(), changed)
+    assert restored.nsteps == dynamics.nsteps
+    assert snapshot_langevin_baoab(restored).metadata["ase_version"] != "different"

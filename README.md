@@ -306,9 +306,11 @@ and restored at step 150. The restored run matches the uninterrupted one at ever
 from positions, momenta, and cell alone, the structural restart in the figure, drifts by 0.4 Å RMS
 within 250 steps.
 
-A restore is refused when the model files, package versions, or adapter code differ from the
-checkpoint, and the error names each difference. Run long campaigns from a release tag so the
-same installation can be rebuilt. See [exact restart](docs/exact-restart.md).
+A restore is refused when the potential differs from the checkpoint: the model files, the model
+options, or the calculator. When only the software or hardware differs (package, Python, ASE,
+NumPy, or Torch versions, adapter source, thread counts, or the GPU model), the run continues,
+warns that it is no longer bitwise exact, and appends each change to `restart-environment.jsonl`
+in the trajectory's directory. A refusal names each difference. See [exact restart](docs/exact-restart.md).
 
 ## Many trajectories on a cluster
 
@@ -358,6 +360,7 @@ Each trajectory writes one directory under `output_root`.
 │   ├── images.traj                  the band
 │   └── step-1/, step-2/, ...        one per step of an event refined in steps
 ├── scan/                            tables from reactionflow scan
+├── restart-environment.jsonl        only after a resume under other software or hardware
 └── last-error.json                  only after an error
 ```
 

@@ -302,9 +302,11 @@ The built-in adapters use the shared Langevin BAOAB NVT/NPT runtime and the sele
 every pathway stage. For CPU runs, set `device: "cpu"` and campaign `require_gpu: false`; a CUDA
 worker must see exactly one usable GPU.
 
-Exact resume binds model files, options, package versions, adapter/runtime source, and the recorded
-Torch/platform/device environment. Changing those inputs requires a new trajectory output rather
-than treating it as exact continuation. Preserve the environment and files of an active campaign.
+Each checkpoint records the model files, options, package versions, adapter/runtime source, and the
+Torch/platform/device environment. A changed model file or option refuses the resume. A changed
+version, source hash, or device continues with a warning and a line in
+`restart-environment.jsonl`, because the run is then no longer bitwise exact
+([exact restart](exact-restart.md)). Keep the environment of an active campaign when you can.
 For Torch backends, deterministic algorithms are enabled and TF32 is disabled; unsupported nondeterministic
 operations fail. UMA uses fixed float32 inference without compilation or MoLE merging, so its
 upstream accelerated presets do not describe this adapter's performance. The adapter makes two
