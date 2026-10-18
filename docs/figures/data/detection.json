@@ -1,6 +1,6 @@
 {
- "reactionflow_version": "0.1.0a4",
- "reactionflow_commit": "58b2f71",
+ "reactionflow_version": "0.1.0",
+ "reactionflow_commit": "ea2534f",
  "pair": "C-N",
  "radius_sum_A": 1.47,
  "form_scale": 1.15,

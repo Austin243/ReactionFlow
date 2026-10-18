@@ -1,7 +1,8 @@
 # Figures
 
-The figures in the main README are drawn by code in this folder. Each figure comes as a light and
-a dark SVG, and the README shows the one that matches the reader's GitHub theme. Only the SVGs are
+The figures in the README and in [How ReactionFlow works](../how-it-works.md) are drawn by code in
+this folder. Each figure comes as a light and a dark SVG, and GitHub shows the one that matches the
+reader's theme. Only the SVGs are
 committed. The build can also write 2x PNGs to `png/` and a gallery page, `index.html`, with every
 figure and a light/dark switch.
 
@@ -17,9 +18,9 @@ The build needs Node 20 or newer and no packages. PNG export runs headless Googl
 | Figure | Shows | Used in |
 | --- | --- | --- |
 | `overview` | MD on a model surface with the refined path, and the states, saddles, and kinetic Monte Carlo steps EON mode found on a model landscape, each with the loop it runs | README banner |
-| `md-mode` | Bond detection on one atom pair, the refinement stages and barrier on a model surface, and how occurrences group into reaction classes | How it works |
-| `eon-mode` | The searches from the starting state, the energy along one process, searches until the confidence target, one kinetic Monte Carlo step, and the energy against simulated time | Rare events with EON |
-| `campaigns` | Built-in models by family, fixed-cell NEB against variable-cell SSNEB, an exact restart against a run that never stopped, and trajectories across a resubmitted job | Models |
+| `md-mode` | Bond detection on one atom pair, the refinement stages and barrier on a model surface, and how occurrences group into reaction classes | How it works: Molecular dynamics mode |
+| `eon-mode` | The searches from the starting state, the energy along one process, searches until the confidence target, one kinetic Monte Carlo step, and the energy against simulated time | How it works: Rare events with EON |
+| `campaigns` | Built-in models by family, fixed-cell NEB against variable-cell SSNEB, an exact restart against a run that never stopped, and trajectories across a resubmitted job | How it works: Models |
 
 ## Computed data
 
@@ -61,5 +62,5 @@ Only `eon.json` needs the EON backend, which has prebuilt wheels for Linux x86_6
 Every figure is 1200 units wide and has lettered panels. Text uses three sizes, 24, 26, and 30
 units, set in `TYPE` in `src/lib.mjs`. At README width that is about 17 to 21 px, the size of the
 README text. Colors are set in `THEMES` in the same file: blue for molecular dynamics, orange for
-detection, green for pathway refinement. Explanations belong in the README text, not inside a
+detection, green for pathway refinement. Explanations belong in the text, not inside a
 figure. Each figure's alt text is under `alt` in its file in `src/figures/`.

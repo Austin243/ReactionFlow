@@ -11,10 +11,7 @@ const catalog = JSON.parse(readFileSync(new URL('../../data/models.json', import
 const ssneb = JSON.parse(readFileSync(new URL('../../data/ssneb.json', import.meta.url)));
 const restart = JSON.parse(readFileSync(new URL('../../data/restart.json', import.meta.url)));
 
-const NAMES = {
-  mace: 'MACE', mace_field: 'MACE-FIELD', uma: 'UMA', aimnet2: 'AIMNet2', orb: 'ORB', mattersim: 'MatterSim',
-  chgnet: 'CHGNet', sevennet: 'SevenNet', nep: 'NEP89', ani1xnr: 'ANI-1xnr',
-};
+const NAMES = { mace: 'MACE', uma: 'UMA', aimnet2: 'AIMNet2', ani1xnr: 'ANI-1xnr' };
 const missing = catalog.backends.filter((backend) => !NAMES[backend.backend]).map((backend) => backend.backend);
 if (missing.length) throw new Error(`campaigns figure has no name for: ${missing.join(', ')}`);
 const families = catalog.backends
@@ -199,7 +196,7 @@ export default {
   label: 'Campaigns',
   alt:
     'Four panels on running campaigns. a, the built-in model families with their number of models, from 22 for ' +
-    'MACE to one each for ANI-1xnr, MACE-FIELD, and NEP89, plus any ASE calculator or a custom adapter. b, NEB ' +
+    'MACE to one for ANI-1xnr, plus any ASE calculator or a custom adapter. b, NEB ' +
     'keeps the cell fixed and reports an energy barrier, SSNEB relaxes the cell of every image and reports an ' +
     'enthalpy barrier. The SSNEB barrier of a model system rises from 0.062 eV at 0 GPa to 0.095 eV at 0.8 GPa. ' +
     'c, a run stopped and restored at step 150 against one that never stopped. The exact restart follows the same ' +
