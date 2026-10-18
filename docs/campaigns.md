@@ -179,7 +179,9 @@ python -m pip install my-mlip-package
 Use absolute model paths in portable batch configurations. Every path in `model_files` is required
 at runtime and SHA-256 hashed into each exact checkpoint. ReactionFlow also records the configured
 kwargs, Python/ASE/NumPy versions, calculator source hash, its installed distribution version, and
-the versions named in `packages`. Changing any of those inputs makes exact resume fail clearly.
+the versions named in `packages`. A changed model file, factory, or kwargs makes resume fail
+clearly; a changed package version or calculator source continues with a warning and is recorded
+in `restart-environment.jsonl`.
 For a Torch model, `torch_device` (`cpu` or `cuda`) turns on deterministic Torch inference before
 the calculator is built and records the Torch environment, as the built-in adapters do. Leave it out
 for a model that does not use Torch.

@@ -76,16 +76,6 @@ def restore_langevin_baoab(
     if state.kind != _STATE_KIND or state.version != 1 or not state.exact:
         raise ValueError("unsupported or inexact LangevinBAOAB restart state")
     metadata = dict(state.metadata)
-    versions = {
-        "ASE": (metadata.get("ase_version"), ase.__version__),
-        "NumPy": (metadata.get("numpy_version"), np.__version__),
-    }
-    for name, (recorded, installed) in versions.items():
-        if recorded != installed:
-            raise ValueError(
-                f"exact LangevinBAOAB restart requires {name} {recorded}, "
-                f"but {installed} is installed"
-            )
     configuration = dict(metadata["configuration"])
     atoms.calc = calculator
     dynamics = LangevinBAOAB(

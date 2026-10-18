@@ -240,11 +240,11 @@ def test_restart_preserves_trajectory_and_rejects_changed_weights_or_head(
     for key in full.dynamics.arrays:
         np.testing.assert_array_equal(resumed.dynamics.arrays[key], full.dynamics.arrays[key])
     changed = mace.create_adapter(trajectory=_trajectory(), options={**options, "head": "second"})
-    with pytest.raises(ValueError, match="environment differs"), changed.restore(split):
+    with pytest.raises(ValueError, match="differs from the checkpoint"), changed.restore(split):
         pass
     checkpoint.write_text("0.75")
     changed = mace.create_adapter(trajectory=_trajectory(), options=options)
-    with pytest.raises(ValueError, match="environment differs"), changed.restore(split):
+    with pytest.raises(ValueError, match="differs from the checkpoint"), changed.restore(split):
         pass
 
 

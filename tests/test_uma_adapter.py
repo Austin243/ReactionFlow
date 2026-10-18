@@ -342,7 +342,10 @@ def test_fake_uma_restart_matches_continuation_and_reference_change_is_rejected(
     assert actual.calculator == expected.calculator
     Path(options["atom_refs"]).write_text(repr({"omol_elem_refs": {1: {0: -14.0}}}))
     changed = uma.create_adapter(trajectory=_trajectory(), options=options)
-    with pytest.raises(ValueError, match="environment differs"), changed.restore(checkpoint):
+    with (
+        pytest.raises(ValueError, match="differs from the checkpoint"),
+        changed.restore(checkpoint),
+    ):
         pass
 
 
