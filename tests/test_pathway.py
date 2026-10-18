@@ -425,6 +425,172 @@ def test_refinement_returns_small_bounded_failure_outcomes() -> None:
     assert failed.status == "failed" and "calculator unavailable" in failed.message
 
 
+class InTurn(Calculator):
+    """Atom 1 leaves atom 0, and atom 3 leaves atom 2, each across a double well along x.
+
+    Each well has its minima at 2.25 and 3.25 A from the partner, either side of the 2.5 to 3.0 A
+    gap. Atom 1's barrier is 0.25 eV and atom 3's 0.5 eV.
+    """
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        ids = atom_ids(self.atoms)
+        energy = 0.0
+        forces = np.zeros((len(self.atoms), 3))
+        for mover, partner, height in ((1, 0, 0.25), (3, 2, 0.5)):
+            first, second = ids.index(mover), ids.index(partner)
+            x, y, z = self.atoms.positions[first] - self.atoms.positions[second]
+            s = 2 * (x - 2.75)
+            energy += height * (s * s - 1) ** 2 + y * y + z * z
+            forces[first] = (-8 * height * s * (s * s - 1), -2 * y, -2 * z)
+            forces[second] = -forces[first]
+        self.results = {"energy": float(energy), "forces": forces}
+
+
+IN_TURN_BONDS = BondDetectorConfig(pair_thresholds={"He-He": (2.5, 3.0)})
+
+
+def in_turn(first: float, second: float) -> Atoms:
+    """Atoms 1 and 3 at these distances from their partners 0 and 2, 10 A apart."""
+
+    atoms = Atoms(
+        "He4",
+        positions=[[0, 0, 0], [first, 0, 0], [0, 10, 0], [second, 10, 0]],
+        cell=[20, 20, 20],
+        pbc=True,
+    )
+    atoms.set_array("atom_id", np.arange(4))
+    return atoms
+
+
+def staged_provider(stages: list[str]):
+    @contextmanager
+    def provider(stage: str):
+        stages.append(stage)
+        yield InTurn()
+
+    return provider
+
+
+STEP_CONFIG = {
+    "relax_fmax": 0.01,
+    "relax_steps": 500,
+    "images": 5,
+    "neb_fmax": 0.02,
+    "neb_steps": 500,
+    "ci_neb_steps": 500,
+}
+
+
+@pytest.mark.parametrize("reactant_frame", [0, 1])
+def test_bonds_that_break_in_turn_are_refined_one_step_each(reactant_frame) -> None:
+    # Atom 1 leaves in frame 1, where it is still inside the gap but relaxes out, then atom 3
+    # leaves by the product frame. Taken from frame 1 with no lookback, the reactant relaxes into
+    # the intermediate, so only the second step can be refined.
+    frames = {0: in_turn(2.2, 2.3), 1: in_turn(2.8, 2.3), 2: in_turn(3.3, 2.4)}
+    candidate = ReactionCandidate(
+        reactant=frames[reactant_frame],
+        product=in_turn(3.2, 3.3),
+        atom_ids=(0, 1, 2, 3),
+        reactant_bonds=frozenset({(0, 1), (2, 3)}),
+        product_bonds=frozenset(),
+        reactant_frame=reactant_frame,
+        product_frame=3,
+        observed_frame=5,
+        resolved=True,
+    )
+    stages: list[str] = []
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=staged_provider(stages),
+        config=PathwayConfig(**STEP_CONFIG, reactant_lookback=0),
+        detector_config=IN_TURN_BONDS,
+        frames=frames,
+    )
+
+    assert outcome.status == "stepwise" and outcome.barrier is None
+    assert outcome.frames == (reactant_frame, 3)
+    first, second = outcome.steps
+    assert (first.reactant_bonds, first.product_bonds) == ({(0, 1), (2, 3)}, {(2, 3)})
+    assert (second.reactant_bonds, second.product_bonds) == ({(2, 3)}, set())
+    assert second.outcome.status == "saddle_validated", second.outcome.message
+    assert second.outcome.barrier == pytest.approx(0.5, abs=0.01)
+    assert second.outcome.frames == (1, 3)
+    if reactant_frame == 0:
+        assert first.outcome.status == "saddle_validated", first.outcome.message
+        assert first.outcome.barrier == pytest.approx(0.25, abs=0.01)
+        assert first.outcome.frames == (0, 1)
+        # The second step starts where the first one ended.
+        np.testing.assert_array_equal(
+            second.outcome.images[0].positions, first.outcome.images[-1].positions
+        )
+        expected = ["relax_reactant", "relax_frame", "relax_frame", *["relax_product", "neb"] * 2]
+    else:
+        assert first.outcome.status == "unresolved"
+        assert first.outcome.message == "the reactant frame relaxes partway along the event"
+        assert first.outcome.frames is None
+        expected = ["relax_reactant", "relax_frame", "relax_product", "neb"]
+    assert stages == expected
+    assert [step["status"] for step in outcome.to_dict()["steps"]] == [
+        first.outcome.status,
+        "saddle_validated",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("lookback", "spectator", "status", "frames", "stages"),
+    [
+        # Frame 1 has atom 1 still bonded, so the reactant comes from there.
+        (10, 2.3, "saddle_validated", (1, 3), ["relax_reactant", "relax_product", "neb"]),
+        # The tracker's frame has atom 1 inside the gap and relaxes into the product.
+        (0, 2.3, "collapsed", (2, 3), ["relax_reactant", "relax_product"]),
+        # The spectator pair is broken in frame 1 but not in the tracker's frame.
+        (10, 3.3, "collapsed", (2, 3), ["relax_reactant", "relax_reactant", "relax_product"]),
+    ],
+)
+def test_reactant_comes_from_the_latest_frame_before_the_bond_began_to_break(
+    lookback, spectator, status, frames, stages
+) -> None:
+    saved = {0: in_turn(2.2, 2.3), 1: in_turn(2.45, spectator)}
+    candidate = ReactionCandidate(
+        reactant=in_turn(2.8, 2.3),
+        product=in_turn(3.3, 2.3),
+        atom_ids=(0, 1),
+        reactant_bonds=frozenset({(0, 1)}),
+        product_bonds=frozenset(),
+        reactant_frame=2,
+        product_frame=3,
+        observed_frame=5,
+        resolved=True,
+    )
+    seen: list[str] = []
+
+    outcome = refine_pathway(
+        candidate,
+        calculator_provider=staged_provider(seen),
+        config=PathwayConfig(**STEP_CONFIG, reactant_lookback=lookback),
+        detector_config=IN_TURN_BONDS,
+        frames=saved,
+    )
+
+    # One bond changes, so the event is one band, without steps.
+    assert outcome.status == status, outcome.message
+    assert outcome.frames == frames and outcome.steps == ()
+    assert seen == stages
+    if status == "saddle_validated":
+        assert outcome.barrier == pytest.approx(0.25, abs=0.01)
+
+
+def test_step_settings_must_be_whole_and_boolean() -> None:
+    with pytest.raises(ValueError, match="reactant_lookback"):
+        PathwayConfig(reactant_lookback=-1)
+    with pytest.raises(ValueError, match="split_steps"):
+        PathwayConfig(split_steps=1)
+
+
 class Saddle(Calculator):
     """Atom 1 crosses (curvature / 4)(x² - 1)² along x, which curves by -curvature at x = 0."""
 

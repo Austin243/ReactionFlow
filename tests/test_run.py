@@ -278,6 +278,100 @@ def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
     assert "; 1 converged before the check, without a verdict." in text
 
 
+class ChainDoubleWell(Calculator):
+    """H0-C1-O2 with each bond a double well in its length; breaking C-O costs twice C-H."""
+
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+
+    def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        energy = 0.0
+        forces = np.zeros((3, 3))
+        for (first, second), height in (((0, 1), 1.0), ((1, 2), 2.0)):
+            vector = self.atoms.positions[second] - self.atoms.positions[first]
+            distance = float(np.linalg.norm(vector))
+            offset = distance - 1.1
+            inner = offset * offset - 0.25
+            energy += height * inner * inner
+            derivative = 4 * height * offset * inner * vector / distance
+            forces[first] += derivative
+            forces[second] -= derivative
+        self.results = {"energy": energy, "forces": forces}
+
+
+class ChainLeases(LeaseCounter):
+    @contextmanager
+    def __call__(self, stage: str):
+        self.stages.append(stage)
+        yield ChainDoubleWell()
+
+
+def test_bonds_broken_in_turn_are_published_and_counted_as_steps(tmp_path, monkeypatch) -> None:
+    # H leaves at step 1 and O at step 2, and the event is confirmed at frame 4 with its reactant
+    # at frame 0 and its product at frame 2. Frame 1 relaxes to H gone and C-O intact.
+    original_run = ScriptedExactRuntime.run
+
+    def break_in_turn(runtime, steps):
+        original_run(runtime, steps)
+        if runtime.nsteps >= 1:
+            runtime.atoms.positions[0, 0] = -1.0
+        if runtime.nsteps >= 2:
+            runtime.atoms.positions[2, 0] = 2.2
+
+    monkeypatch.setattr(ScriptedExactRuntime, "run", break_in_turn)
+    loaded = CampaignConfig.load(pair_campaign(tmp_path, "chain"))
+    root = tmp_path / "runs/chain"
+    thresholds = {"C-H": (0.8, 1.2), "C-O": (0.8, 1.2), "H-O": (0.1, 0.2)}
+    config = ReactionRunConfig(
+        observation_interval=1,
+        detector=BondDetectorConfig(persistence_frames=1, pair_thresholds=thresholds),
+        candidate_stability_frames=3,
+        pathway=run_config().pathway,
+    )
+    leases = ChainLeases()
+    ReactionRun.create(root, config=config).run(
+        Atoms("HCO", positions=[[0, 0, 0], [0.6, 0, 0], [1.2, 0, 0]]),
+        runtime_provider=ScriptedRuntimeProvider(leases, script={}),
+        pathway_calculator_provider=leases,
+        total_steps=5,
+    )
+
+    assert leases.stages == [
+        "md",
+        "relax_reactant",
+        "relax_frame",
+        *["relax_product", "neb"] * 2,
+        "md",
+    ]
+    (event,) = (root / "pathways").iterdir()
+    result = json.loads((event / "result.json").read_text())
+    assert (result["status"], result["frames"]) == ("stepwise", [0, 2])
+    assert [step["status"] for step in result["steps"]] == ["saddle_validated"] * 2
+    assert {path.name for path in event.iterdir()} == {
+        "result.json",
+        "images.traj",
+        "step-1",
+        "step-2",
+    }
+    first, second = (json.loads((event / f"step-{n}/result.json").read_text()) for n in (1, 2))
+    assert (first["step"], first["frames"], first["occurrence_id"]) == (1, [0, 1], event.name)
+    assert (first["reactant_bonds"], first["product_bonds"]) == ([[0, 1], [1, 2]], [[1, 2]])
+    assert (second["reactant_bonds"], second["product_bonds"]) == ([[1, 2]], [])
+    assert first["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
+    assert second["barrier_eV"] == pytest.approx(0.125, abs=4e-4)
+    assert len(read(event / "step-2/images.traj", ":")) == 3
+
+    report = campaign_status(loaded)
+    assert report["trajectories"][0]["pathways"] == {"stepwise": 1, "saddle_validated": 2}
+    reactions = {entry["reaction"]: entry for entry in report["reactions"]}
+    assert reactions["broken C-H; broken C-O [CHO]"]["pathways"] == {"stepwise": 1}
+    assert reactions["broken C-H [CHO]"]["barriers_eV"] == [first["barrier_eV"]]
+    assert reactions["broken C-O [CO]"]["barriers_eV"] == [second["barrier_eV"]]
+    text = format_status(report)
+    assert text.splitlines()[1].split()[-1] == "2/2"  # the trajectory's two converged steps
+    assert "1 event refined in steps: each step counts as an event of its own class." in text
+
+
 def test_scan_replays_a_run_finds_its_own_candidate_and_changes_nothing(tmp_path, capsys) -> None:
     campaign = pair_campaign(tmp_path, "pair", "waiting")
     root = tmp_path / "runs/pair"

@@ -150,6 +150,17 @@ def test_reaction_regions_reach_two_bonds_unless_a_run_predates_them(tmp_path) -
         ReactionRunConfig(candidate_region_radius=-1)
 
 
+def test_events_refine_in_steps_unless_a_run_predates_them(tmp_path) -> None:
+    pathway = CampaignConfig.load(_campaign(tmp_path)).reaction_run.pathway
+    assert (pathway.reactant_lookback, pathway.split_steps) == (10, True)
+
+    # The state of a run started before step-by-step refinement names neither setting.
+    stored = ReactionRunConfig().to_dict()
+    del stored["pathway"]["reactant_lookback"], stored["pathway"]["split_steps"]
+    pathway = ReactionRunConfig.from_dict(stored).pathway
+    assert (pathway.reactant_lookback, pathway.split_steps) == (0, False)
+
+
 def test_campaign_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
     assignments = ["model-a"] * 4 + ["model-b"] * 2 + ["model-c"] * 2
     path = _profile_campaign(tmp_path, assignments)
