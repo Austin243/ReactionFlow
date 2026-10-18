@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 from contextlib import contextmanager
+from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
@@ -22,6 +24,7 @@ from reactionflow import (
     assign_atom_ids,
 )
 from reactionflow.campaign import CampaignConfig
+from reactionflow.cli import main
 from reactionflow.run import refine_pathway
 from reactionflow.status import _trajectory, campaign_status, format_status
 
@@ -214,7 +217,9 @@ def test_run_detects_refines_and_resumes(tmp_path) -> None:
     assert leases.live == 0 and leases.max_live == 1
 
 
-def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
+def pair_campaign(tmp_path, *ids: str) -> Path:
+    """A campaign of pair trajectories whose model is never imported, and the pair run's start."""
+
     write(tmp_path / "start.extxyz", pair(0.6))
     campaign = {
         "schema_version": 2,
@@ -224,7 +229,7 @@ def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
         "adapter_profiles": {"pair": {"factory": "never_imported:create_adapter", "options": {}}},
         "trajectories": [
             {
-                "id": "pair",
+                "id": name,
                 "adapter_profile": "pair",
                 "total_steps": 18,
                 "timestep_fs": 1.0,
@@ -232,17 +237,29 @@ def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
                 "pressure_GPa": None,
                 "seed": 1,
             }
+            for name in ids
         ],
     }
-    (tmp_path / "campaign.json").write_text(json.dumps(campaign))
+    path = tmp_path / "campaign.json"
+    path.write_text(json.dumps(campaign))
+    return path
+
+
+def run_pair(root: Path) -> ReactionRun:
     leases = LeaseCounter()
-    ReactionRun.create(tmp_path / "runs/pair", config=run_config()).run(
+    run = ReactionRun.create(root, config=run_config())
+    run.run(
         pair(0.6),
         runtime_provider=ScriptedRuntimeProvider(leases),
         pathway_calculator_provider=leases,
         total_steps=18,
     )
-    loaded = CampaignConfig.load(tmp_path / "campaign.json")
+    return run
+
+
+def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
+    loaded = CampaignConfig.load(pair_campaign(tmp_path, "pair"))
+    run_pair(tmp_path / "runs/pair")
 
     report = campaign_status(loaded)
     (reaction,) = report["reactions"]
@@ -259,6 +276,34 @@ def test_status_takes_barriers_only_from_validated_saddles(tmp_path) -> None:
     assert report["trajectories"][0]["pathways"] == {"ci_neb_converged": 1}
     text = format_status(report)
     assert "; 1 converged before the check, without a verdict." in text
+
+
+def test_scan_replays_a_run_finds_its_own_candidate_and_changes_nothing(tmp_path, capsys) -> None:
+    campaign = pair_campaign(tmp_path, "pair", "waiting")
+    root = tmp_path / "runs/pair"
+    (record,) = run_pair(root).occurrences.records()
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    assert main(["scan", str(campaign)]) == 0
+
+    replay, waiting = map(json.loads, capsys.readouterr().out.splitlines())
+    # The second generation starts with the frame the first one stopped at, which is read once.
+    assert (replay["scan"], replay["frames"], replay["bonds_broken"]) == (str(root / "scan"), 3, 1)
+    assert (replay["recorded_by_run"], replay["matching_recorded"]) == (1, 1)
+    assert waiting == {"scan": None, "trajectory_id": "waiting", "message": "not started"}
+    with (root / "scan/candidates.csv").open(newline="") as handle:
+        (row,) = csv.DictReader(handle)
+    assert (row["occurrence_id"], row["product_time_ps"]) == (record.occurrence_id, "0.009")
+    after = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert {path: data for path, data in after.items() if path.parent.name != "scan"} == before
+
+    # Options replace the run's own settings, here its region rule.
+    options = ["--index", "0", "--radius", "none", "--out", str(tmp_path / "whole")]
+    assert main(["scan", str(campaign), *options]) == 0
+    replay = json.loads(capsys.readouterr().out)
+    summary = json.loads((tmp_path / "whole/pair/summary.json").read_text())
+    assert summary["settings"]["candidate_region_radius"] is None
+    assert replay["matching_recorded"] == 1
 
 
 def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -> None:

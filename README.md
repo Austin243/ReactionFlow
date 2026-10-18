@@ -75,12 +75,15 @@ reactionflow validate campaign.json   # check the file without loading the model
 reactionflow prepare campaign.json    # download the model weights
 reactionflow run campaign.json        # run the trajectory
 reactionflow status campaign.json     # summarize trajectories and reactions
+reactionflow scan campaign.json       # replay the saved frames without the model
 ```
 
 A campaign with several trajectories needs `run --index N` outside Slurm. `status` only reads the
 output and is safe to run while trajectories are still going. It prints one row per trajectory
 and one per reaction class, with the barrier range of each class, and `--json` prints the same
-data for scripts.
+data for scripts. `scan` replays the saved frames through bond detection and candidate tracking,
+with the run's settings or new ones, and tabulates every bond change, candidate, and species. It
+also reads trajectory files from other codes ([offline scan](docs/offline-scan.md)).
 
 ## How it works
 
@@ -346,6 +349,7 @@ Each trajectory writes one directory under `output_root`.
 ├── pathways/<occurrence-id>/        one per refinement attempt
 │   ├── result.json                  status, barrier, diagnostics
 │   └── images.traj                  the band
+├── scan/                            tables from reactionflow scan
 └── last-error.json                  only after an error
 ```
 
@@ -411,6 +415,7 @@ saddle, searches rarely connect, and MD mode is the better choice.
 - [EON mode](docs/eon-search.md)
 - [Bond detection](docs/bond-detection.md)
 - [Candidate tracking](docs/candidate-tracking.md)
+- [Offline scan](docs/offline-scan.md)
 - [Reaction identity](docs/reaction-identity.md)
 - [Occurrence store](docs/occurrence-store.md)
 - [Pathway refinement](docs/pathway-refinement.md)
