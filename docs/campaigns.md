@@ -200,8 +200,8 @@ The returned object has only three responsibilities:
 
 - `start(atoms)` context-manages a fresh exact MD runtime;
 - `restore(snapshot)` context-manages that runtime from an `ExactRestartSnapshot`; and
-- `calculator(stage)` context-manages a calculator for `relax_reactant`, `relax_product`, or
-  `neb`.
+- `calculator(stage)` context-manages a calculator for `relax_reactant`, `relax_frame`,
+  `relax_product`, or `neb`.
 
 The MD runtime contract is `atoms`, `nsteps`, `run(steps)`, and `snapshot()`. This narrow boundary
 lets a user package an ANI, MACE, NequIP, Allegro, CHGNet, or other ASE-compatible MLIP without
@@ -224,15 +224,18 @@ converged pathways out of those refined, and the latest error. That error is the
 failure for a `failed` trajectory, and otherwise the contents of `last-error.json`. Trajectories
 without output are listed as `not started`. A trajectory whose files cannot be read is reported
 with that error while the rest of the report still prints.
-Pathway counts include every refined occurrence.
+Pathway counts include every refined occurrence. An event refined in steps counts each step as a
+refined pathway, and only its steps can converge.
 
 The second table merges reaction classes across trajectories that share a model profile and
 pressure, because only those barriers are comparable. Classes merge by the local change: the
 changed bonds and the atoms within `--radius` bonds of them (default 2), including forward/reverse
 equivalence ([local classes](reaction-identity.md#local-classes)). Each row lists the bond changes
 with the formula of those atoms, the number of trajectories and events, converged bands out of
-those refined, validated saddles, and the minimum, median, and maximum barrier. Barriers come only
-from validated saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
+those refined, validated saddles, and the minimum, median, and maximum barrier. Each step of an
+event refined in steps is an event of its own local class
+([steps](pathway-refinement.md#reactant-frame-and-steps)). Barriers come only from validated
+saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
 totals the saddle check's verdicts across the campaign (validated, no saddle, rejected, unchecked)
 and counts separately the bands that converged before the check existed, which carry no verdict.
 NVT barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,

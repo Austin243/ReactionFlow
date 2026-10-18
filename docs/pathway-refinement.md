@@ -37,7 +37,13 @@ candidate = store.load(occurrence_id)
 detector_config = store.load_detector_config(occurrence_id)
 ```
 
-The provider is entered sequentially for `relax_reactant`, `relax_product`, and `neb`. Only one
+`frames` optionally passes the saved observations around the event, as a mapping from frame number
+to atoms. With them, refinement can relax the reactant from an earlier frame and refine the event
+in steps ([reactant frame and steps](#reactant-frame-and-steps)); without them it uses the
+candidate's two snapshots. `ReactionRun` passes the frames saved in its segments.
+
+The provider is entered sequentially: `relax_reactant`, then `relax_frame` for each saved frame
+relaxed in search of intermediates, then `relax_product` and `neb` for each step. Only one
 calculator lease is live at a time. The NEB images share one calculator in serial execution, and
 the saddle check reuses that lease before it is released. The fixed endpoints are evaluated
 once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the moving images.
@@ -68,6 +74,51 @@ with the saddle check's verdict below. Outcomes retain calculator-free endpoint 
 far as the attempt progressed. Every converged band keeps its image energies, and only
 `saddle_validated` adds a forward barrier in eV: potential energy for NVT, enthalpy for NPT. No
 status stops MD from resuming.
+
+## Reactant frame and steps
+
+The tracker's reactant is the observation just before the crossings that persisted, and by then a
+changed bond can already be inside its hysteresis gap. Relaxing that frame can carry the change on,
+and the endpoint check then refuses the event. So the reactant is relaxed from the latest saved
+frame, no later than the tracker's and at most `reactant_lookback` observations before it (10 by
+default), in which every changed bond is on its reactant side of the gap: a bond that breaks is
+within its formation distance, and a bond that forms is beyond its break distance. When no such
+frame is saved, or that frame relaxes to bonds that differ from the tracker's frame anywhere outside
+the event, the tracker's frame is used. Only a pair on opposite sides of the gap in the two counts
+as a difference. `reactant_lookback` 0 always uses the tracker's frame.
+
+An event that changes two or more bonds can pass through a minimum on the way, and one band across
+both changes then has no saddle. With `split_steps` (the default), refinement relaxes the saved
+frames between the reactant and product frames in turn, until one relaxes to the product. A relaxed
+frame that holds more of the event's changes than the state before it, and no other change or gap
+pair among the event's atoms and region, is an intermediate. The event is then refined as
+consecutive steps through its intermediates, in the order the trajectory reached them. Each step
+starts from the relaxed end of the step before, so all steps share one set of surroundings. Its
+other end is built like a one-band product, from the first frame that relaxes into the next
+intermediate, or from the product frame for the last step. Each step has its own endpoint check,
+band, and saddle check. An event that changes one bond, or shows no intermediate, is refined in one
+band.
+
+When the reactant itself relaxes partway along the event, the first step is `unresolved` with that
+reason, and the steps from the intermediate it relaxed into are still refined. A step is also
+`unresolved` when the step before it failed before its end was confirmed.
+
+An event refined in more than one step ends as `stepwise`, with no band or barrier of its own.
+`PathwayOutcome.steps` holds each step's outcome and the bonds of its two ends. `frames` gives the
+saved frames that the two ends of the event, and of each step that was refined, came from.
+`ReactionRun` writes each step to `pathways/<occurrence-id>/step-N/`, with its own `result.json`
+and `images.traj`, and the event's `result.json` lists the steps with their statuses and barriers.
+`reactionflow status` counts each step as an event of its own local class.
+
+Only events that change two or more bonds pay more: one relaxation for each saved frame between the
+reactant and product frames, up to the first that relaxes to the product, and one band for each
+extra step. A reactant frame that falls back to the tracker's costs one more relaxation.
+
+A trajectory started before step-by-step refinement cannot resume under it, because its pathway
+settings, and so its campaign contract, have changed. Finish it with the version that started it.
+Its saved frames can be refined again with `refine_pathway`. A run reopened through
+`ReactionRun.open` from state written before the change keeps one band from the tracker's frame
+(`reactant_lookback` 0, `split_steps` false).
 
 ## Saddle check
 

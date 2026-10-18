@@ -123,6 +123,12 @@ both ends gives a barrier. Panels b and c show a `refine_pathway()` run with def
 two-dimensional model potential. Its barrier is 0.62 eV and its mode is 476i cm⁻¹. See
 [pathway refinement](docs/pathway-refinement.md).
 
+When a changed bond is already partway between its two thresholds in the reactant snapshot, the
+reactant is relaxed from the latest saved frame before it was, up to 10 observations earlier.
+An event that changes several bonds and passes through a minimum on the way is refined one step at
+a time, each step with its own band and saddle check
+([reactant frame and steps](docs/pathway-refinement.md#reactant-frame-and-steps)).
+
 ## Refinement outcomes
 
 A refinement either converges its band and ends with the saddle check's verdict, or stops at the
@@ -139,8 +145,9 @@ first stage that fails, with a status that says why.
 
 `collapsed` means both endpoints relaxed to the same bond topology. `unresolved` means the change
 could not be mapped onto the relaxed endpoints, because a bond stayed between the two thresholds,
-the change disappeared, or relaxation changed bonds elsewhere in the cell. `failed` means an
-unexpected error. The saddle check's four verdicts are described in [pathway
+the change disappeared, or relaxation changed bonds elsewhere in the cell. `stepwise` means the
+event was refined in steps, each with its own outcome. `failed` means an unexpected error. The
+saddle check's four verdicts are described in [pathway
 refinement](docs/pathway-refinement.md#saddle-check). In every case the result is saved, the
 checkpoint is restored, and MD continues.
 A trajectory itself stops only if it cannot save its own state.
@@ -348,7 +355,8 @@ Each trajectory writes one directory under `output_root`.
 │   └── reactant.traj, product.traj  the two bracketing frames
 ├── pathways/<occurrence-id>/        one per refinement attempt
 │   ├── result.json                  status, barrier, diagnostics
-│   └── images.traj                  the band
+│   ├── images.traj                  the band
+│   └── step-1/, step-2/, ...        one per step of an event refined in steps
 ├── scan/                            tables from reactionflow scan
 └── last-error.json                  only after an error
 ```
@@ -358,7 +366,8 @@ an interrupted job leaves no partial record. MD frames are appended to the segme
 `trajectory.traj`. A detected occurrence and its refinement share one occurrence ID.
 `candidate.json` lists the reacting atoms, the bonds before and after, and the observation frames
 the endpoints came from. `result.json` holds the status, barrier, image energies, and the saddle
-check's Hessian and connectivity results, and `images.traj` holds the band.
+check's Hessian and connectivity results, and `images.traj` holds the band. An event refined in
+steps has a `step-N/` folder with both files for each step, and its own `result.json` lists them.
 
 An EON campaign writes a different layout.
 

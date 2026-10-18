@@ -16,6 +16,7 @@ from .pathway import (
     FrequencyValidation,
     PathwayConfig,
     PathwayOutcome,
+    PathwayStep,
     check_saddle,
     refine_pathway,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "MLIPAdapter",
     "PathwayConfig",
     "PathwayOutcome",
+    "PathwayStep",
     "ReactionCandidate",
     "ReactionRun",
     "ReactionRunConfig",

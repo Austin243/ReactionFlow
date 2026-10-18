@@ -7,6 +7,7 @@ import sqlite3
 import statistics
 from collections import Counter
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +65,8 @@ def _describe(candidate: ReactionCandidate, radius: int) -> str:
 def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     """Fill one trajectory's status row and return its classes.
 
-    Each class is (candidate, events, results, occurrence ID of the candidate).
+    Each class is (candidate, events, results, occurrence ID of the candidate). Each step of an
+    event refined in steps is one more, an event of its own with the step's bonds.
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
     step from state.json in place.
@@ -80,6 +82,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     for record in records:
         members.setdefault(record["class_id"], []).append(record)
     classes = []
+    steps = []
     pathways: Counter[str] = Counter()
     for occurrences in members.values():
         _, candidate = _read_bundle(root / occurrences[0]["bundle"])
@@ -90,9 +93,21 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 result = _read_json(path)
                 results.append(result)
                 pathways[result["status"]] += 1
+                if result.get("steps"):
+                    _, event = _read_bundle(root / occurrence["bundle"])
+                    for step in result["steps"]:
+                        step_path = path.parent / f"step-{step['step']}" / "result.json"
+                        step_result = _read_json(step_path)
+                        bonds = {
+                            key: frozenset(map(tuple, step_result[key]))
+                            for key in ("reactant_bonds", "product_bonds")
+                        }
+                        example = occurrence["occurrence_id"]
+                        steps.append((replace(event, **bonds), 1, [step_result], example))
+                        pathways[step_result["status"]] += 1
         classes.append((candidate, len(occurrences), results, occurrences[0]["occurrence_id"]))
     row.update(events=len(records), pathways=dict(pathways))
-    return classes
+    return classes + steps
 
 
 def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, Any]:
@@ -210,7 +225,8 @@ def _pressure(value: float | None) -> str:
 
 
 def _converged(pathways: dict[str, int]) -> str:
-    total = sum(pathways.values())
+    # An event refined in steps has no band of its own; its steps are counted.
+    total = sum(count for status, count in pathways.items() if status != "stepwise")
     converged = sum(count for status, count in pathways.items() if status in _CONVERGED)
     return f"{converged}/{total}" if total else "-"
 
@@ -292,6 +308,11 @@ def format_status(report: dict[str, Any]) -> str:
         if earlier:
             line += f"; {earlier} converged before the check, without a verdict"
         lines.append(line + ". Barriers come only from validated saddles.")
+    if verdicts["stepwise"]:
+        lines.append(
+            f"{verdicts['stepwise']} event{'' if verdicts['stepwise'] == 1 else 's'} refined in"
+            " steps: each step counts as an event of its own class."
+        )
     radius = report["radius"]
     lines.append(
         f"A class is a bond change with the atoms within {radius} bond{'' if radius == 1 else 's'}"

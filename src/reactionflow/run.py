@@ -66,9 +66,12 @@ class ReactionRunConfig:
             observation_interval=value["observation_interval"],
             detector=BondDetectorConfig.from_dict(value["detector"]),
             candidate_stability_frames=value["candidate_stability_frames"],
-            # Runs started before local regions took whole bonded components.
+            # Runs started before local regions took whole bonded components, and runs started
+            # before step-by-step refinement relaxed the tracker's reactant frame in one band.
             candidate_region_radius=value.get("candidate_region_radius"),
-            pathway=PathwayConfig.from_dict(value["pathway"]),
+            pathway=PathwayConfig.from_dict(
+                {"reactant_lookback": 0, "split_steps": False, **value["pathway"]}
+            ),
         )
 
 
@@ -101,6 +104,16 @@ def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
         and all(np.array_equal(first.arrays[name], second.arrays[name]) for name in first.arrays)
         and np.array_equal(first.cell.array, second.cell.array)
         and np.array_equal(first.pbc, second.pbc)
+    )
+
+
+def _write_result(directory: Path, outcome: PathwayOutcome, identity: Mapping[str, Any]) -> None:
+    with Trajectory(directory / "images.traj", "w") as trajectory:
+        for image in outcome.images:
+            trajectory.write(transport_copy(image))
+    result = {**identity, **outcome.to_dict()}
+    (directory / "result.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
@@ -398,25 +411,45 @@ class ReactionRun:
                     flush_to_disk(path)
                     self._checkpoint(runtime)
 
+    def _saved_frames(self, first: int, last: int) -> dict[int, Atoms]:
+        """The saved observations from global frame ``first`` to ``last`` that are on disk."""
+
+        frames: dict[int, Atoms] = {}
+        for path in sorted(self.root.glob("segments/*/trajectory.traj")):
+            if path.stat().st_size == 0:
+                continue
+            with Trajectory(path) as trajectory:
+                if len(trajectory) == 0:
+                    continue
+                # A generation holds one frame per observation, from the one it resumed at.
+                start = int(trajectory[0].info["reactionflow_global_frame"])
+                for frame in range(max(first, start), min(last, start + len(trajectory) - 1) + 1):
+                    atoms = trajectory[frame - start]
+                    if int(atoms.info["reactionflow_global_frame"]) != frame:
+                        raise ValueError(f"{path} does not hold one frame per observation")
+                    frames.setdefault(frame, canonical_copy(atoms))
+        return frames
+
     def _publish_outcome(self, occurrence_id: str, outcome: PathwayOutcome) -> None:
         final = self.pathways / occurrence_id
         temporary = self.pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
         temporary.mkdir()
         try:
-            with Trajectory(temporary / "images.traj", "w") as trajectory:
-                for image in outcome.images:
-                    trajectory.write(transport_copy(image))
-            result = {
+            identity = {
                 "schema_version": 1,
                 "occurrence_id": occurrence_id,
                 "reactionflow_version": __version__,
-                "class_id": self.occurrences.record(occurrence_id).class_id,
-                **outcome.to_dict(),
             }
-            (temporary / "result.json").write_text(
-                json.dumps(result, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            class_id = self.occurrences.record(occurrence_id).class_id
+            _write_result(temporary, outcome, {**identity, "class_id": class_id})
+            for number, step in enumerate(outcome.steps, 1):
+                bonds = {
+                    "reactant_bonds": sorted(map(list, step.reactant_bonds)),
+                    "product_bonds": sorted(map(list, step.product_bonds)),
+                }
+                folder = temporary / f"step-{number}"
+                folder.mkdir()
+                _write_result(folder, step.outcome, {**identity, "step": number, **bonds})
             publish(temporary, final)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -436,12 +469,17 @@ class ReactionRun:
                     # Published before an interruption; make its name durable and move on.
                     sync_directory(self.pathways)
                 else:
+                    candidate = self.occurrences.load(occurrence_id)
                     outcome = refine_pathway(
-                        self.occurrences.load(occurrence_id),
+                        candidate,
                         calculator_provider=calculator_provider,
                         config=self.config.pathway,
                         detector_config=self.occurrences.load_detector_config(occurrence_id),
                         pressure_GPa=pressure_GPa,
+                        frames=self._saved_frames(
+                            candidate.reactant_frame - self.config.pathway.reactant_lookback,
+                            candidate.product_frame,
+                        ),
                     )
                     self._publish_outcome(occurrence_id, outcome)
                 self._pending.pop(0)
