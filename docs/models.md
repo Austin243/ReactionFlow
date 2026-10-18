@@ -1,8 +1,9 @@
 # Models and preparation
 
-ReactionFlow includes optional MACE, UMA, AIMNet2, ORB, MatterSim, CHGNet, SevenNet,
-NEP89, and ANI-1xnr adapters. Other models can use the
-[generic ASE calculator adapter or a custom adapter](campaigns.md#mlip-adapter). Model selection
+ReactionFlow includes optional MACE, UMA, AIMNet2, and ANI-1xnr adapters. Other models, among them
+ORB, MatterSim, CHGNet, SevenNet, and NEP89, run through the
+[generic ASE calculator adapter](#other-models-through-the-ase-adapter), and a model with state
+of its own can use a [custom adapter](campaigns.md#write-a-custom-adapter). Model selection
 uses the campaign's named `adapter_profiles`, each assigned to trajectories by name.
 
 List supported models, heads, tasks, and their intended domains without installing any backend:
@@ -22,11 +23,6 @@ require different validation.
 | `mace` | MACE-MH-1 (six heads), MH-0, MP/MPA/OMAT/MatPES, OFF23 sizes, POLAR-1 small/medium/large |
 | `uma` | Small 1.2.1/1.2/1.1 and medium 1.1; all seven published task names |
 | `aimnet2` | General AIMNet2, 2025, B97-3c, NSE, Pd, RXN; ensemble members 0–3 |
-| `orb` | OrbMol-v2; conservative ORB-v3 `-inf` OMAT and MPA |
-| `mattersim` | MatterSim-v1.0.0-1M and -5M |
-| `chgnet` | MPtrj 0.3.0 and r2SCAN |
-| `sevennet` | SevenNet-0, L3i5, MF-0, MF-ompa, OMAT, and Omni/Omni-i8/Omni-i12, with explicit modalities |
-| `nep` | NEP89 (89 elements), double-precision CPU inference |
 | `ani1xnr` | ANI-1xnr reactive H/C/N/O potential; ensemble members 0–7 |
 
 ## Install and prepare
@@ -44,15 +40,13 @@ prepare the model files, because pip may have changed already imported dependenc
 or preparation failures return a failing exit status. It does not create an environment for you.
 
 The PyPI backend pins are `mace-torch==0.3.16`, `fairchem-core==2.23.0`, `aimnet[ase]==0.2.0`,
-`orb-models==0.7.0`, `mattersim==1.2.5`, `chgnet==0.4.2`, `sevenn==0.13.0`, `calorine==4.0`, and
-`torchani==2.8.4`. SevenNet setup also installs `torch>=2.8,<3`, and ANI-1xnr setup installs
-`torch==2.11.0`. POLAR additionally installs
+and `torchani==2.8.4`. ANI-1xnr setup also installs `torch==2.11.0`. POLAR additionally installs
 `graph_longrange` 0.4.0 at commit `0e21d5546c482d08388a08eb4d948e833227ce47`. That source
 dependency requires Git. It is installed by `prepare --install`, not embedded as direct Git dependencies
 in ReactionFlow's package metadata.
 
-Alternatively, install a PyPI backend extra yourself: `.[mace]`, `.[uma]`, `.[aimnet2]`, `.[orb]`,
-`.[mattersim]`, `.[chgnet]`, `.[sevennet]`, `.[nep]`, or `.[ani1xnr]`, then omit `--install`:
+Alternatively, install a PyPI backend extra yourself: `.[mace]`, `.[uma]`, `.[aimnet2]`, or
+`.[ani1xnr]`, then omit `--install`:
 
 ```bash
 reactionflow prepare campaign.json
@@ -65,11 +59,7 @@ Preparation resolves/downloads model files and reports their paths without const
 calculator, starting MD, or creating trajectory output. Unreferenced profiles are ignored.
 
 Keep incompatible backends in separate environments and campaigns. The pinned MACE package needs
-`e3nn==0.4.4`, whereas UMA, MatterSim, and SevenNet need `e3nn>=0.5`.
-UMA and ORB require incompatible `nvalchemi-toolkit-ops` versions. The tested MatterSim setup
-also uses a newer version through TorchSim; setup keeps MatterSim and ORB separate too.
-UMA's
-FAIR-Chem version also requires Torch 2.13, while ANI-1xnr pins Torch 2.11, so those two need
+`e3nn==0.4.4`, whereas UMA needs `e3nn>=0.5`. UMA's FAIR-Chem version also requires Torch 2.13, while ANI-1xnr pins Torch 2.11, so those two need
 separate environments as well. The bundled
 `setup-perlmutter-ani1xnr.sh` and Perlmutter job scripts configure an ANI-1xnr environment; they
 are not setup scripts for the other backends. Use your backend's environment in your own batch
@@ -256,95 +246,6 @@ fully periodic inputs. NPT preflight checks finite stress as well as energy and 
 [official model guide](https://github.com/isayevlab/aimnetcentral) for reference energies,
 element coverage, and each family's scientific limits; changing families changes the potential.
 
-## OrbMol-v2 and ORB-v3
-
-```json
-{
-  "factory": "reactionflow.adapters.orb:create_adapter",
-  "options": {"model": "orbmol-v2", "device": "cuda", "precision": "float32-highest"}
-}
-```
-
-Other choices are `orb-v3-conservative-inf-omat` and `orb-v3-conservative-inf-mpa` for materials.
-Only conservative energy-gradient forces are included. `precision` is `float32-highest` (default)
-or `float64`; compilation is disabled. OrbMol-v2 requires explicit integer `charge` and positive
-integer `spin` multiplicity, and either fully periodic or fully nonperiodic inputs. See the
-[upstream model descriptions](https://github.com/orbital-materials/orb-models/blob/v0.7.0/MODELS.md).
-
-## MatterSim and CHGNet
-
-```json
-{
-  "factory": "reactionflow.adapters.mattersim:create_adapter",
-  "options": {"model": "mattersim-v1.0.0-1M", "device": "cuda", "dtype": "float32"}
-}
-```
-
-MatterSim also offers `mattersim-v1.0.0-5M`; `dtype` is `float32` (default) or `float64`.
-The versioned checkpoint download is tied to an immutable release commit. See
-[MatterSim](https://github.com/microsoft/mattersim) for its materials training domain.
-
-```json
-{
-  "factory": "reactionflow.adapters.chgnet:create_adapter",
-  "options": {"model": "r2scan", "device": "cuda"}
-}
-```
-
-CHGNet also offers `model: "0.3.0"` for MPtrj PBE+U. Its weights are already included in the
-installed package, so preparation just resolves and verifies the local file. See
-[CHGNet's releases](https://github.com/CederGroupHub/chgnet/releases/tag/v0.4.2).
-Both materials adapters require fully periodic structures with a 3D cell; CHGNet rejects
-isolated atoms. These are additional materials choices, not general molecular reaction models.
-
-## SevenNet
-
-```json
-{
-  "factory": "reactionflow.adapters.sevennet:create_adapter",
-  "options": {"model": "7net-omni", "modal": "mpa", "device": "cuda"}
-}
-```
-
-The released model names and selectable modalities are:
-
-| Model | `modal` |
-| --- | --- |
-| `7net-0`, `7net-0_22may2024`, `7net-l3i5`, `7net-omat` | Omit; these have a single task |
-| `7net-mf-0` | `PBE`, `R2SCAN` (case-sensitive) |
-| `7net-mf-ompa` | `mpa`, `omat24` |
-| `7net-omni`, `7net-omni-i8`, `7net-omni-i12` | `mpa`, `omat24`, `matpes_pbe`, `matpes_r2scan`, `mp_r2scan`, `oc20`, `oc22`, `odac23`, `omol25_low`, `omol25_high`, `spice`, `qcml`, `pet_mad` |
-
-Multitask models require an explicit `modal`; the loaded checkpoint must contain it. This adapter
-uses conservative energy-gradient forces/stress in float32 with the e3nn backend and no extra D3.
-Acceleration overrides are rejected so the execution contract stays explicit. Charge and spin
-are not explicit calculator inputs. SevenNet-0 (both dates), L3i5, and MF-0 resolve package-bundled weights locally;
-OMAT, MF-ompa, and Omni variants download from versioned upstream releases during preparation.
-See [SevenNet's model guide](https://sevennet.readthedocs.io/en/latest/user_guide/pretrained.html)
-for task coverage and scientific limitations.
-
-## NEP89
-
-```json
-{
-  "factory": "reactionflow.adapters.nep:create_adapter",
-  "options": {"model": "nep89", "device": "cpu"}
-}
-```
-
-Set campaign `require_gpu: false`. NEP89 uses Calorine's in-memory CPU calculator in float64;
-it has no Torch dependency. Preparation downloads the official 2025-04-09 NEP89 energy model
-from an immutable GPUMD release commit. Calorine may need a C++17 compiler during installation.
-An absolute `checkpoint` can instead select another local NEP energy-model text file.
-
-This backend always applies periodic boundaries, so ReactionFlow requires fully periodic
-structures with a finite 3D cell, including for NVT. Nonzero `atoms.info['charge']`, nonsinglet
-`atoms.info['spin']`, and nonzero ASE initial charge/magnetic-moment arrays are rejected because
-the model does not take them as inputs. Conservative forces and stress support NPT and variable-cell refinement. The native
-library binary, calculator source, and weight hashes are bound to exact restarts. See
-[the NEP89 release](https://github.com/brucefan1983/GPUMD/tree/v5.0/potentials/nep/nep89_20250409)
-and [Calorine's calculator documentation](https://calorine.materialsmodeling.org/get_started/ase_calculators.html).
-
 ## ANI-1xnr
 
 ```json
@@ -366,9 +267,8 @@ scope.
 
 ## Local files and cache
 
-MACE, UMA, AIMNet2, MatterSim, CHGNet, SevenNet, and NEP accept an absolute `checkpoint` path instead
-of `model`; supply exactly one. For ORB, retain `model` to select its architecture and optionally
-provide `checkpoint` to override the weights. AIMNet local files use current metadata-bearing `.pt`
+MACE, UMA, and AIMNet2 accept an absolute `checkpoint` path instead
+of `model`; supply exactly one. AIMNet local files use current metadata-bearing `.pt`
 format; `model_index` is only valid with named models.
 For UMA local checkpoints, also supply the applicable `atom_refs` and `form_elem_refs` YAML files
 from the same model release, for example:
@@ -393,8 +293,7 @@ adapter options to override it for that profile. The bundled Perlmutter scripts 
 `REACTIONFLOW_MODEL_CACHE` to `.cache/models` inside the checkout unless it is already set. Keep
 the same cache/path configuration when
 resuming. Direct downloads verify cached file hashes; UMA uses the Hugging Face cache. ANI-1xnr
-keeps its weights in TorchANI's `StateDicts` layout inside its backend directory. CHGNet
-uses package-bundled files and has no `cache_dir` option. Exact checkpoints record hashes of
+keeps its weights in TorchANI's `StateDicts` layout inside its backend directory. Exact checkpoints record hashes of
 every resolved weight/reference file for all adapters.
 
 ## Execution and restart scope
@@ -404,7 +303,7 @@ every pathway stage. For CPU runs, set `device: "cpu"` and campaign `require_gpu
 worker must see exactly one usable GPU.
 
 Exact resume binds model files, options, package versions, adapter/runtime source, and the recorded
-Torch/platform/device environment (or the native Calorine binary for NEP). Changing those inputs requires a new trajectory output rather
+Torch/platform/device environment. Changing those inputs requires a new trajectory output rather
 than treating it as exact continuation. Preserve the environment and files of an active campaign.
 For Torch backends, deterministic algorithms are enabled and TF32 is disabled; unsupported nondeterministic
 operations fail. UMA uses fixed float32 inference without compilation or MoLE merging, so its
@@ -416,8 +315,7 @@ its random edge-rotation angles from the same seed.
 The adapter tests cover setup, configuration, and restart contracts with controlled calculators.
 Opt-in integration tests use prepared real weights without downloads. CPU checks include finite
 energy/forces and two-step versus one-step/fresh-restore/one-step comparisons for MACE-MP small,
-AIMNet2/RXN (NVT and NPT), OrbMol-v2 (NVT and NPT), MatterSim 1M (NPT), and
-CHGNet 0.3.0/r2SCAN (NPT), SevenNet-0/MF-0/Omni (NPT), and NEP89 (NPT).
+and AIMNet2/RXN (NVT and NPT).
 All six MH-1 heads have finite CPU energy/force checks; Polar-S has force, numerical-stress,
 NVT, and NPT restart checks.
 UMA-S 1.1, 1.2 and 1.2.1 (`omol`, and 1.2.1 `omc`) ran with real weights on an A100: energies agree
@@ -426,3 +324,120 @@ identical on GPU and CPU.
 These short checks do not establish GPU reproducibility for the other backends, every model
 variant, or scientific accuracy for a new system. Model integration alone is not validation of a
 reaction barrier or stress model.
+
+## Other models through the ASE adapter
+
+Any model with an ASE calculator runs through `reactionflow.adapters.ase:create_adapter`
+([options](campaigns.md#use-an-ase-calculator-directly)). Install the model's own package, download
+its weights yourself, and list them in `model_files` so each checkpoint records their hashes. For a
+Torch model, set `torch_device` to `cpu` or `cuda`. ReactionFlow then turns on deterministic Torch
+inference before building the calculator and records the Torch environment in each checkpoint, as
+the built-in adapters do; without it, restarts of Torch models are not bitwise exact. The profiles
+below ran two NPT steps of crystalline Si on a CPU, and a restart from step one matched the
+uninterrupted run bit for bit, except for ORB (below). Replace `cpu` with `cuda` on a GPU.
+
+CHGNet 0.3.0, whose weights come with `chgnet`:
+
+```json
+"chgnet": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "chgnet.model.dynamics:CHGNetCalculator",
+    "calculator_kwargs": {"use_device": "cpu"},
+    "torch_device": "cpu"
+  }
+}
+```
+
+SevenNet-0, whose weights come with `sevenn` (for a multitask model, add its `modal`):
+
+```json
+"sevennet": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "sevenn.calculator:SevenNetCalculator",
+    "calculator_kwargs": {"model": "7net-0", "device": "cpu"},
+    "torch_device": "cpu"
+  }
+}
+```
+
+MatterSim, with a checkpoint from
+[its repository](https://github.com/microsoft/mattersim/tree/main/pretrained_models):
+
+```json
+"mattersim": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "mattersim.forcefield:MatterSimCalculator",
+    "calculator_kwargs": {"load_path": "/abs/path/mattersim-v1.0.0-1M.pth", "device": "cpu"},
+    "model_files": ["/abs/path/mattersim-v1.0.0-1M.pth"],
+    "torch_device": "cpu"
+  }
+}
+```
+
+NEP89 through Calorine, which runs on CPUs and does not use Torch, with the model file from
+[the NEP89 release](https://github.com/brucefan1983/GPUMD/tree/v5.0/potentials/nep/nep89_20250409):
+
+```json
+"nep89": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "calorine.calculators:CPUNEP",
+    "calculator_kwargs": {"model_filename": "/abs/path/nep89_20250409.txt"},
+    "model_files": ["/abs/path/nep89_20250409.txt"]
+  }
+}
+```
+
+MatterSim, CHGNet, and NEP89 are materials models and expect a periodic cell.
+
+ORB builds its calculator in two steps, so it needs a small factory in a module on `PYTHONPATH`,
+here `orb_calculator.py`:
+
+```python
+import torch
+from orb_models.forcefield import pretrained
+from orb_models.forcefield.inference.calculator import ORBCalculator
+
+
+class _Float32Graphs:
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    def from_ase_atoms(self, *, atoms, **kwargs):
+        return self.adapter.from_ase_atoms(
+            atoms=atoms,
+            **kwargs,
+            output_dtype=torch.float32,
+            graph_construction_dtype=torch.float32,
+        )
+
+
+def orb_v3(weights_path, device="cpu"):
+    model, adapter = pretrained.orb_v3_conservative_inf_omat(
+        weights_path=weights_path, device=device, precision="float32-highest", compile=False
+    )
+    return ORBCalculator(model, _Float32Graphs(adapter), device=device)
+```
+
+```json
+"orb-v3": {
+  "factory": "reactionflow.adapters.ase:create_adapter",
+  "options": {
+    "calculator_factory": "orb_calculator:orb_v3",
+    "calculator_kwargs": {"weights_path": "/abs/path/orb-v3-conservative-inf-omat.ckpt", "device": "cpu"},
+    "model_files": ["/abs/path/orb-v3-conservative-inf-omat.ckpt"],
+    "packages": ["orb-models"],
+    "torch_device": "cpu"
+  }
+}
+```
+
+The weights are listed in ORB's
+[model table](https://github.com/orbital-materials/orb-models/blob/v0.7.0/MODELS.md).
+`packages` records the ORB version, which the adapter cannot infer from a factory in your own
+module. The first ORB evaluation in a process differs from later ones by about 10⁻¹² Å in the
+positions after one step, so ORB restarts agree to that level rather than bit for bit. ORB 0.7.0
+needs Python 3.12, because one of its dependencies does not build on 3.13.

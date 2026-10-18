@@ -32,11 +32,6 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
             "adapters/mace.py": {"mace"},
             "adapters/uma.py": {"fairchem", "huggingface_hub", "omegaconf", "torch"},
             "adapters/aimnet2.py": {"aimnet", "torch", "yaml"},
-            "adapters/orb.py": {"orb_models", "torch"},
-            "adapters/mattersim.py": {"mattersim", "torch"},
-            "adapters/chgnet.py": {"chgnet", "torch"},
-            "adapters/sevennet.py": {"sevenn", "torch"},
-            "adapters/nep.py": {"calorine", "_nepy"},
         }
         allowed_for_path.update(optional_imports.get(path.relative_to(source_root).as_posix(), ()))
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

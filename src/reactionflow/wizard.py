@@ -30,8 +30,6 @@ from .campaign import CampaignConfig
 from .model_setup import backend_conflict, model_catalog
 from .run import ReactionRunConfig
 
-# Backends whose catalog notes require a fully periodic cell.
-_PERIODIC_ONLY = {"mattersim", "chgnet", "nep"}
 # A catalog list field that a model requires one value from, and the option it sets.
 _CHOICES = {"heads": "head", "tasks": "task", "modals": "modal"}
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -299,7 +297,6 @@ def _needs_charge_and_spin(profile: _Profile) -> bool:
     return (
         profile.backend == "aimnet2"
         or (profile.backend == "uma" and options.get("task") == "omol")
-        or (profile.backend == "orb" and options.get("model") == "orbmol-v2")
         or (profile.backend == "mace" and options.get("family") == "polar")
     )
 
@@ -350,18 +347,10 @@ def _group(number: int, catalog: list[dict], previous: _Group | None, used: list
     while True:
         profiles = _models(catalog, previous.profiles if previous else None)
         conflict = backend_conflict(profile.factory for profile in used + profiles)
-        flat = [s for s in structures if not s.periodic]
-        periodic_only = [p.name for p in profiles if p.backend in _PERIODIC_ONLY]
-        if conflict:
-            print(f"  These models cannot share one Python environment: {conflict}.")
-            print("  Choose others, or write a separate campaign for them.")
-        elif flat and periodic_only:
-            print(
-                f"  {', '.join(periodic_only)} need a periodic cell, but "
-                f"{', '.join(_shown(s.path) for s in flat)} is not periodic."
-            )
-        else:
+        if not conflict:
             break
+        print(f"  These models cannot share one Python environment: {conflict}.")
+        print("  Choose others, or write a separate campaign for them.")
     for profile in profiles:
         missing = [s for s in structures if not {"charge", "spin"} <= set(s.atoms.info)]
         if _needs_charge_and_spin(profile) and missing:
@@ -492,7 +481,7 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
     adapter_profiles = {}
     for key, profile in profiles.items():
         options = dict(profile.options)
-        if profile.backend and profile.backend != "nep":
+        if profile.backend:
             options["device"] = "cuda" if settings["gpu"] else "cpu"
         adapter_profiles[names[key]] = {"factory": profile.factory, "options": options}
     campaign: dict[str, Any] = {"schema_version": 2}
@@ -562,11 +551,7 @@ def _eon_session(path: Path, catalog: list[dict]) -> int:
     rotation = free_rotation(structure.atoms)
     if rotation == "pinned":
         print(f"  Note: {PINNED}.")
-    while True:
-        profile = _models(catalog, None, single=True)[0]
-        if profile.backend not in _PERIODIC_ONLY or structure.periodic:
-            break
-        print(f"  {profile.name} needs a periodic cell, but {_shown(structure.path)} is not.")
+    profile = _models(catalog, None, single=True)[0]
     if _needs_charge_and_spin(profile) and not {"charge", "spin"} <= set(structure.atoms.info):
         print(
             f"  Note: {profile.name} reads the total charge and spin multiplicity from the "
@@ -616,16 +601,12 @@ def _eon_session(path: Path, catalog: list[dict]) -> int:
         )
     if prefactors == 1:
         eon["prefactor"] = _ask_until_valid("Prefactor in 1/s", _positive(float), "1e13")
-    if profile.backend == "nep":
-        gpu = False
-        print("  NEP89 runs on CPUs, so the campaign will not ask for a GPU.")
-    else:
-        gpu = _yes("Run on a GPU?", True)
+    gpu = _yes("Run on a GPU?", True)
     output = _ask_until_valid(
         "Output directory, relative to the campaign file", _relative_directory, "eon-runs"
     )
     options = dict(profile.options)
-    if profile.backend and profile.backend != "nep":
+    if profile.backend:
         options["device"] = "cuda" if gpu else "cpu"
     campaign = {
         "schema_version": 2,
@@ -689,12 +670,7 @@ def _session(path: Path) -> int:
     every = _ask_until_valid(
         "Check bonds every how many MD steps", _positive(int, steps), default_interval
     )
-    profiles = [profile for group in groups for profile in group.profiles]
-    if all(profile.backend == "nep" for profile in profiles):
-        gpu = False
-        print("  NEP89 runs on CPUs, so the campaign will not ask for GPUs.")
-    else:
-        gpu = _yes("Run each trajectory on its own GPU?", True)
+    gpu = _yes("Run each trajectory on its own GPU?", True)
     output = _ask_until_valid(
         "Output directory, relative to the campaign file", _relative_directory, "runs"
     )

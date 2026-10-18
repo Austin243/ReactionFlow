@@ -23,8 +23,8 @@ offers the previous group's answers as defaults.
 Answers are checked as they are given. Structure files are read and their atom counts printed, and
 wildcards such as `structures/*.extxyz` work. Temperatures and pressures take lists or
 `start:stop:step` ranges, and `none` as a pressure means constant volume. Models that need separate
-Python environments are refused together, and constant pressure or a periodic-only model (MatterSim,
-CHGNet, NEP89) needs a periodic cell. AIMNet2, UMA `omol`, OrbMol, and MACE-POLAR read the charge
+Python environments are refused together, and constant pressure needs a periodic cell. AIMNet2,
+UMA `omol`, and MACE-POLAR read the charge
 and spin multiplicity from the structure, so `init` warns when a file has none.
 
 Trajectory IDs name the structure and the model when a campaign has several, then the temperature,
@@ -124,8 +124,9 @@ reactionflow plan campaign.json --gpus-per-node 4
 
 ### Built-in models
 
-MACE, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, NEP89, and ANI-1xnr
-have built-in factories and explicit setup/download commands:
+ORB, MatterSim, CHGNet, SevenNet, NEP89, and other models run through the
+[generic ASE adapter](models.md#other-models-through-the-ase-adapter). MACE, UMA, AIMNet2/RXN,
+and ANI-1xnr have built-in factories and explicit setup/download commands:
 
 ```bash
 reactionflow models
@@ -160,7 +161,8 @@ a named adapter profile:
       "device": "cuda"
     },
     "model_files": ["/absolute/path/to/model.ckpt"],
-    "packages": ["my-mlip-package", "torch"]
+    "packages": ["my-mlip-package", "torch"],
+    "torch_device": "cuda"
   }
 }
 ```
@@ -178,6 +180,9 @@ Use absolute model paths in portable batch configurations. Every path in `model_
 at runtime and SHA-256 hashed into each exact checkpoint. ReactionFlow also records the configured
 kwargs, Python/ASE/NumPy versions, calculator source hash, its installed distribution version, and
 the versions named in `packages`. Changing any of those inputs makes exact resume fail clearly.
+For a Torch model, `torch_device` (`cpu` or `cuda`) turns on deterministic Torch inference before
+the calculator is built and records the Torch environment, as the built-in adapters do. Leave it out
+for a model that does not use Torch.
 
 This adapter supplies the same exactly restartable Langevin BAOAB NVT/NPT runtime used by the
 built-in ANI example. It is intentionally limited to deterministic calculators whose inference
