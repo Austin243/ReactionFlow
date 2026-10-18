@@ -286,7 +286,7 @@ def handle_command(arguments: argparse.Namespace) -> int:
             prepare_adapter(campaign.adapter)
     atoms = campaign.starting_atoms()
     warnings = [PINNED] if free_rotation(atoms) == "pinned" else []
-    if command in {"validate", "plan"}:
+    if command == "validate":
         print(
             json.dumps(
                 {

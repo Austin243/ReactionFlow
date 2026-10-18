@@ -77,7 +77,7 @@ reactionflow run campaign.json --index 0
 For an explicit download immediately before running the selected trajectory, use
 `reactionflow run campaign.json --index 0 --download`. This convenience never runs pip. On a
 cluster, prepare on a network-enabled node first and make the cache visible to compute nodes.
-`validate`, `plan`, and `status` remain independent of optional model imports and downloads.
+`validate` and `status` remain independent of optional model imports and downloads.
 
 Arbitrary ASE and custom adapters manage their own dependencies and files. `prepare` reports them
 as `external_setup` without executing their code; `run --download` rejects them with an
