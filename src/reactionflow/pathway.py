@@ -47,7 +47,12 @@ class _EndpointUnresolved(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PathwayConfig:
-    """Small set of controls for endpoint relaxation, CI-NEB, and the saddle check."""
+    """Small set of controls for endpoint relaxation, CI-NEB, and the saddle check.
+
+    ``reactant_lookback`` is how many observations before the tracker's reactant frame refinement
+    may go back for a frame with every changed bond on its reactant side, and ``split_steps``
+    refines an event that changes several bonds one step per intermediate it passes through.
+    """
 
     relax_fmax: float = 0.05
     relax_steps: int = 2000
@@ -59,6 +64,8 @@ class PathwayConfig:
     max_cell_strain: float = 0.05
     frequency_delta: float = 0.01
     curvature_cutoff_eV_A2: float = 0.05
+    reactant_lookback: int = 10
+    split_steps: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -80,6 +87,11 @@ class PathwayConfig:
             or self.curvature_cutoff_eV_A2 < 0
         ):
             raise ValueError("cell-change limits and the curvature cutoff must be non-negative")
+        lookback = self.reactant_lookback
+        if isinstance(lookback, bool) or not isinstance(lookback, Integral) or lookback < 0:
+            raise ValueError("reactant_lookback must be a non-negative whole number")
+        if not isinstance(self.split_steps, bool):
+            raise ValueError("split_steps must be true or false")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PathwayConfig:
@@ -128,7 +140,11 @@ class ConnectivityCheck:
 
 @dataclass(frozen=True, slots=True)
 class PathwayOutcome:
-    """Bounded result with calculator-free snapshots of the attempted path."""
+    """Bounded result with calculator-free snapshots of the attempted path.
+
+    ``frames`` are the saved frames the reactant was relaxed from and the product built from. An
+    event refined in steps is ``stepwise``, with no band of its own and one result per step.
+    """
 
     status: str
     barrier: float | None = None
@@ -141,6 +157,8 @@ class PathwayOutcome:
     pressure_GPa: float | None = None
     enthalpies: tuple[float, ...] = ()
     volumes: tuple[float, ...] = ()
+    frames: tuple[int, int] | None = None
+    steps: tuple[PathwayStep, ...] = ()
 
     @property
     def barrier_quantity(self) -> str:
@@ -167,76 +185,154 @@ class PathwayOutcome:
                 None if self.frequency_validation is None else asdict(self.frequency_validation)
             ),
             "connectivity": None if self.connectivity is None else asdict(self.connectivity),
+            "frames": None if self.frames is None else list(self.frames),
+            "steps": [
+                {"step": number, "status": step.outcome.status, "barrier_eV": step.outcome.barrier}
+                for number, step in enumerate(self.steps, 1)
+            ],
         }
 
 
-def _prepare_endpoints(
-    candidate: ReactionCandidate,
+@dataclass(frozen=True, slots=True)
+class PathwayStep:
+    """One step of an event refined through its intermediates, with the bonds of its two ends
+    inside the event's region."""
+
+    outcome: PathwayOutcome
+    reactant_bonds: frozenset[Bond]
+    product_bonds: frozenset[Bond]
+
+
+def _standard_cell(atoms: Atoms) -> None:
+    if (
+        not atoms.pbc.all()
+        or atoms.cell.rank < 3
+        or not np.isfinite(atoms.cell).all()
+        or np.linalg.det(atoms.cell) <= 0
+    ):
+        raise _EndpointUnresolved("SSNEB requires fully periodic right-handed cells")
+    # Remove rigid cell rotation without changing fractional coordinates
+    # or internal geometry. These are copies, never the MD checkpoint.
+    cell, rotation = atoms.cell.standard_form()
+    atoms.positions = atoms.positions @ rotation.T
+    atoms.set_cell(cell)
+
+
+def _prepare_frames(
+    frames: Sequence[Atoms],
     config: PathwayConfig,
     *,
     variable_cell: bool = False,
-) -> tuple[Atoms, Atoms]:
-    reactant = canonical_copy(candidate.reactant)
-    product = canonical_copy(candidate.product)
+) -> list[Atoms]:
+    """Constraint-free copies, each in the first frame's atom order and placed next to it."""
+
+    reactant = canonical_copy(frames[0])
     reactant.set_constraint()
-    product.set_constraint()
-
     first_ids = atom_ids(reactant)
-    second_ids = atom_ids(product)
-    if set(first_ids) != set(second_ids):
-        raise ValueError("reactant and product atom IDs differ")
-    order = {atom_id: index for index, atom_id in enumerate(second_ids)}
-    product = product[[order[atom_id] for atom_id in first_ids]]
-    if reactant.get_chemical_symbols() != product.get_chemical_symbols():
-        raise ValueError("reactant and product elements differ")
-    if reactant.pbc.tolist() != product.pbc.tolist():
-        raise _EndpointUnresolved("reactant and product periodicity differs")
-    cells_differ = not np.array_equal(reactant.cell, product.cell)
     if variable_cell:
-        for endpoint in (reactant, product):
-            if (
-                not endpoint.pbc.all()
-                or endpoint.cell.rank < 3
-                or not np.isfinite(endpoint.cell).all()
-                or np.linalg.det(endpoint.cell) <= 0
-            ):
-                raise _EndpointUnresolved("SSNEB requires fully periodic right-handed cells")
-            # Remove rigid cell rotation without changing fractional coordinates
-            # or internal geometry. These are copies, never the MD checkpoint.
-            cell, rotation = endpoint.cell.standard_form()
-            endpoint.positions = endpoint.positions @ rotation.T
-            endpoint.set_cell(cell)
-        reference_positions = product.get_scaled_positions(wrap=False) @ reactant.cell
-        displacement = find_mic(
-            reference_positions - reactant.positions, cell=reactant.cell, pbc=True
-        )[0]
-        product.set_scaled_positions(
-            np.linalg.solve(reactant.cell.T, (reactant.positions + displacement).T).T
-        )
-    elif cells_differ:
-        if not reactant.pbc.all() or reactant.cell.rank < 3 or product.cell.rank < 3:
-            raise _EndpointUnresolved("changed cells require fully periodic nonsingular endpoints")
-        reactant_volume = abs(float(np.linalg.det(reactant.cell)))
-        product_volume = abs(float(np.linalg.det(product.cell)))
-        try:
-            deformation = np.linalg.solve(reactant.cell, product.cell)
-            strain = float(np.max(np.abs(np.linalg.svd(deformation, compute_uv=False) - 1)))
-        except np.linalg.LinAlgError:
-            raise _EndpointUnresolved("endpoint cell is singular") from None
-        volume_change = abs(product_volume / reactant_volume - 1)
-        if volume_change > config.max_volume_change_fraction or strain > config.max_cell_strain:
-            raise _EndpointUnresolved("endpoint cell change exceeds pathway limits")
-        product.set_cell(reactant.cell, scale_atoms=True)
+        _standard_cell(reactant)
+    prepared = [reactant]
+    for frame in frames[1:]:
+        product = canonical_copy(frame)
+        product.set_constraint()
+        second_ids = atom_ids(product)
+        if set(first_ids) != set(second_ids):
+            raise ValueError("reactant and product atom IDs differ")
+        order = {atom_id: index for index, atom_id in enumerate(second_ids)}
+        product = product[[order[atom_id] for atom_id in first_ids]]
+        if reactant.get_chemical_symbols() != product.get_chemical_symbols():
+            raise ValueError("reactant and product elements differ")
+        if reactant.pbc.tolist() != product.pbc.tolist():
+            raise _EndpointUnresolved("reactant and product periodicity differs")
+        cells_differ = not np.array_equal(reactant.cell, product.cell)
+        if variable_cell:
+            _standard_cell(product)
+            reference_positions = product.get_scaled_positions(wrap=False) @ reactant.cell
+            displacement = find_mic(
+                reference_positions - reactant.positions, cell=reactant.cell, pbc=True
+            )[0]
+            product.set_scaled_positions(
+                np.linalg.solve(reactant.cell.T, (reactant.positions + displacement).T).T
+            )
+        elif cells_differ:
+            if not reactant.pbc.all() or reactant.cell.rank < 3 or product.cell.rank < 3:
+                raise _EndpointUnresolved(
+                    "changed cells require fully periodic nonsingular endpoints"
+                )
+            reactant_volume = abs(float(np.linalg.det(reactant.cell)))
+            product_volume = abs(float(np.linalg.det(product.cell)))
+            try:
+                deformation = np.linalg.solve(reactant.cell, product.cell)
+                strain = float(np.max(np.abs(np.linalg.svd(deformation, compute_uv=False) - 1)))
+            except np.linalg.LinAlgError:
+                raise _EndpointUnresolved("endpoint cell is singular") from None
+            volume_change = abs(product_volume / reactant_volume - 1)
+            if volume_change > config.max_volume_change_fraction or strain > config.max_cell_strain:
+                raise _EndpointUnresolved("endpoint cell change exceeds pathway limits")
+            product.set_cell(reactant.cell, scale_atoms=True)
 
-    if not variable_cell:
-        displacement = product.positions - reactant.positions
-        if reactant.pbc.any():
-            displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
-        product.positions = reactant.positions + displacement
+        if not variable_cell:
+            displacement = product.positions - reactant.positions
+            if reactant.pbc.any():
+                displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
+            product.positions = reactant.positions + displacement
+        prepared.append(product)
+    return prepared
 
-    if not set(candidate.atom_ids) <= set(first_ids):
-        raise ValueError("candidate atom IDs are missing from its endpoints")
-    return reactant, product
+
+def _local(candidate: ReactionCandidate) -> Callable[[Collection[Bond]], set[Bond]]:
+    """Pairs inside the reacting region, plus any pair involving an atom of a changed bond."""
+
+    region = set(candidate.atom_ids)
+    changed_atoms = {
+        atom_id for bond in candidate.reactant_bonds ^ candidate.product_bonds for atom_id in bond
+    }
+    return lambda bonds: {
+        bond for bond in bonds if region.issuperset(bond) or changed_atoms.intersection(bond)
+    }
+
+
+def _on_reactant_side(
+    atoms: Atoms, candidate: ReactionCandidate, detector_config: BondDetectorConfig
+) -> bool:
+    """Whether each bond the candidate breaks is within its formation distance, and each bond it
+    forms at or beyond its break distance."""
+
+    bonded, gap = classify_bonds(atoms, detector_config)
+    return all(
+        bond in bonded if bond in candidate.reactant_bonds else bond not in bonded | gap
+        for bond in candidate.reactant_bonds ^ candidate.product_bonds
+    )
+
+
+def _made(
+    atoms: Atoms, candidate: ReactionCandidate, detector_config: BondDetectorConfig
+) -> frozenset[Bond] | None:
+    """The candidate's bond changes that a relaxed structure holds, or None when it also holds
+    another change near them or a pair there inside the hysteresis gap."""
+
+    local = _local(candidate)
+    bonded, gap = classify_bonds(atoms, detector_config)
+    made = frozenset(local(bonded) ^ candidate.reactant_bonds)
+    if local(gap) or not made <= candidate.reactant_bonds ^ candidate.product_bonds:
+        return None
+    return made
+
+
+def _matches_outside(
+    relaxed: Atoms,
+    frame: Atoms,
+    changed: Collection[Bond],
+    detector_config: BondDetectorConfig,
+) -> bool:
+    """Whether a relaxed structure has the frame's bonds everywhere but the changed ones.
+
+    Only a pair on opposite sides of the hysteresis gap in the two counts as a difference.
+    """
+
+    bonded, gap = classify_bonds(relaxed, detector_config)
+    expected, unknown = classify_bonds(frame, detector_config)
+    return not ((bonded ^ expected) - gap - unknown).difference(changed)
 
 
 def _endpoint_status(
@@ -247,16 +343,8 @@ def _endpoint_status(
 ) -> tuple[str, str] | None:
     """Check the relaxed endpoints against the candidate with the detector's thresholds."""
 
-    region = set(candidate.atom_ids)
     changed_bonds = candidate.reactant_bonds ^ candidate.product_bonds
-    changed_atoms = {atom_id for bond in changed_bonds for atom_id in bond}
-
-    def local(bonds: Collection[Bond]) -> set[Bond]:
-        # Pairs inside the reacting region, plus any pair involving an atom of a changed bond.
-        return {
-            bond for bond in bonds if region.issuperset(bond) or changed_atoms.intersection(bond)
-        }
-
+    local = _local(candidate)
     (reactant_bonds, reactant_gap), (product_bonds, product_gap) = (
         classify_bonds(endpoint, detector_config) for endpoint in (reactant, product)
     )
@@ -575,9 +663,17 @@ def refine_pathway(
     config: PathwayConfig | None = None,
     detector_config: BondDetectorConfig,
     pressure_GPa: float | None = None,
+    frames: Mapping[int, Atoms] | None = None,
 ) -> PathwayOutcome:
     """Run NVT NEB, or SSNEB when a target pressure (including zero) is supplied, then gate the
-    converged band with ``check_saddle``."""
+    converged band with ``check_saddle``.
+
+    ``frames`` are saved observations by frame number. The reactant is relaxed from the latest one
+    no later than the candidate's reactant frame, and at most ``reactant_lookback`` observations
+    before it, in which every changed bond is on its reactant side of the hysteresis gap. With
+    ``split_steps``, an event that changes several bonds is refined one step at a time through the
+    intermediates that the frames between its reactant and product relax into.
+    """
 
     if pressure_GPa is not None and (
         isinstance(pressure_GPa, bool) or not np.isfinite(pressure_GPa)
@@ -589,12 +685,14 @@ def refine_pathway(
         config=config,
         detector_config=detector_config,
         pressure_GPa=pressure_GPa,
+        frames=frames or {},
     )
-    return replace(
-        outcome,
-        method="neb" if pressure_GPa is None else "ssneb",
-        pressure_GPa=pressure_GPa,
+    method = "neb" if pressure_GPa is None else "ssneb"
+    steps = tuple(
+        replace(step, outcome=replace(step.outcome, method=method, pressure_GPa=pressure_GPa))
+        for step in outcome.steps
     )
+    return replace(outcome, method=method, pressure_GPa=pressure_GPa, steps=steps)
 
 
 def _refine_pathway(
@@ -604,6 +702,7 @@ def _refine_pathway(
     config: PathwayConfig | None,
     detector_config: BondDetectorConfig,
     pressure_GPa: float | None,
+    frames: Mapping[int, Atoms],
 ) -> PathwayOutcome:
 
     if not candidate.resolved:
@@ -611,12 +710,148 @@ def _refine_pathway(
     if candidate.reactant_bonds == candidate.product_bonds:
         return PathwayOutcome("unresolved", message="candidate has no changed bonds")
     options = config or PathwayConfig()
+    changed = candidate.reactant_bonds ^ candidate.product_bonds
+    first, last = candidate.reactant_frame, candidate.product_frame
+    saved = {**frames, first: candidate.reactant, last: candidate.product}
+    # By the tracker's reactant frame a changed bond can already be inside its hysteresis gap, and
+    # relaxing that frame can carry the change on, so the reactant comes from the latest frame
+    # before the bonds began to change.
+    start = next(
+        (
+            frame
+            for frame in range(first, first - options.reactant_lookback - 1, -1)
+            if frame in saved and _on_reactant_side(saved[frame], candidate, detector_config)
+        ),
+        first,
+    )
+    numbers = [frame for frame in sorted(saved) if start <= frame <= last]
     images: list[Atoms] = []
     try:
-        reactant, product = _prepare_endpoints(
-            candidate, options, variable_cell=pressure_GPa is not None
+        variable_cell = pressure_GPa is not None
+        prepared = dict(
+            zip(
+                numbers,
+                _prepare_frames(
+                    [saved[frame] for frame in numbers], options, variable_cell=variable_cell
+                ),
+                strict=True,
+            )
         )
-        images = [reactant, product]
+        if not set(candidate.atom_ids) <= set(atom_ids(prepared[first])):
+            raise ValueError("candidate atom IDs are missing from its endpoints")
+        images = [prepared[start], prepared[last]]
+
+        def relaxed(frame: int, stage: str) -> tuple[Atoms, bool]:
+            atoms = prepared[frame].copy()
+            converged = _relax(
+                atoms,
+                stage=stage,
+                calculator_provider=calculator_provider,
+                config=options,
+                pressure_GPa=pressure_GPa,
+            )
+            return atoms, converged
+
+        reactant, converged = relaxed(start, "relax_reactant")
+        if start != first and not (
+            converged and _matches_outside(reactant, candidate.reactant, changed, detector_config)
+        ):
+            # Bonds away from the event differ between the two frames, so keep the tracker's.
+            start = first
+            reactant, converged = relaxed(start, "relax_reactant")
+        state = _made(reactant, candidate, detector_config) if converged else None
+        # The intermediates in the order the trajectory reached them, each with the first frame
+        # that relaxes into it.
+        ends: list[tuple[frozenset[Bond], int]] = []
+        if options.split_steps and len(changed) > 1 and state is not None and state != changed:
+            for frame in numbers:
+                if not start < frame < last:
+                    continue
+                atoms, done = relaxed(frame, "relax_frame")
+                made = _made(atoms, candidate, detector_config) if done else None
+                if made == changed:
+                    break
+                if made is not None and made > (ends[-1][0] if ends else state):
+                    ends.append((made, frame))
+        ends.append((changed, last))
+    except _EndpointUnresolved as exc:
+        return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc))
+    except Exception as exc:
+        return PathwayOutcome("failed", images=_snapshots(images), message=str(exc))
+
+    steps: list[PathwayStep] = []
+    before: frozenset[Bond] = frozenset()
+    if options.split_steps and state is not None and 0 < len(state) < len(changed):
+        # The reactant frame relaxes into an intermediate, so the steps from there still count.
+        before = state
+        steps.append(
+            PathwayStep(
+                PathwayOutcome(
+                    "unresolved",
+                    images=_snapshots([reactant]),
+                    message="the reactant frame relaxes partway along the event",
+                ),
+                candidate.reactant_bonds,
+                candidate.reactant_bonds ^ state,
+            )
+        )
+    source: int = start
+    end: Atoms | None = reactant
+    for made, frame in ends:
+        step = replace(
+            candidate,
+            reactant_bonds=candidate.reactant_bonds ^ before,
+            product_bonds=candidate.reactant_bonds ^ made,
+        )
+        if end is None:
+            outcome = PathwayOutcome("unresolved", message="the step before ended elsewhere")
+        else:
+            outcome, end = _refine_step(
+                step,
+                end,
+                converged,
+                prepared[frame],
+                calculator_provider=calculator_provider,
+                options=options,
+                detector_config=detector_config,
+                pressure_GPa=pressure_GPa,
+            )
+        steps.append(
+            PathwayStep(
+                replace(outcome, frames=(source, frame)), step.reactant_bonds, step.product_bonds
+            )
+        )
+        before, source, converged = made, frame, True
+    if len(steps) == 1:
+        return steps[0].outcome
+    return PathwayOutcome(
+        "stepwise",
+        message=f"refined in {len(steps)} steps through {len(steps) - 1} intermediates",
+        frames=(start, last),
+        steps=tuple(steps),
+    )
+
+
+def _refine_step(
+    candidate: ReactionCandidate,
+    reactant: Atoms,
+    reactant_converged: bool,
+    frame: Atoms,
+    *,
+    calculator_provider: CalculatorProvider,
+    options: PathwayConfig,
+    detector_config: BondDetectorConfig,
+    pressure_GPa: float | None,
+) -> tuple[PathwayOutcome, Atoms | None]:
+    """Refine the candidate from its relaxed reactant to a product built from the frame.
+
+    Returns the outcome and, once both ends match the candidate, the relaxed product, where the
+    next step starts.
+    """
+
+    images = [reactant]
+    end: Atoms | None = None
+    try:
         reacting = {
             atom_id
             for bond in candidate.reactant_bonds ^ candidate.product_bonds
@@ -631,13 +866,6 @@ def _refine_pathway(
                 for atom_id in bond
             }
         )
-        reactant_converged = _relax(
-            reactant,
-            stage="relax_reactant",
-            calculator_provider=calculator_provider,
-            config=options,
-            pressure_GPa=pressure_GPa,
-        )
         # The product starts from the relaxed reactant, cell included, with only the atoms in
         # changed bonds and the atoms bonded to them where they sat in the product frame. Every
         # other atom starts at the same minimum in both endpoints, so the band spends its images
@@ -646,10 +874,12 @@ def _refine_pathway(
         # went between the frames: relaxing the reactant can swing a stretched atom round its
         # partner, and that move added on can land it on a neighbor. Nothing is constrained:
         # every atom and, for NPT, the cell relax.
+        product = frame.copy()
         start = reactant.get_scaled_positions(wrap=False)
         start[moved] = product.get_scaled_positions(wrap=False)[moved]
         product.set_cell(reactant.cell)
         product.set_scaled_positions(start)
+        images = [reactant, product]
         product_converged = _relax(
             product,
             stage="relax_product",
@@ -662,13 +892,14 @@ def _refine_pathway(
                 "relaxation_failed",
                 images=_snapshots(images),
                 message="endpoint relaxation did not converge",
-            )
+            ), None
 
         endpoint_status = _endpoint_status(candidate, reactant, product, detector_config)
         if endpoint_status is not None:
             status, message = endpoint_status
-            return PathwayOutcome(status, images=_snapshots(images), message=message)
+            return PathwayOutcome(status, images=_snapshots(images), message=message), None
 
+        end = product
         images = [reactant]
         images.extend(reactant.copy() for _ in range(options.images - 2))
         images.append(product)
@@ -704,7 +935,7 @@ def _refine_pathway(
                         "neb_failed",
                         images=_snapshots(images),
                         message="initial NEB did not converge",
-                    )
+                    ), end
                 band.climb = True
                 ci_neb_converged = bool(
                     FIRE(band, logfile=None).run(
@@ -717,21 +948,21 @@ def _refine_pathway(
                         "ci_neb_failed",
                         images=_snapshots(images),
                         message="climbing-image NEB did not converge",
-                    )
+                    ), end
                 return check_saddle(
                     images,
                     calculator,
                     detector_config=detector_config,
                     config=options,
                     pressure_GPa=pressure_GPa,
-                )
+                ), end
             finally:
                 for image in images:
                     image.calc = None
     except _EndpointUnresolved as exc:
-        return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc))
+        return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc)), end
     except Exception as exc:
-        return PathwayOutcome("failed", images=_snapshots(images), message=str(exc))
+        return PathwayOutcome("failed", images=_snapshots(images), message=str(exc)), end
 
 
 __all__ = [
@@ -741,6 +972,7 @@ __all__ = [
     "FrequencyValidation",
     "PathwayConfig",
     "PathwayOutcome",
+    "PathwayStep",
     "check_saddle",
     "refine_pathway",
 ]
