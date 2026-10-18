@@ -169,19 +169,14 @@ def test_campaign_assigns_profiles_and_reports_counts(tmp_path, capsys) -> None:
     assert [campaign.adapter_profile_for(index) for index in range(8)] == assignments
     assert [campaign.adapter_for(index).options["model"] for index in range(8)] == assignments
 
-    assert main(["plan", str(path), "--gpus-per-node", "4"]) == 0
-    plan = json.loads(capsys.readouterr().out)
-    assert plan["adapter_profile_counts"] == {
+    assert main(["validate", str(path)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["adapter_profile_counts"] == {
         "model-a": 4,
         "model-b": 2,
         "model-c": 2,
     }
-    assert (plan["trajectories"], plan["tasks"], plan["gpus"], plan["minimum_nodes"]) == (
-        8,
-        8,
-        8,
-        2,
-    )
+    assert report["trajectories"] == 8
 
     FACTORY_CALLS.clear()
     run_selected_trajectory(campaign, index=4, environment={})
@@ -314,20 +309,15 @@ def test_selected_trajectory_runs_and_relaunch_is_idempotent(tmp_path, monkeypat
         run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
 
 
-def test_cli_plan_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:
+def test_cli_validate_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:
     path = _campaign(tmp_path, count=130)
 
-    assert main(["plan", str(path), "--gpus-per-node", "4"]) == 0
-    plan = json.loads(capsys.readouterr().out)
-    assert plan == {
+    assert main(["validate", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out) == {
         "adapter_profile_counts": {"test": 130},
         "structure_atoms": {"structure.extxyz": 1},
         "campaign": str(path),
-        "gpus": 130,
-        "gpus_per_node": 4,
-        "minimum_nodes": 33,
         "require_gpu": False,
-        "tasks": 130,
         "trajectories": 130,
     }
 

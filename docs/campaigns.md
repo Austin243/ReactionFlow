@@ -94,8 +94,8 @@ MD trajectory.
 
 The assignment is intentionally explicit rather than inferred from trajectory order, task rank, or
 GPU number. This keeps generated campaign files easy to audit and prevents inserting or reordering
-a trajectory from silently changing its model. `reactionflow plan` reports the trajectory count,
-resource estimate, and assignment counts under `adapter_profile_counts` before submission.
+a trajectory from silently changing its model. `reactionflow validate` reports the trajectory count
+and the assignment counts under `adapter_profile_counts` before submission.
 
 There is no profile inheritance or per-trajectory option merging: every named profile is a
 complete adapter specification. All profiles in one submission must be usable in the same
@@ -113,11 +113,10 @@ baseline; `conditions` carries additional JSON parameters without putting MLIP- 
 integrator-specific settings into ReactionFlow core. Model selection belongs in `adapter_profile`,
 not `conditions`.
 
-Validate and size a campaign without importing its MLIP:
+Validate a campaign without importing its MLIP:
 
 ```bash
 reactionflow validate campaign.json
-reactionflow plan campaign.json --gpus-per-node 4
 ```
 
 ## MLIP adapter

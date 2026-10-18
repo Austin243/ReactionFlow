@@ -96,13 +96,12 @@ def forbid_resources(monkeypatch):
     monkeypatch.setattr(records, "ensure_directory", unexpected)
 
 
-def test_validate_plan_and_status_are_offline(tmp_path, monkeypatch, capsys):
+def test_validate_and_status_are_offline(tmp_path, monkeypatch, capsys):
     path = campaign(tmp_path, adapter={"factory": "uninstalled_model:create_adapter"})
     forbid_resources(monkeypatch)
-    for command in ("validate", "plan"):
-        assert main([command, str(path)]) == 0
-        output = json.loads(capsys.readouterr().out)
-        assert output["mode"] == "eon" and output["tasks"] == 1 and output["atoms"] == 1
+    assert main(["validate", str(path)]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["mode"] == "eon" and output["tasks"] == 1 and output["atoms"] == 1
     assert main(["status", str(path), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "not_started"
     assert not (tmp_path / "runs").exists()

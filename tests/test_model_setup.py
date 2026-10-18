@@ -342,7 +342,7 @@ def test_run_command_forwards_explicit_download_flag(tmp_path, monkeypatch, caps
     assert json.loads(capsys.readouterr().out)["phase"] == "completed"
 
 
-@pytest.mark.parametrize("command", ["validate", "plan", "status"])
+@pytest.mark.parametrize("command", ["validate", "status"])
 def test_read_only_commands_do_not_prepare_models(tmp_path, monkeypatch, command):
     campaign = _mixed_campaign(tmp_path)
 

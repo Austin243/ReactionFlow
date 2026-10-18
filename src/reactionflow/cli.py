@@ -280,10 +280,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("campaign", type=Path)
 
-    plan = commands.add_parser("plan", help="print scheduler-neutral campaign sizing")
-    plan.add_argument("campaign", type=Path)
-    plan.add_argument("--gpus-per-node", type=int, default=4)
-
     run = commands.add_parser("run", help="run one campaign trajectory in this process")
     run.add_argument("campaign", type=Path)
     run.add_argument("--index", type=int)
@@ -425,7 +421,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             out = root / "scan" if arguments.out is None else arguments.out / trajectory.id
             _print_scan(result.write(out), result, trajectory_id=trajectory.id)
         return 0
-    if arguments.command in {"validate", "plan"}:
+    if arguments.command == "validate":
         payload = {
             "campaign": str(campaign.source),
             "trajectories": len(campaign.trajectories),
@@ -436,15 +432,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
-        if arguments.command == "plan":
-            if arguments.gpus_per_node < 1:
-                parser.error("--gpus-per-node must be positive")
-            payload.update(
-                tasks=len(campaign.trajectories),
-                gpus=len(campaign.trajectories),
-                gpus_per_node=arguments.gpus_per_node,
-                minimum_nodes=math.ceil(len(campaign.trajectories) / arguments.gpus_per_node),
-            )
         print(json.dumps(payload, sort_keys=True))
         return 0
 
