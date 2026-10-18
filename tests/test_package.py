@@ -35,7 +35,6 @@ def test_core_imports_only_declared_dependencies_or_standard_library() -> None:
             "adapters/orb.py": {"orb_models", "torch"},
             "adapters/mattersim.py": {"mattersim", "torch"},
             "adapters/chgnet.py": {"chgnet", "torch"},
-            "adapters/mace_field.py": {"mace", "torch"},
             "adapters/sevennet.py": {"sevenn", "torch"},
             "adapters/nep.py": {"calorine", "_nepy"},
         }

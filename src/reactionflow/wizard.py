@@ -236,16 +236,6 @@ def _absolute_paths(text: str) -> list[str]:
     return paths
 
 
-def _field(text: str) -> list[float]:
-    try:
-        values = [float(token) for token in text.replace(",", " ").split()]
-    except ValueError:
-        values = []
-    if len(values) != 3 or not all(math.isfinite(value) for value in values):
-        raise ValueError("write three numbers: Ex Ey Ez")
-    return values
-
-
 def _builtin(backend: dict[str, Any]) -> _Profile:
     """Turn one catalog model, and any head, task, or modal it needs, into adapter options."""
 
@@ -270,8 +260,6 @@ def _builtin(backend: dict[str, Any]) -> _Profile:
             options[option] = values[_menu(f"{option.capitalize()} for {entry['name']}", labels)]
     if name == "mace" and entry["name"] == "mh-0":
         options["head"] = _ask("Head name in the MACE-MH-0 checkpoint")
-    if name == "mace_field":
-        options["electric_field"] = _ask_until_valid("Electric field Ex Ey Ez in V/Å", _field)
     model = str(options.get("model", name))
     parts = [] if name.replace("_", "") in model.lower().replace("-", "") else [name]
     if options.get("family", "mp") != "mp" and options["family"] not in model:

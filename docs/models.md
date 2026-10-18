@@ -1,6 +1,6 @@
 # Models and preparation
 
-ReactionFlow includes optional MACE, MACE-FIELD, UMA, AIMNet2, ORB, MatterSim, CHGNet, SevenNet,
+ReactionFlow includes optional MACE, UMA, AIMNet2, ORB, MatterSim, CHGNet, SevenNet,
 NEP89, and ANI-1xnr adapters. Other models can use the
 [generic ASE calculator adapter or a custom adapter](campaigns.md#mlip-adapter). Model selection
 uses the campaign's named `adapter_profiles`, each assigned to trajectories by name.
@@ -20,7 +20,6 @@ require different validation.
 | Backend | Included choices |
 | --- | --- |
 | `mace` | MACE-MH-1 (six heads), MH-0, MP/MPA/OMAT/MatPES, OFF23 sizes, POLAR-1 small/medium/large |
-| `mace_field` | MACEField-MH-0-omat-dielectric, three heads, fixed external electric field |
 | `uma` | Small 1.2.1/1.2/1.1 and medium 1.1; all seven published task names |
 | `aimnet2` | General AIMNet2, 2025, B97-3c, NSE, Pd, RXN; ensemble members 0–3 |
 | `orb` | OrbMol-v2; conservative ORB-v3 `-inf` OMAT and MPA |
@@ -48,9 +47,8 @@ The PyPI backend pins are `mace-torch==0.3.16`, `fairchem-core==2.23.0`, `aimnet
 `orb-models==0.7.0`, `mattersim==1.2.5`, `chgnet==0.4.2`, `sevenn==0.13.0`, `calorine==4.0`, and
 `torchani==2.8.4`. SevenNet setup also installs `torch>=2.8,<3`, and ANI-1xnr setup installs
 `torch==2.11.0`. POLAR additionally installs
-`graph_longrange` 0.4.0 at commit `0e21d5546c482d08388a08eb4d948e833227ce47`; MACE-FIELD installs
-its fork at commit `136e4ef040d7c51a5b051a7a609ffb1f29307478`. Those two source dependencies
-require Git. They are installed by `prepare --install`, not embedded as direct Git dependencies
+`graph_longrange` 0.4.0 at commit `0e21d5546c482d08388a08eb4d948e833227ce47`. That source
+dependency requires Git. It is installed by `prepare --install`, not embedded as direct Git dependencies
 in ReactionFlow's package metadata.
 
 Alternatively, install a PyPI backend extra yourself: `.[mace]`, `.[uma]`, `.[aimnet2]`, `.[orb]`,
@@ -67,8 +65,7 @@ Preparation resolves/downloads model files and reports their paths without const
 calculator, starting MD, or creating trajectory output. Unreferenced profiles are ignored.
 
 Keep incompatible backends in separate environments and campaigns. The pinned MACE package needs
-`e3nn==0.4.4`, whereas UMA, MatterSim, and SevenNet need `e3nn>=0.5`. MACE-FIELD also needs e3nn 0.4.4 and
-replaces the same `mace` Python namespace as official MACE; it must use a separate environment.
+`e3nn==0.4.4`, whereas UMA, MatterSim, and SevenNet need `e3nn>=0.5`.
 UMA and ORB require incompatible `nvalchemi-toolkit-ops` versions. The tested MatterSim setup
 also uses a newer version through TorchSim; setup keeps MatterSim and ORB separate too.
 UMA's
@@ -171,30 +168,6 @@ comparison against an independent energy-strain calculation, and exact short NPT
 The [PolarMACE guide](https://mace-docs.readthedocs.io/en/latest/guide/polar_mace.html)
 describes the physical inputs; its current dependency recommendation does not match MACE 0.3.16,
 so preparation installs the separately tested graph_longrange 0.4.0 revision above.
-
-### MACE-FIELD
-
-```json
-{
-  "factory": "reactionflow.adapters.mace_field:create_adapter",
-  "options": {
-    "model": "MACEField-MH-0-omat-dielectric",
-    "head": "mp-dielectric",
-    "electric_field": [0.0, 0.0, 0.02],
-    "device": "cuda",
-    "dtype": "float64"
-  }
-}
-```
-
-The published checkpoint has `pt_head`, `mp-dielectric`, and `mp-ferroelectric` heads. Both `head`
-and a finite `electric_field` three-vector in V/Å are explicit options, including a zero field.
-The field stays fixed across MD, endpoint relaxation, and NEB and is part of the restart contract.
-A nonzero field has the same cell and EON requirements as MACE-POLAR's.
-The structure needs a cell with nonzero volume for the dielectric observables. Reported energies
-are electric enthalpies at the configured field; NPT refinement additionally includes PV.
-The fork's source revision is checked; official MACE cannot substitute for it. See the
-[MACE-FIELD release](https://github.com/mdi-group/mace-field/releases/tag/1.0.2).
 
 Choose a model for its training domain and intended observables. The
 [MACE foundation-model guide](https://mace-docs.readthedocs.io/en/latest/guide/foundation_models.html)
@@ -393,7 +366,7 @@ scope.
 
 ## Local files and cache
 
-MACE, MACE-FIELD, UMA, AIMNet2, MatterSim, CHGNet, SevenNet, and NEP accept an absolute `checkpoint` path instead
+MACE, UMA, AIMNet2, MatterSim, CHGNet, SevenNet, and NEP accept an absolute `checkpoint` path instead
 of `model`; supply exactly one. For ORB, retain `model` to select its architecture and optionally
 provide `checkpoint` to override the weights. AIMNet local files use current metadata-bearing `.pt`
 format; `model_index` is only valid with named models.
@@ -443,7 +416,7 @@ its random edge-rotation angles from the same seed.
 The adapter tests cover setup, configuration, and restart contracts with controlled calculators.
 Opt-in integration tests use prepared real weights without downloads. CPU checks include finite
 energy/forces and two-step versus one-step/fresh-restore/one-step comparisons for MACE-MP small,
-AIMNet2/RXN (NVT and NPT), OrbMol-v2 (NVT and NPT), MACE-FIELD (NPT), MatterSim 1M (NPT), and
+AIMNet2/RXN (NVT and NPT), OrbMol-v2 (NVT and NPT), MatterSim 1M (NPT), and
 CHGNet 0.3.0/r2SCAN (NPT), SevenNet-0/MF-0/Omni (NPT), and NEP89 (NPT).
 All six MH-1 heads have finite CPU energy/force checks; Polar-S has force, numerical-stress,
 NVT, and NPT restart checks.
