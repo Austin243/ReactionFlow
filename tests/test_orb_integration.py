@@ -1,8 +1,7 @@
 """Opt-in real CPU checks using prepared weights, with network access disabled.
 
-Set REACTIONFLOW_TEST_ORB_CHECKPOINT to the released OrbMol-v2 checkpoint, or
-REACTIONFLOW_TEST_MACE_FIELD_CHECKPOINT to the released MACE-Field checkpoint.
-Run this file separately in each backend's pinned environment.
+Set REACTIONFLOW_TEST_ORB_CHECKPOINT to the released OrbMol-v2 checkpoint and run this file in
+ORB's pinned environment.
 """
 
 from __future__ import annotations
@@ -14,13 +13,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from ase.build import bulk, molecule
+from ase.build import molecule
 
 from reactionflow.campaign import TrajectorySpec
 
 
-@pytest.mark.parametrize("backend,periodic", [("orb", False), ("orb", True), ("mace_field", True)])
-def test_real_orb_field_restart_is_bitwise_identical(backend, periodic, monkeypatch):
+@pytest.mark.parametrize("backend,periodic", [("orb", False), ("orb", True)])
+def test_real_orb_restart_is_bitwise_identical(backend, periodic, monkeypatch):
     variable = f"REACTIONFLOW_TEST_{backend.upper()}_CHECKPOINT"
     configured = os.environ.get(variable)
     if not configured:
@@ -50,17 +49,11 @@ def test_real_orb_field_restart_is_bitwise_identical(backend, periodic, monkeypa
             seed=77,
         )
         options = {"checkpoint": str(checkpoint), "device": "cpu"}
-        if backend == "orb":
-            options.update(model="orbmol-v2", precision="float32-highest")
-            atoms = molecule("H2O")
-            atoms.set_cell([8 if periodic else 20] * 3)
-            atoms.pbc = periodic
-            atoms.info.update(charge=0, spin=1)
-        else:
-            options.update(head="mp-dielectric", electric_field=[0, 0, 0.01], dtype="float64")
-            atoms = bulk("NaCl", "rocksalt", a=5.64)
-            # A field under pressure needs the lower-triangular cell pathways use.
-            atoms.set_cell(atoms.cell.standard_form()[0], scale_atoms=True)
+        options.update(model="orbmol-v2", precision="float32-highest")
+        atoms = molecule("H2O")
+        atoms.set_cell([8 if periodic else 20] * 3)
+        atoms.pbc = periodic
+        atoms.info.update(charge=0, spin=1)
         adapter = module.create_adapter(trajectory=trajectory, options=options)
         adapter.preflight(atoms)
         with adapter.start(atoms.copy()) as runtime:

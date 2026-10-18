@@ -412,7 +412,6 @@ def test_full_catalog_does_not_import_optional_libraries(capsys, monkeypatch):
     backends = json.loads(capsys.readouterr().out)["backends"]
     assert {item["backend"] for item in backends} == {
         "mace",
-        "mace_field",
         "uma",
         "aimnet2",
         "orb",
@@ -522,49 +521,3 @@ def test_selected_setup_includes_backend_runtime_dependencies(
         "prepare",
         str(campaign.source),
     ]
-
-
-@pytest.mark.parametrize(
-    "other",
-    [
-        MACE,
-        UMA,
-        "reactionflow.adapters.mattersim:create_adapter",
-        "reactionflow.adapters.sevennet:create_adapter",
-    ],
-)
-def test_field_requires_compatible_environment_before_install(tmp_path, monkeypatch, other):
-    field = "reactionflow.adapters.mace_field:create_adapter"
-    campaign = _campaign(
-        tmp_path, {"field": {"factory": field}, "other": {"factory": other}}, ["field", "other"]
-    )
-    monkeypatch.setattr(
-        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
-    )
-    with pytest.raises(ValueError, match="separate"):
-        model_setup.install_and_prepare(campaign)
-
-
-@pytest.mark.parametrize("select_field", [False, True])
-def test_installer_cannot_overwrite_other_mace_distribution(tmp_path, monkeypatch, select_field):
-    field = "reactionflow.adapters.mace_field:create_adapter"
-    factory = field if select_field else MACE
-    campaign = _campaign(tmp_path, {"chosen": {"factory": factory}}, ["chosen"])
-
-    def installed(name):
-        if name == "mace-torch":
-            return "0.3.16" if select_field else "0.3.15"
-        raise model_setup.PackageNotFoundError
-
-    info = {} if select_field else {"vcs_info": {"commit_id": model_setup._FIELD_COMMIT}}
-    monkeypatch.setattr(model_setup, "version", installed)
-    monkeypatch.setattr(
-        model_setup,
-        "distribution",
-        lambda name: SimpleNamespace(read_text=lambda path: json.dumps(info)),
-    )
-    monkeypatch.setattr(
-        model_setup.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not install")
-    )
-    with pytest.raises(ValueError, match="fresh Python environment"):
-        model_setup.install_and_prepare(campaign)
