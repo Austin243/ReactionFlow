@@ -11,7 +11,7 @@ import socket
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from numbers import Integral
 from pathlib import Path
 from uuid import uuid4
@@ -24,7 +24,8 @@ from .campaign import CampaignConfig
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .pathway import check_saddle
-from .run import ReactionRun, RunSummary
+from .run import ReactionRun, ReactionRunConfig, RunSummary
+from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
 from .wizard import create_campaign
 
@@ -218,6 +219,52 @@ def check_band(
     return path, result
 
 
+def _scan_settings(
+    parser: argparse.ArgumentParser, arguments: argparse.Namespace, base: ReactionRunConfig
+) -> dict[str, object]:
+    """A run's detection and tracking settings, with the ones the command line changes."""
+
+    radius = base.candidate_region_radius
+    if arguments.radius == "none":
+        radius = None
+    elif arguments.radius is not None:
+        if not arguments.radius.isdigit():
+            parser.error("--radius takes a non-negative integer or none")
+        radius = int(arguments.radius)
+    persistence = arguments.persistence
+    if persistence is None:
+        persistence = base.detector.persistence_frames
+    try:
+        detector = replace(
+            base.detector,
+            persistence_frames=persistence,
+            pair_thresholds={
+                **base.detector.pair_thresholds,
+                **{pair: (form, breaking) for pair, form, breaking in arguments.pair},
+            },
+        )
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
+    stability = arguments.stability
+    if stability is None:
+        stability = base.candidate_stability_frames
+    elif stability < 1:
+        parser.error("--stability must be positive")
+    if arguments.every < 1:
+        parser.error("--every must be positive")
+    return {
+        "detector_config": detector,
+        "stability_frames": stability,
+        "region_radius": radius,
+        "species_every": arguments.every,
+    }
+
+
+def _print_scan(path: Path, result: ScanResult, **identity: object) -> None:
+    counts = {key: value for key, value in result.summary.items() if key != "settings"}
+    print(json.dumps({"scan": str(path), **identity, **counts}, sort_keys=True))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reactionflow")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -261,6 +308,31 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--index", type=int, help="the trajectory whose model and pressure to use")
     check.add_argument("--pressure", type=float, help="GPa, in place of the trajectory's pressure")
 
+    scan = commands.add_parser(
+        "scan", help="replay saved frames through bond detection without loading the model"
+    )
+    scan.add_argument(
+        "campaign",
+        type=Path,
+        metavar="source",
+        help="a campaign .json file, or any trajectory file ASE can read",
+    )
+    scan.add_argument("--index", type=int, help="scan only this campaign trajectory")
+    scan.add_argument("--radius", help="region radius in bonds, or none for whole components")
+    scan.add_argument("--persistence", type=int, help="observations a bond change must last")
+    scan.add_argument("--stability", type=int, help="observations a reaction region must hold")
+    scan.add_argument(
+        "--pair",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("A-B", "FORM", "BREAK"),
+        help="formation and break distances in Å for one element pair",
+    )
+    scan.add_argument("--every", type=int, default=10, help="frames between species counts")
+    scan.add_argument("--frame-ps", type=float, help="ps between the frames of a trajectory file")
+    scan.add_argument("--out", type=Path, help="output directory")
+
     status = commands.add_parser(
         "status", help="summarize trajectories and reactions without changing any run"
     )
@@ -287,12 +359,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(error))
         print(json.dumps({"backends": catalog}, indent=2, sort_keys=True))
         return 0
+    if arguments.command == "scan" and arguments.campaign.suffix != ".json":
+        if arguments.index is not None:
+            parser.error("--index picks a campaign trajectory")
+        frame_ps = arguments.frame_ps
+        if frame_ps is not None and not (math.isfinite(frame_ps) and frame_ps > 0):
+            parser.error("--frame-ps must be a positive number")
+        settings = _scan_settings(parser, arguments, ReactionRunConfig())
+        result = scan_frames(file_frames(arguments.campaign, frame_ps=frame_ps), **settings)
+        source = arguments.campaign
+        _print_scan(result.write(arguments.out or source.with_name(f"{source.name}-scan")), result)
+        return 0
     raw = json.loads(arguments.campaign.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("campaign must be a JSON object")
     mode = raw.get("mode", "md")
     if arguments.command == "check" and mode != "md":
         parser.error("check takes an MD campaign file; it supplies the model and bond thresholds")
+    if arguments.command == "scan" and mode != "md":
+        parser.error("scan reads the frames an MD campaign saves; an EON campaign saves none")
     if mode == "eon":
         from .search.cli import handle_command
 
@@ -315,6 +400,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             if arguments.json
             else format_status(report)
         )
+        return 0
+    if arguments.command == "scan":
+        if arguments.frame_ps is not None:
+            parser.error("--frame-ps is for a trajectory file; a run records its own times")
+        indices = range(len(campaign.trajectories))
+        if arguments.index is not None:
+            indices = [resolve_task_index(len(indices), arguments.index, environment={})]
+        for index in indices:
+            trajectory = campaign.trajectory(index)
+            root = campaign.output_root / trajectory.id
+            if not (root / "segments").is_dir():
+                missing = {"scan": None, "trajectory_id": trajectory.id, "message": "not started"}
+                print(json.dumps(missing))
+                continue
+            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+            base = ReactionRunConfig.from_dict(state["config"])
+            settings = _scan_settings(parser, arguments, base)
+            result = scan_frames(
+                run_frames(root, timestep_fs=trajectory.timestep_fs),
+                occurrences=recorded_occurrences(root),
+                **settings,
+            )
+            out = root / "scan" if arguments.out is None else arguments.out / trajectory.id
+            _print_scan(result.write(out), result, trajectory_id=trajectory.id)
         return 0
     if arguments.command in {"validate", "plan"}:
         payload = {

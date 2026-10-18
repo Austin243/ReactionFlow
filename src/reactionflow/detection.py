@@ -244,6 +244,12 @@ class BondChangeDetector:
         return frozenset(bonds)
 
     @property
+    def pending_changes(self) -> frozenset[tuple[Bond, EventType]]:
+        """Threshold crossings that have not yet persisted for ``persistence_frames``."""
+
+        return frozenset(self._pending)
+
+    @property
     def last_frame(self) -> int | None:
         return self._last_frame
 
