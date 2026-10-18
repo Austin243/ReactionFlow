@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "structure": "start.extxyz",
+  "output_root": "../../outputs/xtb-demo",
+  "require_gpu": false,
+  "adapter_profiles": {
+    "gfn2-xtb": {
+      "factory": "reactionflow.adapters.ase:create_adapter",
+      "options": {
+        "calculator_factory": "tblite.ase:TBLite",
+        "calculator_kwargs": {"method": "GFN2-xTB", "verbosity": 0}
+      }
+    }
+  },
+  "reaction_run": {"observation_interval": 10},
+  "trajectories": [
+    {
+      "id": "500K-seed1",
+      "adapter_profile": "gfn2-xtb",
+      "total_steps": 40000,
+      "timestep_fs": 0.5,
+      "temperature_K": 500.0,
+      "pressure_GPa": null,
+      "seed": 1
+    }
+  ]
+}
