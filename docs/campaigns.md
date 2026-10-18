@@ -124,7 +124,7 @@ reactionflow plan campaign.json --gpus-per-node 4
 
 ### Built-in models
 
-MACE, MACE-FIELD, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, NEP89, and ANI-1xnr
+MACE, UMA, AIMNet2/RXN, OrbMol/ORB, MatterSim, CHGNet, SevenNet, NEP89, and ANI-1xnr
 have built-in factories and explicit setup/download commands:
 
 ```bash
@@ -138,8 +138,7 @@ when dependencies are already installed. Preparation supports `--index` and does
 trajectory state. Normal runs use only prepared local weights; `run --download` explicitly
 allows preparation before the selected run. See [models and preparation](models.md) for profile
 examples, environment compatibility, UMA authentication, and exact-restart constraints. The pinned
-MACE/UMA dependency stacks need separate environments/campaigns, as does the MACE-FIELD fork;
-named profiles can mix models
+MACE/UMA dependency stacks need separate environments/campaigns; named profiles can mix models
 only when all their dependencies are compatible.
 
 `prepare` reports generic and custom adapters as `external_setup`; those adapters do not support

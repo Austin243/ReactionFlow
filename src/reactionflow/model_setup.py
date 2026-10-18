@@ -7,13 +7,11 @@ import subprocess
 import sys
 from collections.abc import Iterable
 from importlib import import_module
-from importlib.metadata import PackageNotFoundError, distribution, version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from .campaign import AdapterSpec, CampaignConfig
 
-_FIELD_COMMIT = "136e4ef040d7c51a5b051a7a609ffb1f29307478"
-_FIELD_PACKAGE = f"mace-torch @ git+https://github.com/mdi-group/mace-field.git@{_FIELD_COMMIT}"
 _POLAR_PACKAGE = (
     "graph_longrange @ git+https://github.com/WillBaldwin0/graph_electrostatics.git"
     "@0e21d5546c482d08388a08eb4d948e833227ce47"
@@ -25,7 +23,6 @@ _PACKAGES = {
     "reactionflow.adapters.orb:create_adapter": "orb-models==0.7.0",
     "reactionflow.adapters.mattersim:create_adapter": "mattersim==1.2.5",
     "reactionflow.adapters.chgnet:create_adapter": "chgnet==0.4.2",
-    "reactionflow.adapters.mace_field:create_adapter": _FIELD_PACKAGE,
     "reactionflow.adapters.sevennet:create_adapter": "sevenn==0.13.0",
     "reactionflow.adapters.nep:create_adapter": "calorine==4.0",
     "reactionflow.adapters.ani1xnr:create_adapter": "torchani==2.8.4",
@@ -105,19 +102,13 @@ def backend_conflict(factories: Iterable[str]) -> str | None:
 
     packages = {_PACKAGES[factory] for factory in factories if factory in _PACKAGES}
     mace = "mace-torch==0.3.16" in packages
-    field = _FIELD_PACKAGE in packages
     uma = "fairchem-core==2.23.0" in packages
     orb = "orb-models==0.7.0" in packages
     mattersim = "mattersim==1.2.5" in packages
     sevennet = "sevenn==0.13.0" in packages
     ani = "torchani==2.8.4" in packages
-    if field and mace:
-        return "MACE-FIELD and MACE/POLAR install different mace packages"
-    if (mace or field) and (uma or mattersim or sevennet):
-        return (
-            "MACE and MACE-FIELD require e3nn==0.4.4, "
-            "but UMA, MatterSim and SevenNet require e3nn>=0.5"
-        )
+    if mace and (uma or mattersim or sevennet):
+        return "MACE requires e3nn==0.4.4, but UMA, MatterSim and SevenNet require e3nn>=0.5"
     if orb and (uma or mattersim):
         return "UMA/MatterSim and ORB use different tested nvalchemi dependency stacks"
     if ani and uma:
@@ -143,7 +134,6 @@ def install_and_prepare(
         dict.fromkeys(_PACKAGES[spec.factory] for spec in selected if spec.factory in _PACKAGES)
     )
     mace = "mace-torch==0.3.16" in packages
-    field = _FIELD_PACKAGE in packages
     uma = "fairchem-core==2.23.0" in packages
     orb = "orb-models==0.7.0" in packages
     mattersim = "mattersim==1.2.5" in packages
@@ -162,7 +152,7 @@ def install_and_prepare(
         conflicts.append(("orb-models", "0.7.0"))
     if orb:
         conflicts.extend([("fairchem-core", "2.23.0"), ("mattersim", "1.2.5")])
-    if mace or field:
+    if mace:
         conflicts.extend(
             [("fairchem-core", "2.23.0"), ("mattersim", "1.2.5"), ("sevenn", "0.13.0")]
         )
@@ -176,19 +166,6 @@ def install_and_prepare(
                 f"selected backends conflict with installed {name}=={pinned}; "
                 "use a fresh Python environment to preserve the existing model setup"
             )
-    if mace or field:
-        try:
-            installed_mace = version("mace-torch")
-        except PackageNotFoundError:
-            installed_mace = None
-        if installed_mace is not None:
-            info = json.loads(distribution("mace-torch").read_text("direct_url.json") or "{}")
-            is_field = info.get("vcs_info", {}).get("commit_id") == _FIELD_COMMIT
-            if (field and not is_field) or (mace and installed_mace != "0.3.16"):
-                raise ValueError(
-                    "MACE-FIELD and official MACE use the same package namespace; "
-                    "use a fresh Python environment"
-                )
     if any(
         spec.factory == "reactionflow.adapters.mace:create_adapter"
         and spec.options.get("family") == "polar"
