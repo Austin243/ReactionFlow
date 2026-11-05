@@ -970,7 +970,8 @@ def _refine_step(
                 for image in images:
                     image.calc = None
     except BarrierTimeLimit as exc:
-        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), end
+        # The next step's first lease ends it as time_limit too, whichever end it is given.
+        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), reactant
     except _EndpointUnresolved as exc:
         return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc)), end
     except Exception as exc:

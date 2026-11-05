@@ -7,7 +7,7 @@ import shutil
 import time
 import warnings
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from numbers import Integral
 from pathlib import Path
@@ -35,8 +35,8 @@ from .store import OccurrenceRecord, OccurrenceStore
 
 _PHASES = {"new", "running", "refining", "completed", "failed"}
 
-# In the records, refinements that reached a connected saddle took 1.1 and 1.8 hours (288-atom
-# acetonitrile, SSNEB, UMA on one GPU), and none of the nine over 3.3 hours gave a barrier.
+# By file times, refinements that reached a connected saddle took 1.1 and 1.8 hours (288-atom
+# acetonitrile, SSNEB, UMA on one GPU), and none of the nine longest, from 8.5 h, reached a saddle.
 DEFAULT_MAX_HOURS_PER_BARRIER = 4.0
 
 
@@ -518,7 +518,8 @@ class ReactionRun:
             if max_hours is not None and self._barrier_seconds >= max_hours * 3600:
                 raise BarrierTimeLimit(f"stopped at the limit of {max_hours:g} h per barrier")
             if self._barrier_seconds // 60 > before // 60:  # save once a minute
-                self._write_state()
+                with suppress(OSError):  # this runs inside the refinement, whose result it would be
+                    self._write_state()
 
         @contextmanager
         def lease(stage: str) -> Iterator[Any]:

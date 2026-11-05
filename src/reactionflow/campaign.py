@@ -255,6 +255,8 @@ class CampaignConfig:
         max_hours = value.get("max_hours_per_barrier", DEFAULT_MAX_HOURS_PER_BARRIER)
         if max_hours is not None:
             max_hours = _finite_float(max_hours, "campaign.max_hours_per_barrier", minimum=0.0)
+            if max_hours == 0:
+                raise ValueError("campaign.max_hours_per_barrier must be positive, or null")
         require_gpu = value.get("require_gpu", True)
         if type(require_gpu) is not bool:
             raise TypeError("campaign.require_gpu must be a boolean")

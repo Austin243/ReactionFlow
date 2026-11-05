@@ -69,12 +69,12 @@ once with that lease, so each NEB, CI-NEB, or SSNEB step evaluates only the movi
   both atomic and cell forces in its tangent and climbing projection, using enthalpy E + PV.
 
 `PathwayOutcome.status` is `unresolved`, `collapsed`, `relaxation_failed`, `neb_failed`,
-`ci_neb_failed`, `time_limit`, or `failed` when refinement stops before the band converges. A
-converged band ends
-with the saddle check's verdict below. Outcomes retain calculator-free endpoint or NEB snapshots as
-far as the attempt progressed. Every converged band keeps its image energies, and only
-`saddle_validated` adds a forward barrier in eV: potential energy for NVT, enthalpy for NPT. No
-status stops MD from resuming.
+`ci_neb_failed`, or `failed` when refinement stops before the band converges. A converged band ends
+with the saddle check's verdict below. `time_limit` can come at any stage, the saddle check
+included, and keeps the images but no energies or verdict. Outcomes retain calculator-free endpoint
+or NEB snapshots as far as the attempt progressed. Every band with a verdict keeps its image
+energies, and only `saddle_validated` adds a forward barrier in eV: potential energy for NVT,
+enthalpy for NPT. No status stops MD from resuming.
 
 ## Reactant frame and steps
 
