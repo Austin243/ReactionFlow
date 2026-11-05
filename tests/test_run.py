@@ -24,7 +24,7 @@ from reactionflow import (
     assign_atom_ids,
 )
 from reactionflow.campaign import CampaignConfig
-from reactionflow.cli import main
+from reactionflow.cli import main, run_selected_trajectory
 from reactionflow.run import refine_pathway
 from reactionflow.status import _trajectory, campaign_status, format_status
 
@@ -735,3 +735,69 @@ def test_missing_tracker_checkpoint_does_not_reset_pending_history(tmp_path, mon
     shutil.rmtree(tmp_path / state["active_checkpoint"] / "tracker")
     with pytest.raises(FileNotFoundError):
         ReactionRun.open(tmp_path)
+
+
+def test_refine_after_md_runs_md_through_and_then_refines(tmp_path, monkeypatch) -> None:
+    path = pair_campaign(tmp_path, "pair")
+    value = {
+        **json.loads(path.read_text()),
+        "refine_after_md": True,
+        "reaction_run": run_config().to_dict(),
+    }
+    path.write_text(json.dumps(value))
+    leases = LeaseCounter()
+    adapter = ScriptedRuntimeProvider(leases)
+    adapter.calculator = leases
+    monkeypatch.setattr("reactionflow.cli.load_mlip_adapter", lambda *_: adapter)
+
+    summary = run_selected_trajectory(CampaignConfig.load(path), index=0, environment={})
+
+    # One unbroken segment, and the MD model is gone before refinement loads its own.
+    assert (summary.phase, summary.generation, summary.pathways) == ("completed", 0, 1)
+    assert leases.stages == ["md", "relax_reactant", "relax_product", "neb"]
+    assert leases.live == 0 and leases.max_live == 1
+    result = json.loads(next((tmp_path / "runs/pair/pathways").glob("*/result.json")).read_text())
+    assert result["barrier_eV"] == pytest.approx(0.0625, abs=2e-4)
+
+
+def test_refine_after_md_keeps_its_queue_across_interruptions(tmp_path, monkeypatch) -> None:
+    def advance(leases, **provider):
+        state = tmp_path / "state.json"
+        config = run_config(observation_interval=1)
+        run = (
+            ReactionRun.open(tmp_path)
+            if state.exists()
+            else ReactionRun.create(tmp_path, config=config)
+        )
+        return run.run(
+            pair(0.65) if run.phase == "new" else None,
+            # Break the bond, re-form it, and break it again.
+            runtime_provider=ScriptedRuntimeProvider(
+                leases, script={1: 1.55, 2: 0.65, 3: 1.55}, **provider
+            ),
+            pathway_calculator_provider=leases,
+            total_steps=3,
+            refine_after_md=True,
+        )
+
+    def saved_state():
+        state = json.loads((tmp_path / "state.json").read_text())
+        return state["phase"], state["global_step"], len(state["pending_pathway_ids"])
+
+    with pytest.raises(KeyboardInterrupt, match="scheduler interruption"):
+        advance(LeaseCounter(), interrupt_after_calls=2)
+    assert saved_state() == ("running", 2, 2)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("reactionflow.run.refine_pathway", interrupt_refinement)
+        with pytest.raises(KeyboardInterrupt, match="before refinement"):
+            advance(LeaseCounter())
+    assert saved_state() == ("refining", 3, 3)
+
+    leases = LeaseCounter()
+    summary = advance(leases)
+
+    # The model is checked against the checkpoint once, MD does not run again, and each event is
+    # refined once.
+    assert leases.stages == ["md", *["relax_reactant", "relax_product", "neb"] * 3]
+    assert (summary.phase, summary.generation, summary.pathways) == ("completed", 0, 3)

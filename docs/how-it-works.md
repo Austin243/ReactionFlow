@@ -17,7 +17,9 @@ after it persists for three observations, and it becomes a reaction candidate on
 within two bonds of it has been stable for three observations. The trajectory then writes a
 checkpoint, relaxes the reactant and product, runs NEB and CI-NEB, checks the saddle, and records
 the result. MD resumes from the checkpoint, not from a relaxed structure, so it continues the
-trajectory that would have run without the pause.
+trajectory that would have run without the pause. With `"refine_after_md": true` in the campaign,
+the trajectory does not pause, and its events are refined when MD ends
+([when barriers are refined](campaigns.md#when-barriers-are-refined)).
 
 ## Bond detection
 
@@ -67,9 +69,11 @@ could not be mapped onto the relaxed endpoints, because a bond stayed between th
 the change disappeared, or relaxation changed bonds elsewhere in the cell. `stepwise` means the
 event was refined in steps, each with its own outcome. `failed` means an unexpected error. The
 saddle check's four verdicts are described in [pathway
-refinement](pathway-refinement.md#saddle-check). In every case the result is saved, the
-checkpoint is restored, and MD continues.
-A trajectory itself stops only if it cannot save its own state.
+refinement](pathway-refinement.md#saddle-check). In every case the result is saved. If MD has not
+reached `total_steps`, the checkpoint is restored and MD continues.
+A trajectory is marked failed only if its own bookkeeping fails: the bond monitor, the reaction
+store, or a save. If its model cannot load or raises an error, the job stops with a non-zero exit,
+and the next job continues from the last checkpoint.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
@@ -231,7 +235,8 @@ directory.
 
 To continue after a job ends, submit the same command again. Unfinished trajectories resume from
 their last checkpoint and finished ones are left as they are. Each output directory is bound to
-its structure, settings, and model, and a changed campaign is rejected instead of resumed.
+its structure, trajectory conditions, reaction settings, and model, and a change to those is
+rejected instead of resumed.
 
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) is a job
 script for Perlmutter's four-GPU nodes. Thirty-two trajectories on eight nodes are submitted like

@@ -59,6 +59,10 @@ it asks about GPUs to run on a CPU. A campaign with several trajectories runs on
 and one GPU per trajectory. The [campaign guide](docs/campaigns.md) describes the file, and
 [pathway refinement](docs/pathway-refinement.md) lists the refinement settings.
 
+By default a trajectory pauses for each reaction and refines it before MD goes on. With
+`"refine_after_md": true` in the campaign, MD runs to its last step without pausing, and the events
+wait in a queue until then ([when barriers are refined](docs/campaigns.md#when-barriers-are-refined)).
+
 Two more commands work on finished output. `reactionflow scan` replays the saved frames through
 bond detection, with the run's settings or new ones, and tabulates every bond change and species
 ([offline scan](docs/offline-scan.md)). `reactionflow check campaign.json band.traj` tests whether
