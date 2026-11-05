@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import warnings
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from numbers import Integral
 from pathlib import Path
@@ -21,12 +22,22 @@ from ._durable import ensure_directory, flush_to_disk, publish, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, canonical_copy, transport_copy
-from .pathway import CalculatorProvider, PathwayConfig, PathwayOutcome, refine_pathway
+from .pathway import (
+    BarrierTimeLimit,
+    CalculatorProvider,
+    PathwayConfig,
+    PathwayOutcome,
+    refine_pathway,
+)
 from .restart import ExactRestartSnapshot
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
 from .store import OccurrenceRecord, OccurrenceStore
 
 _PHASES = {"new", "running", "refining", "completed", "failed"}
+
+# By file times, refinements that reached a connected saddle took 1.1 and 1.8 hours (288-atom
+# acetonitrile, SSNEB, UMA on one GPU), and none of the nine longest, from 8.5 h, reached a saddle.
+DEFAULT_MAX_HOURS_PER_BARRIER = 4.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +171,8 @@ class ReactionRun:
         self._global_frame = 0
         self._pending: list[str] = []
         self._failure: dict[str, str] | None = None
+        self._barrier_seconds = 0.0
+        self._barrier_clock = 0.0
         self._initial: Atoms | None = None
         self._detector: BondChangeDetector | None = None
         self._tracker: ReactionTracker | None = None
@@ -201,6 +214,7 @@ class ReactionRun:
         run._pending = list(map(str, value["pending_pathway_ids"]))
         run._created_with = value.get("created_with_reactionflow")
         run._failure = value.get("failure")
+        run._barrier_seconds = float(value.get("barrier_seconds", 0.0))
         if value.get("detector_state") is not None:
             run._detector = BondChangeDetector.from_state(
                 value["detector_state"],
@@ -245,6 +259,7 @@ class ReactionRun:
             "global_step": self._global_step,
             "global_frame": self._global_frame,
             "pending_pathway_ids": list(self._pending),
+            "barrier_seconds": self._barrier_seconds,
             "failure": self._failure,
             "config": self.config.to_dict(),
             "detector_state": None if self._detector is None else self._detector.export_state(),
@@ -507,6 +522,45 @@ class ReactionRun:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
+    def _time_limited(
+        self, provider: CalculatorProvider, max_hours: float | None
+    ) -> CalculatorProvider:
+        """A provider that ends a refinement as ``time_limit`` once it has run for ``max_hours``.
+
+        The time is checked before each model evaluation and added up in ``state.json``, because an
+        interrupted refinement starts over when it resumes: a job shorter than the refinement would
+        otherwise repeat it forever.
+        """
+
+        def check() -> None:
+            before = self._barrier_seconds
+            now = time.monotonic()
+            self._barrier_seconds += now - self._barrier_clock
+            self._barrier_clock = now
+            if max_hours is not None and self._barrier_seconds >= max_hours * 3600:
+                raise BarrierTimeLimit(f"stopped at the limit of {max_hours:g} h per barrier")
+            if self._barrier_seconds // 60 > before // 60:  # save once a minute
+                with suppress(OSError):  # this runs inside the refinement, whose result it would be
+                    self._write_state()
+
+        @contextmanager
+        def lease(stage: str) -> Iterator[Any]:
+            check()
+            with provider(stage) as calculator:
+                calculate = calculator.calculate
+
+                def checked(*args: Any, **kwargs: Any) -> Any:
+                    check()
+                    return calculate(*args, **kwargs)
+
+                calculator.calculate = checked
+                try:
+                    yield calculator
+                finally:
+                    calculator.calculate = calculate
+
+        return lease
+
     def _refine_pending(
         self,
         calculator_provider: CalculatorProvider,
@@ -525,6 +579,7 @@ class ReactionRun:
                     # Published before an interruption; make its name durable and move on.
                     sync_directory(self.pathways)
                 else:
+                    self._barrier_clock = time.monotonic()
                     candidate = self.occurrences.load(occurrence_id)
                     outcome = refine_pathway(
                         candidate,
@@ -540,6 +595,7 @@ class ReactionRun:
                     self._publish_outcome(occurrence_id, outcome)
                     no_barrier = outcome.barrier is None
                 self._pending.pop(0)
+                self._barrier_seconds = 0.0
                 self._write_state()
                 if no_barrier:
                     return
@@ -590,16 +646,23 @@ class ReactionRun:
         *,
         runtime_provider: ExactRuntimeProvider,
         pathway_calculator_provider: CalculatorProvider,
+        max_hours_per_barrier: float | None = DEFAULT_MAX_HOURS_PER_BARRIER,
         total_steps: int,
         pressure_GPa: float | None = None,
         refine_after_md: bool = False,
     ) -> RunSummary:
-        """Run or resume live detection, serial NEB/CI-NEB, and exact MD to a step target."""
+        """Run or resume live detection, serial NEB/CI-NEB, and exact MD to a step target.
+
+        Refining one event stops after ``max_hours_per_barrier`` hours, or never with ``None``.
+        """
 
         if isinstance(total_steps, bool) or not isinstance(total_steps, Integral):
             raise ValueError("total_steps must be a non-negative integer")
         if total_steps < self._global_step:
             raise ValueError("total_steps cannot precede the durable run counter")
+        pathway_calculator_provider = self._time_limited(
+            pathway_calculator_provider, max_hours_per_barrier
+        )
         if self._phase == "new":
             if atoms is None:
                 raise ValueError("initial atoms are required for a new run")

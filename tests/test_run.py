@@ -5,6 +5,7 @@ import json
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import numpy as np
@@ -22,6 +23,7 @@ from reactionflow import (
     ReactionRun,
     ReactionRunConfig,
     assign_atom_ids,
+    pathway,
 )
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main, run_selected_trajectory
@@ -427,6 +429,83 @@ def test_frequency_failure_is_recorded_and_md_continues(tmp_path, monkeypatch) -
     assert result["frequency_validation"]["frequencies_cm1"] == []
     assert (tmp_path / "segments/0001/trajectory.traj").is_file()
     assert leases.live == 0 and leases.max_live == 1
+
+
+@pytest.mark.parametrize("stage", ["_minimize", "_hessian", "_check_connectivity"])
+def test_time_limit_ends_a_refinement_at_any_stage_and_md_continues(
+    tmp_path, monkeypatch, stage
+) -> None:
+    # The Hessian and connectivity check record any Exception as their own failure and carry on, so
+    # a limit they caught would end as saddle_unchecked. The clock jumps when the stage starts.
+    clock = {"seconds": 0.0}
+    original = getattr(pathway, stage)
+
+    def late(*args, **kwargs):
+        clock["seconds"] = 5 * 3600.0
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pathway, stage, late)
+    monkeypatch.setattr(
+        "reactionflow.run.time", SimpleNamespace(monotonic=lambda: clock["seconds"])
+    )
+    leases = LeaseCounter()
+    run = ReactionRun.create(tmp_path, config=run_config())
+
+    summary = run.run(
+        pair(0.6),
+        runtime_provider=ScriptedRuntimeProvider(leases),
+        pathway_calculator_provider=leases,
+        total_steps=18,
+        max_hours_per_barrier=4.0,
+    )
+
+    assert (summary.phase, summary.global_step, run.failure) == ("completed", 18, None)
+    assert leases.live == 0 and leases.max_live == 1
+    result = json.loads(next((tmp_path / "pathways").glob("*/result.json")).read_text())
+    assert (result["status"], result["barrier_eV"]) == ("time_limit", None)
+    assert "4 h" in result["message"]
+    assert json.loads((tmp_path / "state.json").read_text())["barrier_seconds"] == 0.0
+
+
+def test_time_limit_counts_across_jobs_too_short_to_finish_a_barrier(tmp_path, monkeypatch) -> None:
+    # An interrupted refinement starts over when it resumes, so without a count that outlives each
+    # 70 s job, this refinement would repeat forever under a 100 s limit.
+    clock = {"seconds": 0.0, "job_ends": 70.0}
+
+    class EndsWithTheJob(PairDoubleWell):
+        def calculate(self, *args, **kwargs):
+            clock["seconds"] += 10.0
+            if clock["seconds"] >= clock["job_ends"]:
+                raise KeyboardInterrupt("the job ended")
+            super().calculate(*args, **kwargs)
+
+    @contextmanager
+    def calculators(_stage):
+        yield EndsWithTheJob()
+
+    def advance(run, atoms=None):
+        clock["job_ends"] = clock["seconds"] + 70.0
+        return run.run(
+            atoms,
+            runtime_provider=ScriptedRuntimeProvider(LeaseCounter()),
+            pathway_calculator_provider=calculators,
+            total_steps=18,
+            max_hours_per_barrier=100 / 3600,
+        )
+
+    monkeypatch.setattr(
+        "reactionflow.run.time", SimpleNamespace(monotonic=lambda: clock["seconds"])
+    )
+    with pytest.raises(KeyboardInterrupt, match="the job ended"):
+        advance(ReactionRun.create(tmp_path, config=run_config()), pair(0.6))
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["phase"] == "refining" and 60.0 <= state["barrier_seconds"] <= 70.0
+
+    summary = advance(ReactionRun.open(tmp_path))
+
+    assert (summary.phase, summary.pathways) == ("completed", 1)
+    result = json.loads(next((tmp_path / "pathways").glob("*/result.json")).read_text())
+    assert result["status"] == "time_limit"
 
 
 def test_reopen_refines_the_reverse_reaction_too_and_serializes_leases(

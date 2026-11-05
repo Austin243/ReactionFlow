@@ -45,6 +45,14 @@ class _EndpointUnresolved(ValueError):
     pass
 
 
+class BarrierTimeLimit(BaseException):
+    """Ends a refinement as ``time_limit``.
+
+    Not an Exception: the Hessian and the connectivity check record any Exception as their own
+    failure and carry on, which would report the wrong status and keep running the model.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class PathwayConfig:
     """Small set of controls for endpoint relaxation, CI-NEB, and the saddle check.
@@ -774,6 +782,8 @@ def _refine_pathway(
                 if made is not None and made > (ends[-1][0] if ends else state):
                     ends.append((made, frame))
         ends.append((changed, last))
+    except BarrierTimeLimit as exc:
+        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc))
     except _EndpointUnresolved as exc:
         return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc))
     except Exception as exc:
@@ -803,7 +813,9 @@ def _refine_pathway(
             reactant_bonds=candidate.reactant_bonds ^ before,
             product_bonds=candidate.reactant_bonds ^ made,
         )
-        if end is None:
+        if steps and steps[-1].outcome.status == "time_limit":
+            outcome = replace(steps[-1].outcome, images=())
+        elif end is None:
             outcome = PathwayOutcome("unresolved", message="the step before ended elsewhere")
         else:
             outcome, end = _refine_step(
@@ -959,6 +971,8 @@ def _refine_step(
             finally:
                 for image in images:
                     image.calc = None
+    except BarrierTimeLimit as exc:
+        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), None
     except _EndpointUnresolved as exc:
         return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc)), end
     except Exception as exc:

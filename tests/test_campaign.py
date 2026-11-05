@@ -348,3 +348,14 @@ def test_perlmutter_template_maps_four_local_cpu_monitors_to_four_gpus() -> None
     assert "#SBATCH --cpus-per-task=32" in script
     assert 'srun --cpu-bind=cores reactionflow run "$campaign"' in script
     assert "--ntasks=32" not in script
+
+
+def test_barrier_time_limit_defaults_to_four_hours_and_null_turns_it_off(tmp_path) -> None:
+    path = _campaign(tmp_path)
+    assert CampaignConfig.load(path).max_hours_per_barrier == 4.0
+    value = json.loads(path.read_text())
+    path.write_text(json.dumps({**value, "max_hours_per_barrier": None}))
+    assert CampaignConfig.load(path).max_hours_per_barrier is None
+    path.write_text(json.dumps({**value, "max_hours_per_barrier": 0}))
+    with pytest.raises(ValueError, match="max_hours_per_barrier"):
+        CampaignConfig.load(path)

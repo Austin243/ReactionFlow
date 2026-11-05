@@ -63,11 +63,14 @@ first stage that fails, with a status that says why.
 | NEB or SSNEB | `neb_failed` |
 | Climbing image | `ci_neb_failed` |
 | Saddle check | `saddle_validated`, `no_saddle`, `saddle_rejected`, or `saddle_unchecked` |
+| Any stage, past the time limit | `time_limit` |
 
 `collapsed` means both endpoints relaxed to the same bond topology. `unresolved` means the change
 could not be mapped onto the relaxed endpoints, because a bond stayed between the two thresholds,
 the change disappeared, or relaxation changed bonds elsewhere in the cell. `stepwise` means the
-event was refined in steps, each with its own outcome. `failed` means an unexpected error. The
+event was refined in steps, each with its own outcome. `time_limit` means the refinement ran past
+`max_hours_per_barrier`, 4 hours by default ([time limit per
+barrier](campaigns.md#time-limit-per-barrier)). `failed` means an unexpected error. The
 saddle check's four verdicts are described in [pathway
 refinement](pathway-refinement.md#saddle-check). In every case the result is saved. If MD has not
 reached `total_steps`, the checkpoint is restored and MD continues.
