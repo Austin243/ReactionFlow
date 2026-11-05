@@ -227,11 +227,12 @@ and are refined when MD ends, one at a time in the order MD found them, by the s
 same GPU. Resubmit a job that ends partway, as usual: finished results are kept, and the next
 unfinished event is refined from the start.
 
-If a refinement fails, the model is evaluated once on the last checkpoint. If that fails too, the
-job stops with the rest of the queue intact, so a lost GPU costs one event, not the queue. If MD
-itself cannot go on, set the option to `false` and resubmit: the queue is refined before MD is
-touched. A trajectory marked failed refines its queue when resubmitted, then reports the failure
-again.
+If a refinement gives no barrier, the model is evaluated once on the last checkpoint. If that fails
+or returns NaN, the job stops with the rest of the queue intact, so a lost GPU costs one event, not
+the queue. The check reloads the model at that checkpoint, so a calculator that needs its previous
+call to converge there, as an SCF can, may stop the job and hold the queue. If MD itself cannot go
+on, set the option to `false` and resubmit: the queue is refined before MD is touched. A trajectory
+marked failed refines its queue when resubmitted, then reports the failure again.
 
 MD restarts exactly after a pause, and refinement reads only saved frames, so with a model that
 keeps no state between evaluations both orders give the same frames, events, and barriers. A model

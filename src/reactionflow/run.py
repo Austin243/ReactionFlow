@@ -298,7 +298,8 @@ class ReactionRun:
             yield
         except Exception as error:
             self._phase = "failed"
-            self._failure = {"stage": stage, "type": type(error).__name__, "message": str(error)}
+            failure = {"stage": stage, "type": type(error).__name__, "message": str(error)}
+            self._failure = self._failure or failure  # the first is why MD stopped
             self._write_state()
             raise
 
@@ -494,13 +495,13 @@ class ReactionRun:
     ) -> None:
         """Refine each queued occurrence serially and publish its immutable result.
 
-        Returns early after a failed refinement, so that the caller can check the model.
+        Returns early after a refinement with no barrier, so that the caller can check the model.
         """
 
         with self._fatal("refine"):
             while self._pending:
                 occurrence_id = self._pending[0]
-                failed = False
+                no_barrier = False
                 if (self.pathways / occurrence_id).is_dir():
                     # Published before an interruption; make its name durable and move on.
                     sync_directory(self.pathways)
@@ -518,22 +519,23 @@ class ReactionRun:
                         ),
                     )
                     self._publish_outcome(occurrence_id, outcome)
-                    failed = outcome.status == "failed"
+                    no_barrier = outcome.barrier is None
                 self._pending.pop(0)
                 self._write_state()
-                if failed:
+                if no_barrier:
                     return
 
     def _check_model(self, runtime_provider: ExactRuntimeProvider) -> None:
-        """Restore the last checkpoint, which loads and evaluates the model or raises.
+        """Restore the last checkpoint, which loads and evaluates the model, or raise.
 
         Reads a separate snapshot so that validation cannot mutate the run's checkpoint.
         """
 
         assert self._active_checkpoint is not None
         snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
-        with runtime_provider.restore(snapshot):
-            pass
+        with runtime_provider.restore(snapshot) as runtime:
+            if runtime.atoms.calc is not None and not np.isfinite(runtime.atoms.get_forces()).all():
+                raise ValueError("the model returned non-finite forces at the last checkpoint")
 
     def _refine_due(self) -> bool:
         """Whether to refine now: the queue waits only for running MD under ``refine_after_md``."""
@@ -600,7 +602,7 @@ class ReactionRun:
             if self._refine_due():
                 self._refine_pending(pathway_calculator_provider, pressure_GPa)
                 if self._pending:
-                    # An event failed. If the model did, stop before it fails the rest of the queue.
+                    # No barrier. If the model is gone, stop before it fails the rest of the queue.
                     self._check_model(runtime_provider)
             elif self._phase == "failed":
                 raise RuntimeError(f"ReactionRun failed: {self._failure}")
