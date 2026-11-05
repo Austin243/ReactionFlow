@@ -813,7 +813,9 @@ def _refine_pathway(
             reactant_bonds=candidate.reactant_bonds ^ before,
             product_bonds=candidate.reactant_bonds ^ made,
         )
-        if end is None:
+        if steps and steps[-1].outcome.status == "time_limit":
+            outcome = replace(steps[-1].outcome, images=())
+        elif end is None:
             outcome = PathwayOutcome("unresolved", message="the step before ended elsewhere")
         else:
             outcome, end = _refine_step(
@@ -970,8 +972,7 @@ def _refine_step(
                 for image in images:
                     image.calc = None
     except BarrierTimeLimit as exc:
-        # The next step's first lease ends it as time_limit too, whichever end it is given.
-        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), reactant
+        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), None
     except _EndpointUnresolved as exc:
         return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc)), end
     except Exception as exc:
