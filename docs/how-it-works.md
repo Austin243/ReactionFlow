@@ -71,8 +71,9 @@ event was refined in steps, each with its own outcome. `failed` means an unexpec
 saddle check's four verdicts are described in [pathway
 refinement](pathway-refinement.md#saddle-check). In every case the result is saved. If MD has not
 reached `total_steps`, the checkpoint is restored and MD continues.
-A trajectory is marked failed only if it cannot save its own state. If its model cannot load or
-evaluate, the job stops with a non-zero exit, and the next job continues from the last checkpoint.
+A trajectory is marked failed only if its own bookkeeping fails: the bond monitor, the reaction
+store, or a save. If its model cannot load or raises an error, the job stops with a non-zero exit,
+and the next job continues from the last checkpoint.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
