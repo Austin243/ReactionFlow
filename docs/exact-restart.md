@@ -111,7 +111,8 @@ summary = run.run(
 ```
 
 A run interrupted before its first checkpoint reopens in phase `new`; pass the initial atoms to
-`run()` again, as the CLI does.
+`run()` again, as the CLI does. After `run()` raises, reopen the run before calling it again, because
+the object that raised can hold state ahead of its checkpoint.
 
 The runner refuses a provider whose step counter or atomic state disagrees with the durable
 boundary; there is no inexact fallback. The built-in model providers are optional and

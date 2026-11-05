@@ -117,10 +117,10 @@ def _require_finite(snapshot: ExactRestartSnapshot) -> None:
 
     atoms = snapshot.atoms
     arrays = [atoms.positions, atoms.get_momenta(), atoms.cell.array]
-    arrays += snapshot.dynamics.arrays.values()
+    arrays += [a for a in snapshot.dynamics.arrays.values() if np.issubdtype(a.dtype, np.inexact)]
     if not all(np.isfinite(array).all() for array in arrays):
         raise ValueError(
-            "MD state is non-finite, from NaN or inf in the model's output or a blown-up "
+            "MD state is non-finite, usually from NaN or inf in the model's output or a blown-up "
             "trajectory; nothing was saved for it, so the next job repeats it"
         )
 
