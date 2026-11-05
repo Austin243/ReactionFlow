@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import ClassVar
 
 import numpy as np
 import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
+from ase.io import read
 
 from reactionflow import (
     BondDetectorConfig,
+    ComponentState,
     ExactRestartSnapshot,
     PathwayOutcome,
     ReactionRun,
     ReactionRunConfig,
 )
 from reactionflow.adapters import _torch, uma
-from reactionflow.adapters.ase import _ASERuntime
+from reactionflow.adapters.ase import ASELangevinBAOABAdapter, _ASERuntime
 from reactionflow.campaign import TrajectorySpec
 
 
@@ -185,3 +187,81 @@ def test_resume_under_new_package_versions_continues_and_records_them(tmp_path, 
     assert record["step"] == 1
     old, new = record["changed"]["package_versions"]
     assert set(old.values()) == {"test-version"} and set(new.values()) == {"newer-version"}
+
+
+class NaNFrom(Harmonic):
+    """Turns one output NaN from evaluation ``at`` on, and does not mind NaN input."""
+
+    def __init__(self, at=None, output="forces"):
+        super().__init__(1.0)
+        self.at, self.output, self.evaluations = at, output, 0
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        self.evaluations += 1
+        if self.at is not None and self.evaluations >= self.at:
+            self.results[self.output] = np.full_like(self.results[self.output], np.nan)
+
+
+class LeasedModel(ASELangevinBAOABAdapter):
+    def __init__(self, pressure_GPa, model):
+        super().__init__(
+            trajectory=TrajectorySpec(
+                id="t",
+                total_steps=8,
+                timestep_fs=0.1,
+                temperature_K=300,
+                pressure_GPa=pressure_GPa,
+                seed=19,
+            )
+        )
+        self.model = model
+
+    @contextmanager
+    def _lease(self):
+        yield self.model, ComponentState(kind="test.model")
+
+
+@pytest.mark.parametrize(
+    ("pressure_GPa", "output"), [(None, "forces"), (0.0, "forces"), (0.0, "stress")]
+)
+@pytest.mark.parametrize(
+    ("at", "saved_step"),
+    [(1, 0), (5, 0), (7, 4)],
+    ids=["first_evaluation", "last_of_an_interval", "inside_an_interval"],
+)
+def test_non_finite_md_state_stops_the_job_before_any_frame_or_checkpoint(
+    tmp_path, pressure_GPa, output, at, saved_step
+):
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0.7, 0, 0]], cell=[9, 9, 9], pbc=True)
+    config = ReactionRunConfig(
+        observation_interval=4,
+        detector=BondDetectorConfig(pair_thresholds={"H-H": (0.8, 1.2)}),
+    )
+
+    def run_md(root, model):
+        run = ReactionRun.open(root) if root.exists() else ReactionRun.create(root, config=config)
+        adapter = LeasedModel(pressure_GPa, model)
+        run.run(
+            atoms if run.phase == "new" else None,
+            runtime_provider=adapter,
+            pathway_calculator_provider=adapter.calculator,
+            total_steps=8,
+        )
+        return run
+
+    run_md(tmp_path / "control", NaNFrom())
+    root = tmp_path / "run"
+    with pytest.raises(ValueError, match="non-finite"):
+        run_md(root, NaNFrom(at, output))
+    state = json.loads((root / "state.json").read_text())
+    assert (state["phase"], state["global_step"]) == ("new" if at == 1 else "running", saved_step)
+
+    # The next job, on a good model, gives exactly the run that never met the NaN.
+    assert run_md(root, NaNFrom()).phase == "completed"
+    frames = read(root / "segments/0000/trajectory.traj", ":")
+    control = read(tmp_path / "control/segments/0000/trajectory.traj", ":")
+    assert len(frames) == len(control) == 3
+    for frame, expected in zip(frames, control, strict=True):
+        assert np.array_equal(frame.positions, expected.positions)
+        assert np.array_equal(frame.get_momenta(), expected.get_momenta())

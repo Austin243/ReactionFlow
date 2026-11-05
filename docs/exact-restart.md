@@ -87,7 +87,10 @@ run keeps a single runtime checkpoint.
 `state.json` records the phase, generation, global counters, pending pathway occurrence IDs,
 detector state, configuration, any durable-state failure, and the active checkpoint. Each
 generation writes one frame per observation to `segments/<generation>/trajectory.traj`; a frame is
-written before its checkpoint, so an interrupted attempt never leaves a gap.
+written before its checkpoint, so an interrupted attempt never leaves a gap. An MD state with a
+non-finite position, momentum, cell, or integrator array gets neither: the job stops with a non-zero
+exit, and the next job repeats from the last checkpoint, or starts over if there is none. A frame or
+checkpoint an earlier version wrote from such a state is not repaired.
 
 ```python
 run = ReactionRun.create("trajectory-000", config=config)

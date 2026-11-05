@@ -108,6 +108,23 @@ def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
     )
 
 
+def _require_finite(snapshot: ExactRestartSnapshot) -> None:
+    """Refuse a non-finite MD state, so that it reaches neither a frame nor a checkpoint.
+
+    The integrator's arrays count too: NaN forces or stress on the first evaluation, or NaN stress
+    on the last step of an interval, leave the atoms finite and would poison every later step.
+    """
+
+    atoms = snapshot.atoms
+    arrays = [atoms.positions, atoms.get_momenta(), atoms.cell.array]
+    arrays += snapshot.dynamics.arrays.values()
+    if not all(np.isfinite(array).all() for array in arrays):
+        raise ValueError(
+            "MD state is non-finite, from NaN or inf in the model's output or a blown-up "
+            "trajectory; nothing was saved for it, so the next job repeats it"
+        )
+
+
 def _write_result(directory: Path, outcome: PathwayOutcome, identity: Mapping[str, Any]) -> None:
     with Trajectory(directory / "images.traj", "w") as trajectory:
         for image in outcome.images:
@@ -381,6 +398,7 @@ class ReactionRun:
         )
         with manager as runtime:
             if self._snapshot is None:
+                _require_finite(runtime.snapshot())
                 self._checkpoint(runtime)
             elif int(runtime.nsteps) != self._global_step:
                 raise ValueError("exact runtime step counter does not match the durable run")
@@ -403,6 +421,7 @@ class ReactionRun:
                     steps = min(self.config.observation_interval, total_steps - self._global_step)
                     before = int(runtime.nsteps)
                     runtime.run(steps)
+                    _require_finite(runtime.snapshot())
                     advanced = int(runtime.nsteps) - before
                     if advanced != steps:
                         raise RuntimeError(
