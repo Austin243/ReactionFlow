@@ -73,6 +73,8 @@ refinement](pathway-refinement.md#saddle-check). In every case the result is sav
 reached `total_steps`, the checkpoint is restored and MD continues.
 A trajectory is marked failed only if it cannot save its own state. If its model cannot load or
 evaluate, the job stops with a non-zero exit, and the next job continues from the last checkpoint.
+A new trajectory whose first evaluation gives NaN has no usable checkpoint: delete its directory
+and resubmit.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
@@ -234,7 +236,8 @@ directory.
 
 To continue after a job ends, submit the same command again. Unfinished trajectories resume from
 their last checkpoint and finished ones are left as they are. Each output directory is bound to
-its structure, settings, and model, and a changed campaign is rejected instead of resumed.
+its structure, trajectory conditions, reaction settings, and model, and a change to those is
+rejected instead of resumed.
 
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) is a job
 script for Perlmutter's four-GPU nodes. Thirty-two trajectories on eight nodes are submitted like
