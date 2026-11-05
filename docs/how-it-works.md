@@ -73,8 +73,6 @@ refinement](pathway-refinement.md#saddle-check). In every case the result is sav
 reached `total_steps`, the checkpoint is restored and MD continues.
 A trajectory is marked failed only if it cannot save its own state. If its model cannot load or
 evaluate, the job stops with a non-zero exit, and the next job continues from the last checkpoint.
-A new trajectory whose first evaluation gives NaN has no usable checkpoint: delete its directory
-and resubmit.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
