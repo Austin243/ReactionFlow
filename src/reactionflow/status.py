@@ -313,6 +313,11 @@ def format_status(report: dict[str, Any]) -> str:
             f"{verdicts['stepwise']} event{'' if verdicts['stepwise'] == 1 else 's'} refined in"
             " steps: each step counts as an event of its own class."
         )
+    if verdicts["time_limit"]:
+        lines.append(
+            f"{verdicts['time_limit']} refinement{'' if verdicts['time_limit'] == 1 else 's'}"
+            " stopped at max_hours_per_barrier, with no barrier."
+        )
     radius = report["radius"]
     lines.append(
         f"A class is a bond change with the atoms within {radius} bond{'' if radius == 1 else 's'}"

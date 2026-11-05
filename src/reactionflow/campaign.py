@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .pathway import _RETIRED_KEYS
-from .run import ReactionRunConfig
+from .run import DEFAULT_MAX_HOURS_PER_BARRIER, ReactionRunConfig
 
 _TRAJECTORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
@@ -167,6 +167,7 @@ class CampaignConfig:
     adapter_profiles: Mapping[str, AdapterSpec]
     trajectory_profiles: tuple[str, ...]
     trajectory_structures: tuple[Path, ...]
+    max_hours_per_barrier: float | None = DEFAULT_MAX_HOURS_PER_BARRIER
     require_gpu: bool = True
 
     @classmethod
@@ -186,6 +187,7 @@ class CampaignConfig:
             "trajectories",
             "require_gpu",
             "adapter_profiles",
+            "max_hours_per_barrier",
         }
         if unknown:
             raise ValueError(f"unknown campaign keys: {sorted(unknown)}")
@@ -250,6 +252,9 @@ class CampaignConfig:
         identifiers = [trajectory.id for trajectory in trajectories]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("trajectory IDs must be unique")
+        max_hours = value.get("max_hours_per_barrier", DEFAULT_MAX_HOURS_PER_BARRIER)
+        if max_hours is not None:
+            max_hours = _finite_float(max_hours, "campaign.max_hours_per_barrier", minimum=0.0)
         require_gpu = value.get("require_gpu", True)
         if type(require_gpu) is not bool:
             raise TypeError("campaign.require_gpu must be a boolean")
@@ -261,6 +266,7 @@ class CampaignConfig:
             adapter_profiles=adapter_profiles,
             trajectory_profiles=tuple(trajectory_profiles),
             trajectory_structures=tuple(trajectory_structures),
+            max_hours_per_barrier=max_hours,
             require_gpu=require_gpu,
         )
 

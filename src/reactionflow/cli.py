@@ -177,6 +177,7 @@ def run_selected_trajectory(
         atoms,
         runtime_provider=adapter,
         pathway_calculator_provider=adapter.calculator,
+        max_hours_per_barrier=campaign.max_hours_per_barrier,
         total_steps=trajectory.total_steps,
         pressure_GPa=trajectory.pressure_GPa,
     )

@@ -70,6 +70,10 @@ every detected occurrence, every refinement with its band and saddle check, and 
 `reactions.sqlite3` index under `output_root/<trajectory-id>/`. Nothing is overwritten, and a
 resubmitted job continues each unfinished trajectory from its last checkpoint.
 
+Refining one event stops after `max_hours_per_barrier` hours, 4 by default, and records
+`time_limit` with no barrier, so that one slow band cannot hold up a trajectory for days
+([time limit per barrier](docs/campaigns.md#time-limit-per-barrier)). MD has no time limit.
+
 ## Models
 
 MACE, UMA, AIMNet2, and ANI-1xnr are built in. `reactionflow models` lists their models, heads, and

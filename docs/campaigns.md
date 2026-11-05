@@ -247,6 +247,28 @@ NVT barriers are potential energies; NPT barriers are enthalpies. `--json` print
 including every barrier value, the counts of each pathway, frequency and connectivity status,
 trajectory ID, and one example occurrence per class, for scripted analysis.
 
+## Time limit per barrier
+
+Refining one event stops after `max_hours_per_barrier` hours, 4 by default. Set it at the top of the
+campaign, or to `null` for no limit. The event then ends as `time_limit`, with no barrier and its band
+as far as it got, and the trajectory moves on. MD has no time limit. The steps of an event refined in
+steps share one limit, and steps already refined keep their results.
+
+The clock counts the time a refinement has run, not the time a job waits in the queue. It carries
+across resubmissions, because an interrupted refinement starts over when it resumes, and a job
+shorter than the refinement would otherwise repeat it forever. So work lost to an interruption counts
+against the limit. It is checked before each model evaluation, so a single evaluation that never
+returns is not stopped.
+
+The setting is not part of a trajectory's contract, so you can change it when you resubmit, and the
+new limit applies to the event being refined and to later ones. An event that already ended as
+`time_limit` stays that way, because results are never overwritten.
+
+Four hours comes from 288-atom acetonitrile runs at high pressure with UMA on one GPU, on older
+commits: the refinements that reached a connected saddle took 1.1 and 1.8 hours, and none of the nine
+that took longer than 3.3 hours gave a barrier. More atoms, a slower model, or a CPU can need more,
+and `status` counts the refinements that hit the limit.
+
 ## Perlmutter mapping
 
 The bundled ANI environment is prepared by
