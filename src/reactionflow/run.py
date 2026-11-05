@@ -124,7 +124,8 @@ class ReactionRun:
     Every observation publishes one exact checkpoint: the dynamics and calculator snapshot plus
     the reaction tracker, named by ``state.json`` together with the detector state. A confirmed
     reaction releases the MD runtime, refines the queued pathways, and restores that same
-    checkpoint into the next trajectory generation, exactly as a resubmitted job does.
+    checkpoint into the next trajectory generation, exactly as a resubmitted job does. With
+    ``refine_after_md``, confirmed reactions instead wait in the queue until MD reaches its target.
     """
 
     def __init__(self, root: Path, config: ReactionRunConfig) -> None:
@@ -148,6 +149,7 @@ class ReactionRun:
         self._active_checkpoint: Path | None = None
         self._snapshot: ExactRestartSnapshot | None = None
         self._created_with: str | None = __version__
+        self._refine_after_md = False
 
     @classmethod
     def create(
@@ -342,7 +344,7 @@ class ReactionRun:
             )
             self._queue_pathway(record, candidate)
 
-    def _observe(self, atoms: Atoms, global_step: int) -> None:
+    def _observe(self, atoms: Atoms, global_step: int, total_steps: int) -> None:
         """Advance the monitor one frame and register every completed occurrence."""
 
         assert self._detector is not None and self._tracker is not None
@@ -358,7 +360,7 @@ class ReactionRun:
             self._register(candidates, label=f"{frame:08d}")
             self._global_step = global_step
             self._global_frame = frame
-            if self._pending:
+            if self._pending and (not self._refine_after_md or global_step >= total_steps):
                 self._phase = "refining"
 
     def _write_frame(self, trajectory: Trajectory, atoms: Atoms, written: int) -> None:
@@ -408,7 +410,7 @@ class ReactionRun:
                         raise RuntimeError(
                             f"exact runtime advanced {advanced} steps; expected {steps}"
                         )
-                    self._observe(runtime.atoms, self._global_step + steps)
+                    self._observe(runtime.atoms, self._global_step + steps, total_steps)
                     self._write_frame(trajectory, runtime.atoms, written)
                     # A checkpoint survives a crash, so the frames written before it must too.
                     flush_to_disk(path)
@@ -546,6 +548,7 @@ class ReactionRun:
         pathway_calculator_provider: CalculatorProvider,
         total_steps: int,
         pressure_GPa: float | None = None,
+        refine_after_md: bool = False,
     ) -> RunSummary:
         """Run or resume live detection, serial NEB/CI-NEB, and exact MD to a step target."""
 
@@ -559,6 +562,7 @@ class ReactionRun:
             self._start(atoms)
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
+        self._refine_after_md = refine_after_md
 
         if self._phase == "refining":
             # A reopened adapter has not checked its model against the saved MD state yet.
@@ -576,7 +580,7 @@ class ReactionRun:
         while self._phase != "completed":
             if self._phase == "failed":
                 raise RuntimeError(f"ReactionRun failed: {self._failure}")
-            if self._pending:
+            if self._pending and self._phase == "refining":
                 self._refine_pending(pathway_calculator_provider, pressure_GPa)
             elif self._global_step >= total_steps:
                 self._complete()

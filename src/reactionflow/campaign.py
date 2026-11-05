@@ -168,6 +168,7 @@ class CampaignConfig:
     trajectory_profiles: tuple[str, ...]
     trajectory_structures: tuple[Path, ...]
     require_gpu: bool = True
+    refine_after_md: bool = False
 
     @classmethod
     def load(cls, path: str | Path) -> CampaignConfig:
@@ -185,6 +186,7 @@ class CampaignConfig:
             "reaction_run",
             "trajectories",
             "require_gpu",
+            "refine_after_md",
             "adapter_profiles",
         }
         if unknown:
@@ -253,6 +255,9 @@ class CampaignConfig:
         require_gpu = value.get("require_gpu", True)
         if type(require_gpu) is not bool:
             raise TypeError("campaign.require_gpu must be a boolean")
+        refine_after_md = value.get("refine_after_md", False)
+        if type(refine_after_md) is not bool:
+            raise TypeError("campaign.refine_after_md must be a boolean")
         return cls(
             source=source,
             output_root=(source.parent / output_value).resolve(),
@@ -262,6 +267,7 @@ class CampaignConfig:
             trajectory_profiles=tuple(trajectory_profiles),
             trajectory_structures=tuple(trajectory_structures),
             require_gpu=require_gpu,
+            refine_after_md=refine_after_md,
         )
 
     def trajectory(self, index: int) -> TrajectorySpec:

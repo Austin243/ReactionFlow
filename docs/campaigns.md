@@ -218,6 +218,21 @@ remain independent of Torch. The complete four-GPU
 ANI-1xnr example is in
 [`examples/perlmutter/acn_20gpa_ani1xnr`](../examples/perlmutter/acn_20gpa_ani1xnr/README.md).
 
+## When barriers are refined
+
+By default a trajectory pauses at each confirmed reaction, refines it, and continues MD from the
+same checkpoint, so a slow refinement holds up that trajectory's MD. Set `"refine_after_md": true`
+at the top of the campaign to run MD straight through to `total_steps`. The events wait in a queue
+and are refined when MD ends, one at a time in the order MD found them, by the same process on the
+same GPU. Resubmit a job that ends partway, as usual: finished results are kept, and the next
+unfinished event is refined from the start.
+
+MD restarts exactly after a pause, and refinement reads only saved frames, so with a model that
+keeps no state between evaluations both orders give the same frames, events, and barriers. A model
+with internal state, such as ASE's EMT and its neighbor list, can differ at rounding level, as it
+does after any restart. The setting is not part of a trajectory's contract, so you can change it
+when you resubmit. A trajectory already paused for refinement finishes that refinement first.
+
 ## Campaign status
 
 `reactionflow status campaign.json` summarizes a campaign without changing it, so it is safe to

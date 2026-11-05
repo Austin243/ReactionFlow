@@ -17,7 +17,9 @@ after it persists for three observations, and it becomes a reaction candidate on
 within two bonds of it has been stable for three observations. The trajectory then writes a
 checkpoint, relaxes the reactant and product, runs NEB and CI-NEB, checks the saddle, and records
 the result. MD resumes from the checkpoint, not from a relaxed structure, so it continues the
-trajectory that would have run without the pause.
+trajectory that would have run without the pause. With `"refine_after_md": true` in the campaign,
+the trajectory does not pause, and its events are refined when MD ends
+([when barriers are refined](campaigns.md#when-barriers-are-refined)).
 
 ## Bond detection
 

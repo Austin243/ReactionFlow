@@ -179,6 +179,7 @@ def run_selected_trajectory(
         pathway_calculator_provider=adapter.calculator,
         total_steps=trajectory.total_steps,
         pressure_GPa=trajectory.pressure_GPa,
+        refine_after_md=campaign.refine_after_md,
     )
 
 
