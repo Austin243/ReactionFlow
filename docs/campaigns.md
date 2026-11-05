@@ -269,8 +269,8 @@ new limit applies to the event being refined and to later ones. An event that al
 Four hours comes from the file times and job logs of 288-atom acetonitrile runs at high pressure
 with UMA on one GPU, on older commits. The two refinements that reached a connected saddle, both at
 700 K, took 1.1 and 1.8 hours. None of the nine longest, 8.5 to 26.7 hours at 2000 K or hotter,
-reached a saddle: four did not converge and five had no imaginary mode. More atoms, a slower model,
-or a CPU can need more, and `status` counts the refinements that hit the limit.
+reached a saddle: four did not converge and five had no imaginary mode. More atoms, more images, a
+slower model, or a CPU can need more, and `status` counts the refinements that hit the limit.
 
 ## Perlmutter mapping
 

@@ -234,7 +234,8 @@ directory.
 
 To continue after a job ends, submit the same command again. Unfinished trajectories resume from
 their last checkpoint and finished ones are left as they are. Each output directory is bound to
-its structure, settings, and model, and a changed campaign is rejected instead of resumed.
+its structure, trajectory conditions, reaction settings, and model, and a change to those is
+rejected instead of resumed.
 
 [`examples/perlmutter/run-campaign.sbatch`](../examples/perlmutter/run-campaign.sbatch) is a job
 script for Perlmutter's four-GPU nodes. Thirty-two trajectories on eight nodes are submitted like
