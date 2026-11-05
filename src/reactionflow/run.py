@@ -374,7 +374,7 @@ class ReactionRun:
         trajectory.write(frame)
 
     def _run_segment(self, total_steps: int, runtime_provider: ExactRuntimeProvider) -> None:
-        """Run MD from the current checkpoint until a reaction is confirmed or the run ends."""
+        """Run MD from the current checkpoint until refinement is due or the run ends."""
 
         manager = (
             runtime_provider.start(self._initial)
@@ -492,11 +492,15 @@ class ReactionRun:
         calculator_provider: CalculatorProvider,
         pressure_GPa: float | None,
     ) -> None:
-        """Refine each queued occurrence serially and publish its immutable result."""
+        """Refine each queued occurrence serially and publish its immutable result.
+
+        Returns early after a failed refinement, so that the caller can check the model.
+        """
 
         with self._fatal("refine"):
             while self._pending:
                 occurrence_id = self._pending[0]
+                failed = False
                 if (self.pathways / occurrence_id).is_dir():
                     # Published before an interruption; make its name durable and move on.
                     sync_directory(self.pathways)
@@ -514,8 +518,27 @@ class ReactionRun:
                         ),
                     )
                     self._publish_outcome(occurrence_id, outcome)
+                    failed = outcome.status == "failed"
                 self._pending.pop(0)
                 self._write_state()
+                if failed:
+                    return
+
+    def _check_model(self, runtime_provider: ExactRuntimeProvider) -> None:
+        """Restore the last checkpoint, which loads and evaluates the model or raises.
+
+        Reads a separate snapshot so that validation cannot mutate the run's checkpoint.
+        """
+
+        assert self._active_checkpoint is not None
+        snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
+        with runtime_provider.restore(snapshot):
+            pass
+
+    def _refine_due(self) -> bool:
+        """Whether to refine now: the queue waits only for running MD under ``refine_after_md``."""
+
+        return bool(self._pending) and (self._phase != "running" or not self._refine_after_md)
 
     def _complete(self) -> None:
         """Drain unresolved terminal candidates and mark the run complete."""
@@ -564,24 +587,23 @@ class ReactionRun:
             raise ValueError("initial atoms may only be supplied to a new run")
         self._refine_after_md = refine_after_md
 
-        if self._phase == "refining":
+        if self._phase == "refining" or self._refine_due():
             # A reopened adapter has not checked its model against the saved MD state yet.
             # Verify before any pathway result can be published, including terminal work
-            # that will never resume MD. Read a separate snapshot so validation cannot
-            # mutate the run's checkpoint.
-            assert self._active_checkpoint is not None
-            snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
-            with runtime_provider.restore(snapshot):
-                pass
+            # that will never resume MD.
+            self._check_model(runtime_provider)
 
         # Only failures to maintain the durable record mark the run failed. Any other error, such
         # as a runtime that this environment refuses to restore, leaves the last exact checkpoint
         # in place, so the run resumes once the cause is fixed.
         while self._phase != "completed":
-            if self._phase == "failed":
-                raise RuntimeError(f"ReactionRun failed: {self._failure}")
-            if self._pending and self._phase == "refining":
+            if self._refine_due():
                 self._refine_pending(pathway_calculator_provider, pressure_GPa)
+                if self._pending:
+                    # An event failed. If the model did, stop before it fails the rest of the queue.
+                    self._check_model(runtime_provider)
+            elif self._phase == "failed":
+                raise RuntimeError(f"ReactionRun failed: {self._failure}")
             elif self._global_step >= total_steps:
                 self._complete()
             else:

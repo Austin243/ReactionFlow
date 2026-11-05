@@ -69,8 +69,8 @@ could not be mapped onto the relaxed endpoints, because a bond stayed between th
 the change disappeared, or relaxation changed bonds elsewhere in the cell. `stepwise` means the
 event was refined in steps, each with its own outcome. `failed` means an unexpected error. The
 saddle check's four verdicts are described in [pathway
-refinement](pathway-refinement.md#saddle-check). In every case the result is saved, the
-checkpoint is restored, and MD continues.
+refinement](pathway-refinement.md#saddle-check). In every case the result is saved. If MD has not
+reached `total_steps`, the checkpoint is restored and MD continues.
 A trajectory itself stops only if it cannot save its own state.
 
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
