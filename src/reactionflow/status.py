@@ -17,6 +17,7 @@ from .campaign import CampaignConfig
 from .candidates import ReactionCandidate, ReactionClasses, _reaction_graph
 from .detection import _symbols_by_id
 from .pathway import CONVERGED_STATUSES
+from .run import frame_ranges, missing_frames
 from .store import _read_bundle
 
 # Converged bands, including those refined before the saddle check, which have no verdict.
@@ -64,10 +65,13 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     """Fill one trajectory's status row and return its classes.
 
     Each class is (candidate, events, results, occurrence ID of the candidate). Each step of an
-    event refined in steps is one more, an event of its own with the step's bonds.
+    event refined in steps is one more, an event of its own with the step's bonds. The candidate is
+    None when no bundle of the class can be read, as in a copy of a run's results alone, so that its
+    counts and barriers still show.
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
-    step from state.json in place.
+    step from state.json in place. Files that cannot be read are named in ``row["unreadable"]``,
+    and each costs only what depends on it.
     """
 
     state = _read_json(root / "state.json")
@@ -76,35 +80,77 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     if state["phase"] == "failed" and failure:
         row["error"] = f"{failure.get('type')}: {failure.get('message')}"
     records = _occurrences(root)
+    unreadable: Counter[str] = Counter()
+    lost = missing_frames(root, state["global_frame"])
+    if lost:
+        row["missing_frames"] = lost
     members: dict[str, list[sqlite3.Row]] = {}
     for record in records:
         members.setdefault(record["class_id"], []).append(record)
     classes = []
     steps = []
     pathways: Counter[str] = Counter()
+
+    read: dict[str, ReactionCandidate | None] = {}
+
+    def bundle(occurrence: sqlite3.Row) -> ReactionCandidate | None:
+        name = occurrence["bundle"]
+        if name not in read:
+            try:
+                read[name] = _read_bundle(root / name)[1]
+            except Exception:
+                read[name] = None
+                unreadable["candidate bundle"] += 1
+        return read[name]
+
+    def result_file(path: Path) -> dict[str, Any] | None:
+        try:
+            result = _read_json(path)
+            pathways[result["status"]] += 1
+            return result
+        except Exception:
+            unreadable["result file"] += 1
+            return None
+
     for occurrences in members.values():
-        _, candidate = _read_bundle(root / occurrences[0]["bundle"])
+        # Any occurrence can stand for its class.
+        candidate, example = None, occurrences[0]["occurrence_id"]
+        for occurrence in occurrences:
+            candidate = bundle(occurrence)
+            if candidate is not None:
+                example = occurrence["occurrence_id"]
+                break
         results = []
         for occurrence in occurrences:
             path = root / "pathways" / occurrence["occurrence_id"] / "result.json"
-            if path.is_file():
-                result = _read_json(path)
-                results.append(result)
-                pathways[result["status"]] += 1
-                if result.get("steps"):
-                    _, event = _read_bundle(root / occurrence["bundle"])
-                    for step in result["steps"]:
-                        step_path = path.parent / f"step-{step['step']}" / "result.json"
-                        step_result = _read_json(step_path)
-                        bonds = {
+            result = result_file(path) if path.is_file() else None
+            if result is None:
+                continue
+            results.append(result)
+            if result.get("steps"):
+                event = bundle(occurrence)
+                for step in result["steps"]:
+                    step_path = path.parent / f"step-{step['step']}" / "result.json"
+                    step_result = result_file(step_path)
+                    if step_result is None:
+                        continue
+                    part = event and replace(
+                        event,
+                        **{
                             key: frozenset(map(tuple, step_result[key]))
                             for key in ("reactant_bonds", "product_bonds")
-                        }
-                        example = occurrence["occurrence_id"]
-                        steps.append((replace(event, **bonds), 1, [step_result], example))
-                        pathways[step_result["status"]] += 1
-        classes.append((candidate, len(occurrences), results, occurrences[0]["occurrence_id"]))
+                        },
+                    )
+                    steps.append((part, 1, [step_result], occurrence["occurrence_id"]))
+        classes.append((candidate, len(occurrences), results, example))
     row.update(events=len(records), pathways=dict(pathways))
+    notes = [f"{count} {what}{'' if count == 1 else 's'}" for what, count in unreadable.items()]
+    if not (root / "reactions.sqlite3").is_file():
+        bundles = root.glob("candidates/[!.]*/candidate.json")
+        if count := sum(1 for _ in bundles):
+            notes.append(f"no reactions.sqlite3 to count {count} candidates")
+    if notes:
+        row["unreadable"] = notes
     return classes + steps
 
 
@@ -149,14 +195,27 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                 row["error"] = _read_json(root / "last-error.json").get("error")
             except Exception as error:
                 row["error"] = f"unreadable last-error.json: {type(error).__name__}"
+        notes = [row["error"]] if row["error"] else []
+        if "missing_frames" in row:
+            lost = frame_ranges(row["missing_frames"])
+            notes.insert(0, f"saved frames {lost} missing or unreadable")
+        if "unreadable" in row:
+            notes.insert(0, "unreadable: " + ", ".join(row["unreadable"]))
+        row["error"] = "; ".join(notes) or None
         merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses(radius))
         for candidate, events, results, occurrence_id in classes:
-            name = merged.find(candidate)
+            # A class with no readable candidate has no graph to merge by, so it keeps its own row.
+            name = None if candidate is None else merged.find(candidate)
             if name is None:
                 name = str(len(entries))
-                merged.add(name, candidate)
+                if candidate is not None:
+                    merged.add(name, candidate)
                 entries[name] = {
-                    "reaction": _describe(candidate, radius),
+                    "reaction": (
+                        f"class of {occurrence_id} (no readable candidate)"
+                        if candidate is None
+                        else _describe(candidate, radius)
+                    ),
                     "example": {"trajectory": spec.id, "occurrence_id": occurrence_id},
                     "model": model,
                     "pressure_GPa": spec.pressure_GPa,
@@ -251,8 +310,16 @@ def format_status(report: dict[str, Any]) -> str:
         + ", ".join(f"{count} {phase}" for phase, count in sorted(phases.items())),
         "",
     ]
+    incomplete = sum("unreadable: " in (row["error"] or "") for row in report["trajectories"])
+    if incomplete:
+        lines += [
+            f"Incomplete: files of {incomplete} "
+            f"{'trajectory' if incomplete == 1 else 'trajectories'} cannot be read, so what "
+            "follows leaves them out; the error column and --json say which.",
+            "",
+        ]
     if not report["reactions"]:
-        lines.append("No reactions recorded yet.")
+        lines.append("No reactions could be read." if incomplete else "No reactions recorded yet.")
         return "\n".join(lines)
     reaction_rows = []
     for entry in report["reactions"]:

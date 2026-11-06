@@ -249,8 +249,11 @@ imports the MLIP.
 The first table has one row per trajectory: model profile, pressure, phase, step, detected events,
 converged pathways out of those refined, and the latest error. That error is the permanent
 failure for a `failed` trajectory, and otherwise the contents of `last-error.json`. Trajectories
-without output are listed as `not started`. A trajectory whose files cannot be read is reported
-with that error while the rest of the report still prints.
+without output are listed as `not started`. A file that cannot be read costs only what depends on it:
+the error column counts what was left out, `--json` lists it as `unreadable`, and a line under the
+table says the report is incomplete. A class whose candidate bundles cannot all be read, as in a copy
+of a run's results alone, keeps its counts and barriers in a row of its own, because classes merge
+only by their graphs. Saved frames that are gone appear in the error column and as `missing_frames`.
 Pathway counts include every refined occurrence. An event refined in steps counts each step as a
 refined pathway, and only its steps can converge.
 
