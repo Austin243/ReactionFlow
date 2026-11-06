@@ -25,7 +25,7 @@ from .detection import _is_count
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .pathway import check_saddle
-from .run import ReactionRun, ReactionRunConfig, RunSummary
+from .run import ReactionRun, ReactionRunConfig, RunSummary, missing_frames
 from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
 from .wizard import create_campaign
@@ -362,6 +362,9 @@ def _run_and_record(campaign: CampaignConfig, arguments: argparse.Namespace) -> 
             finally:
                 temporary.unlink(missing_ok=True)
         raise
+    lost = missing_frames(campaign.output_root / trajectory_id, summary.global_frame)
+    if lost:
+        payload["missing_frames"] = lost
     print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
 
 
