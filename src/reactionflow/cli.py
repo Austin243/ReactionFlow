@@ -20,7 +20,7 @@ from uuid import uuid4
 from ase import Atoms
 from ase.constraints import FixAtoms
 from ase.io import read
-from ase.io.formats import filetype
+from ase.io.formats import filetype, open_with_compression
 
 from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
@@ -348,7 +348,7 @@ def _file_warnings(path: Path, first: Atoms) -> list[str]:
     except Exception:  # the frames were read, so this only costs the note below
         dump = False
     if dump:
-        with path.open(encoding="utf-8", errors="replace") as stream:
+        with open_with_compression(str(path)) as stream:
             columns = next(
                 (line.split()[2:] for line in stream if line.startswith("ITEM: ATOMS")), []
             )
