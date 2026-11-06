@@ -57,8 +57,9 @@ directory.
   first frame.
 - `candidates.csv` has one row per candidate: the reactant, product and observed frames and the
   times of the first two, resolved or not, whether it was still changing at the end, its number of
-  atoms, its bond changes, its local class and label as `reactionflow status` names them (radius 2),
-  and the run's occurrence ID when the run recorded the same candidate.
+  atoms, its bond changes, its local class as `reactionflow status` merges them (radius 2), the
+  label of that class in this row's direction, and the run's occurrence ID when the run recorded the
+  same candidate.
 - `species.csv` counts each formula among the bonded components every `--every` frames, with the
   number of starting molecules in each component, which is the chain length in a polymer.
 - `summary.json` holds the settings and the counts, which are also printed:

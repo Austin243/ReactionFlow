@@ -180,7 +180,7 @@ def scan_frames(
     detector = BondChangeDetector(detector_config)
     tracker = ReactionTracker(stability_frames=stability_frames, region_radius=region_radius)
     classes = ReactionClasses(radius=2)
-    labels: list[str] = []
+    class_count = 0
     times: dict[int, float | None] = {}
     symbols: dict[int, str] = {}
     molecule = nx.utils.UnionFind()
@@ -193,11 +193,11 @@ def scan_frames(
     read_to = -1
 
     def add(candidate: ReactionCandidate, *, at_end: bool) -> None:
-        nonlocal net_changes
+        nonlocal net_changes, class_count
         name = classes.find(candidate)
         if name is None:
-            labels.append(_describe(candidate, 2))
-            name = str(len(labels))
+            class_count += 1
+            name = str(class_count)
             classes.add(name, candidate)
         changed = candidate.reactant_bonds ^ candidate.product_bonds
         if candidate.resolved:
@@ -215,7 +215,8 @@ def scan_frames(
                 "atoms": len(candidate.atom_ids),
                 "changes": _changes(candidate, symbols),
                 "class": int(name),
-                "class_label": labels[int(name) - 1],
+                # A class holds both directions, so the label is this row's own.
+                "class_label": _describe(candidate, 2),
                 "occurrence_id": (occurrences or {}).get((window, frozenset(changed)), ""),
             }
         )
