@@ -189,6 +189,7 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
     known: dict[tuple[Any, ...], ReactionClasses] = {}
     entries: dict[str, dict[str, Any]] = {}
     labelled: dict[str, Any] = {}  # the graph of the direction each class is named for
+    no_band: Counter[tuple[str, str]] = Counter()
     for index, spec in enumerate(campaign.trajectories):
         model = campaign.adapter_profile_for(index)
         row: dict[str, Any] = {
@@ -259,6 +260,8 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
             entry["events"] += events
             for result, event in zip(results, refined, strict=True):
                 entry["pathways"][result["status"]] += 1
+                if result["status"] not in _CONVERGED | {"stepwise", "saddle_validated"}:
+                    no_band[result["status"], result.get("message") or "no message"] += 1
                 validation = result.get("frequency_validation")
                 if validation:
                     entry["frequency"][validation["status"]] += 1
@@ -288,12 +291,18 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
             item["reaction"],
         ),
     )
-    return {
+    report = {
         "campaign": str(campaign.source),
         "radius": radius,
         "trajectories": trajectories,
         "reactions": reactions,
     }
+    if no_band:
+        report["no_band"] = [
+            {"status": status, "message": message, "events": count}
+            for (status, message), count in no_band.most_common()
+        ]
+    return report
 
 
 def _table(header: list[str], rows: list[list[str]]) -> str:
@@ -425,6 +434,14 @@ def format_status(report: dict[str, Any]) -> str:
             f"{verdicts['time_limit']} refinement{'' if verdicts['time_limit'] == 1 else 's'}"
             " stopped at max_hours_per_barrier, with no barrier."
         )
+    ended = [item for item in report.get("no_band", []) if item["status"] != "time_limit"]
+    if ended:
+        lines.append(
+            f"Ended with no converged band: {sum(item['events'] for item in ended)} events."
+        )
+        lines += [f"  {i['events']} {i['status']}: {i['message'][:120]}" for i in ended[:5]]
+        if len(ended) > 5:
+            lines.append(f"  and {len(ended) - 5} other reasons, listed in --json as no_band.")
     radius = report["radius"]
     lines.append(
         f"A class is a bond change with the atoms within {radius} bond{'' if radius == 1 else 's'}"

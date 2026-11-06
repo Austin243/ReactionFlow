@@ -277,6 +277,8 @@ other. Each step of an event refined in steps is an event of its own local class
 saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
 totals the saddle check's verdicts across the campaign (validated, no saddle, rejected, unchecked)
 and counts separately the bands that converged before the check existed, which carry no verdict.
+Events that ended with no converged band are counted by status and message, up to five in the text
+and all of them as `no_band` in `--json`.
 NVT barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,
 including every barrier value, the counts of each pathway, frequency and connectivity status,
 trajectory ID, and one example occurrence per class, for scripted analysis.
