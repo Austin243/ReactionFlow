@@ -9,7 +9,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -131,13 +131,34 @@ PINNED = (
 )
 
 
+def _last_error(root: Path) -> dict[str, str]:
+    """The error that ended the last run, as a report entry, or nothing."""
+
+    try:
+        return {"last_error": json.loads((root / "last-error.json").read_text())["error"]}
+    except FileNotFoundError:
+        return {}
+    except Exception as error:
+        return {"last_error": f"unreadable last-error.json: {type(error).__name__}"}
+
+
 def search_status(campaign: SearchCampaign) -> dict[str, Any]:
     """Read progress and records without creating directories or loading resources."""
 
     root = campaign.output_root
-    report: dict[str, Any] = {"mode": "eon", "output_root": str(root)}
+    report: dict[str, Any] = {"mode": "eon", "output_root": str(root), **_last_error(root)}
     if not (root / "search-state.json").exists():
-        return report | {"status": "not_started", "steps": 0, "time_s": 0.0, "attempts": 0}
+        records = sum(
+            1
+            for kind in ("states", "processes", "attempts", "steps")
+            for _ in (root / kind).glob("*")
+        )
+        status = (
+            {"status": "state_missing", "records": records}
+            if records
+            else {"status": "not_started"}
+        )
+        return report | status | {"steps": 0, "time_s": 0.0, "attempts": 0}
     state = read_search_state(root)
     config = AKMCConfig(**json.loads((root / "search-contract.json").read_text())["akmc"])
     store = SearchStore(root)
@@ -149,6 +170,11 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
     table = [{**processes[pid], "id": pid} for pid in counters["processes"]]
     kept = {process["id"] for process in kept_processes(table, config)}
     saddles = [item["minima"] for item in attempts if "minima" in item]
+    reasons = Counter(
+        str(item.get("message") or "no message") for item in attempts if item["status"] == "failed"
+    )
+    if reasons:
+        report["failure_reasons"] = dict(reasons.most_common())
     return report | {
         "status": "stopped" if state["stop_reason"] else "incomplete",
         "stop_reason": state["stop_reason"],
@@ -197,8 +223,12 @@ def search_status(campaign: SearchCampaign) -> dict[str, Any]:
 
 
 def _format_status(report: dict[str, Any]) -> str:
+    error = [f"Last error: {report['last_error']}"] if "last_error" in report else []
     if report["status"] == "not_started":
-        return "EON AKMC: not started"
+        return "\n".join(["EON AKMC: not started", *error])
+    if report["status"] == "state_missing":
+        line = f"EON AKMC: search-state.json is missing, with {report['records']} records present"
+        return "\n".join([line, *error])
     chemical = report["chemical_steps"]
     steps = report["steps"] if chemical is None else f"{chemical} chemical of {report['steps']}"
     lines = [
@@ -211,6 +241,12 @@ def _format_status(report: dict[str, Any]) -> str:
         f"States: {report['states']}; processes: {report['processes']}; searches: "
         f"{report['attempts']} {json.dumps(report['attempt_statuses'], sort_keys=True)}",
     ]
+    lines += error
+    reasons = report.get("failure_reasons", {})
+    if reasons:
+        shown = [f"{count} {reason}" for reason, count in list(reasons.items())[:3]]
+        more = f"; and {len(reasons) - 3} other reasons" if len(reasons) > 3 else ""
+        lines.append(f"Failed searches: {'; '.join(shown)}{more}")
     if report["failed_with_saddle"]:
         lines.append(
             f"Failed searches that kept a saddle: {report['failed_with_saddle']}, of which "
@@ -252,49 +288,49 @@ def _eon_output(path: Path | None) -> Iterator[None]:
         os.close(saved)
 
 
-def handle_command(arguments: argparse.Namespace) -> int:
-    campaign = SearchCampaign.load(arguments.campaign)
-    command = arguments.command
-    if command == "prepare":
-        if arguments.install:
-            extra = (f"pyeonclient[ase]=={EON_VERSION}",)
-            return install_and_prepare(campaign, index=arguments.index, extra_packages=extra)
-        models = prepare_campaign(campaign, index=arguments.index)
-        print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
-        return 0
-    if command == "status":
-        report = search_status(campaign)
-        if arguments.json:
-            print(json.dumps(report, indent=2, sort_keys=True))
-        else:
-            print(_format_status(report))
-        return 0
-    if command == "run":
-        from ..cli import resolve_task_index, visible_gpu
+@contextmanager
+def _keeping_last_error(root: Path) -> Iterator[None]:
+    """Clear the last run's error, and keep this run's for `status` if it ends in one."""
 
-        resolve_task_index(1, arguments.index)
-        if campaign.require_gpu:
-            visible_gpu()
-        if arguments.download:
-            prepare_adapter(campaign.adapter)
+    path = root / "last-error.json"
+    with suppress(OSError):
+        path.unlink()
+    try:
+        yield
+    except Exception as error:
+        with suppress(OSError):
+            root.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"error": f"{type(error).__name__}: {error}"}) + "\n")
+        raise
+
+
+def _validate(campaign: SearchCampaign) -> None:
     atoms = campaign.starting_atoms()
-    warnings = [PINNED] if free_rotation(atoms) == "pinned" else []
-    if command == "validate":
-        report = {
-            "campaign": str(campaign.source),
-            "mode": "eon",
-            "atoms": len(atoms),
-            "output_root": str(campaign.output_root),
-            "tasks": 1,
-            "kmc_steps": campaign.akmc.steps,
-            "temperature_K": campaign.akmc.temperature_K,
-            "adapter_factory": campaign.adapter.factory,
-            "require_gpu": campaign.require_gpu,
-            "rigid_rotation": campaign.eon.rotation_for(atoms),
-            "warnings": warnings,
-        }
-        print(json.dumps(report, sort_keys=True))
-        return 0
+    report = {
+        "campaign": str(campaign.source),
+        "mode": "eon",
+        "atoms": len(atoms),
+        "output_root": str(campaign.output_root),
+        "tasks": 1,
+        "kmc_steps": campaign.akmc.steps,
+        "temperature_K": campaign.akmc.temperature_K,
+        "adapter_factory": campaign.adapter.factory,
+        "require_gpu": campaign.require_gpu,
+        "rigid_rotation": campaign.eon.rotation_for(atoms),
+        "warnings": [PINNED] if free_rotation(atoms) == "pinned" else [],
+    }
+    print(json.dumps(report, sort_keys=True))
+
+
+def _run(campaign: SearchCampaign, arguments: argparse.Namespace) -> None:
+    from ..cli import resolve_task_index, visible_gpu
+
+    resolve_task_index(1, arguments.index)
+    if campaign.require_gpu:
+        visible_gpu()
+    if arguments.download:
+        prepare_adapter(campaign.adapter)
+    atoms = campaign.starting_atoms()
     adapter = load_mlip_adapter(campaign.adapter, campaign.trajectories[0])
     preflight = getattr(adapter, "preflight", None)
     if callable(preflight):
@@ -305,8 +341,8 @@ def handle_command(arguments: argparse.Namespace) -> int:
     lease = getattr(adapter, "_lease", None)
     if lease is None:
         raise TypeError("EON needs a built-in model adapter or reactionflow.adapters.ase")
-    for warning in warnings:
-        print(f"warning: {warning}", file=sys.stderr)
+    if free_rotation(atoms) == "pinned":
+        print(f"warning: {PINNED}", file=sys.stderr)
     log = campaign.output_root / "eon.log" if campaign.eon.log == "file" else None
     # One model load gives the calculator and the same identity an MD restart records.
     with lease() as (calculator, identity), _eon_output(log):
@@ -320,4 +356,26 @@ def handle_command(arguments: argparse.Namespace) -> int:
             campaign.output_root, atoms, backend=backend, contract=contract, config=campaign.akmc
         )
     print(json.dumps(search_status(campaign), sort_keys=True))
+
+
+def handle_command(arguments: argparse.Namespace) -> int:
+    campaign = SearchCampaign.load(arguments.campaign)
+    command = arguments.command
+    if command == "prepare":
+        if arguments.install:
+            extra = (f"pyeonclient[ase]=={EON_VERSION}",)
+            return install_and_prepare(campaign, index=arguments.index, extra_packages=extra)
+        models = prepare_campaign(campaign, index=arguments.index)
+        print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
+    elif command == "status":
+        report = search_status(campaign)
+        if arguments.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(_format_status(report))
+    elif command == "validate":
+        _validate(campaign)
+    else:
+        with _keeping_last_error(campaign.output_root):
+            _run(campaign, arguments)
     return 0

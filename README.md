@@ -66,12 +66,15 @@ wait in a queue until then ([when barriers are refined](docs/campaigns.md#when-b
 Two more commands work on finished output. `reactionflow scan` replays the saved frames through
 bond detection, with the run's settings or new ones, and tabulates every bond change and species
 ([offline scan](docs/offline-scan.md)). `reactionflow check campaign.json band.traj` tests whether
-the highest image of any band, from ReactionFlow or another code, is a saddle between its ends.
+the highest image of any band, from ReactionFlow or another code, is a saddle between its ends. It
+reports the band's residual forces and does not require them to be small, so a barrier from another
+code's band means what it says only for relaxed ends and a stationary highest image.
 
 A number for `pressure_GPa` runs NPT, and the pathway is then refined with variable-cell SSNEB and
 gives an enthalpy barrier. `null` runs NVT with ordinary NEB. Each trajectory writes its frames,
 every detected occurrence, every refinement with its band and saddle check, and a
-`reactions.sqlite3` index under `output_root/<trajectory-id>/`. Nothing is overwritten, and a
+`reactions.sqlite3` index under `output_root/<trajectory-id>/`. Published events and refinements are
+never overwritten, though a rerun of `scan` or `check` replaces its own tables or verdict, and a
 resubmitted job continues each unfinished trajectory from its last checkpoint.
 
 Refining one event stops after `max_hours_per_barrier` hours, 4 by default, and records

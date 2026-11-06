@@ -80,8 +80,9 @@ class ScanResult:
 def run_frames(root: str | Path, *, timestep_fs: float | None = None) -> Iterator[Frame]:
     """Yield each saved observation of a ``ReactionRun`` once, in order.
 
-    A new trajectory generation starts with the frame it resumed from, which is skipped. Reading
-    stops at the first frame that cannot be read, such as the one a running job is writing.
+    A new trajectory generation starts with the frame it resumed from, which is skipped. A segment
+    is read up to its first frame that cannot be read, such as the one a running job is writing, and
+    a segment that is missing, empty or cut is passed over, so that the later ones still count.
     """
 
     segments = sorted(
@@ -92,13 +93,17 @@ def run_frames(root: str | Path, *, timestep_fs: float | None = None) -> Iterato
     for segment in segments:
         path = segment / "trajectory.traj"
         if not path.is_file() or path.stat().st_size == 0:
-            return
-        with Trajectory(path) as trajectory:
+            continue
+        try:
+            trajectory = Trajectory(path)
+        except Exception:  # a cut that took out the offset table
+            continue
+        with trajectory:
             for index in range(len(trajectory)):
                 try:
                     atoms = trajectory[index]
                 except Exception:
-                    return
+                    break
                 frame = int(atoms.info["reactionflow_global_frame"])
                 if frame <= last:
                     continue
@@ -158,6 +163,7 @@ def scan_frames(
     region_radius: int | None = 2,
     species_every: int = 10,
     occurrences: Mapping[OccurrenceKey, str] | None = None,
+    last_frame: int | None = None,
 ) -> ScanResult:
     """Replay ordered frames through a new detector and tracker and tabulate what they find.
 
@@ -165,6 +171,8 @@ def scan_frames(
     numbers, as ``run_frames`` and ``file_frames`` do. Molecules are the bonded components of the
     first frame, and candidates fall into the local classes ``reactionflow status`` reports.
     ``occurrences``, from ``recorded_occurrences``, names the candidates a run recorded itself.
+    ``last_frame``, a run's last checkpointed observation, makes the summary list the frames from 0
+    to it that were not read, as ``missing_frames``. Timing across such a gap is not known.
     """
 
     if species_every < 1:
@@ -172,7 +180,7 @@ def scan_frames(
     detector = BondChangeDetector(detector_config)
     tracker = ReactionTracker(stability_frames=stability_frames, region_radius=region_radius)
     classes = ReactionClasses(radius=2)
-    labels: list[str] = []
+    class_count = 0
     times: dict[int, float | None] = {}
     symbols: dict[int, str] = {}
     molecule = nx.utils.UnionFind()
@@ -181,13 +189,15 @@ def scan_frames(
     species: list[dict[str, Any]] = []
     waiting: frozenset[tuple[Bond, str]] = frozenset()
     reverted = net_changes = 0
+    missing: list[list[int]] = []
+    read_to = -1
 
     def add(candidate: ReactionCandidate, *, at_end: bool) -> None:
-        nonlocal net_changes
+        nonlocal net_changes, class_count
         name = classes.find(candidate)
         if name is None:
-            labels.append(_describe(candidate, 2))
-            name = str(len(labels))
+            class_count += 1
+            name = str(class_count)
             classes.add(name, candidate)
         changed = candidate.reactant_bonds ^ candidate.product_bonds
         if candidate.resolved:
@@ -205,12 +215,16 @@ def scan_frames(
                 "atoms": len(candidate.atom_ids),
                 "changes": _changes(candidate, symbols),
                 "class": int(name),
-                "class_label": labels[int(name) - 1],
+                # A class holds both directions, so the label is this row's own.
+                "class_label": _describe(candidate, 2),
                 "occurrence_id": (occurrences or {}).get((window, frozenset(changed)), ""),
             }
         )
 
     for frame, time_ps, atoms in frames:
+        if last_frame is not None and frame > read_to + 1:
+            missing.append([read_to + 1, frame - 1])
+        read_to = frame
         times[frame] = time_ps
         events = detector.process(atoms, frame=frame)
         if not symbols:
@@ -263,6 +277,8 @@ def scan_frames(
             )
     for candidate in tracker.finish():
         add(candidate, at_end=True)
+    if last_frame and read_to < last_frame:
+        missing.append([read_to + 1, last_frame])
 
     resolved = sum(row["resolved"] for row in candidates)
     summary: dict[str, Any] = {
@@ -287,6 +303,8 @@ def scan_frames(
     if occurrences is not None:
         summary["recorded_by_run"] = len(occurrences)
         summary["matching_recorded"] = sum(bool(row["occurrence_id"]) for row in candidates)
+    if missing:
+        summary["missing_frames"] = missing
     return ScanResult(bond_changes, candidates, species, summary)
 
 

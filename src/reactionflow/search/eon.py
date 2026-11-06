@@ -15,7 +15,7 @@ import copy
 import math
 import tempfile
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from importlib import import_module
 from importlib.metadata import version
 from numbers import Integral, Real
@@ -148,6 +148,11 @@ class EONSettings:
                 raise ValueError("eon.displace_centers holds element symbols or atom indices")
             if isinstance(center, Integral) and center < 0:
                 raise ValueError("eon.displace_centers atom indices must be non-negative")
+        if centers and self.displace != "local" and self.guide is None:
+            raise ValueError(
+                "eon.displace_centers applies only to a local push; "
+                "set eon.displace to 'local', or leave the centers out"
+            )
         object.__setattr__(self, "displace_centers", tuple(centers))
         if type(self.equivalent_atoms) is not bool:
             raise ValueError("eon.equivalent_atoms must be true or false")
@@ -347,14 +352,18 @@ class _PreservingCalculator(Calculator):
 
     implemented_properties = ("energy", "forces")
 
-    def __init__(self, calculator: Calculator, template: Atoms):
+    def __init__(self, calculator: Calculator, template: Atoms, failures: list[BaseException]):
         super().__init__()
         self.calculator = calculator
         self.template = template.copy()
         self.template.info = copy.deepcopy(template.info)
+        self.failures = failures
 
     def calculate(self, atoms=None, properties=None, system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
+        for failure in self.failures:
+            if not isinstance(failure, Exception):  # Ctrl-C: end this search without the model
+                raise failure
         if not np.array_equal(atoms.numbers, self.template.numbers):
             raise ValueError("EON changed atom order or species")
         # EON passes a zero force-evaluation cell for isolated molecules while
@@ -365,13 +374,19 @@ class _PreservingCalculator(Calculator):
             raise ValueError("EON changed the fixed cell")
         physical = _moved(self.template, atoms.positions)
         physical.calc = self.calculator
-        energy = physical.get_potential_energy()
-        # EON applies the fixed-coordinate mask itself.
-        forces = physical.get_forces(apply_constraint=False)
-        if not np.isfinite(energy) or forces.shape != physical.positions.shape:
-            raise ValueError("calculator returned invalid energy or force shape")
-        if not np.isfinite(forces).all():
-            raise ValueError("calculator returned nonfinite forces")
+        try:
+            energy = physical.get_potential_energy()
+            # EON applies the fixed-coordinate mask itself.
+            forces = physical.get_forces(apply_constraint=False)
+            if not np.isfinite(energy) or forces.shape != physical.positions.shape:
+                raise ValueError("calculator returned invalid energy or force shape")
+            if not np.isfinite(forces).all():
+                raise ValueError("calculator returned nonfinite forces")
+        except BaseException as error:
+            # EON's own code can take this for an ordinary failed stage and carry on, so it is
+            # noted here for the search to look at afterwards. See EONBackend.search.
+            self.failures.append(error)
+            raise
         self.results = {"energy": energy, "forces": forces}
 
 
@@ -410,6 +425,7 @@ class EONBackend:
         self.calculator = calculator
         self.settings = settings
         self.temperature_K = float(temperature_K)
+        self._failures: list[BaseException] = []
         self._eon = _load_eon()
         # Comparisons never evaluate the potential; they need only the comparison settings.
         self._comparison = {
@@ -469,7 +485,7 @@ class EONBackend:
         return parameters
 
     def _matter(self, atoms: Atoms, fixed: np.ndarray, parameters):
-        bridge = _PreservingCalculator(self.calculator, atoms)
+        bridge = _PreservingCalculator(self.calculator, atoms, self._failures)
         potential = self._eon.potential_from_ase(bridge)
         geometry = atoms.copy()
         geometry.set_constraint()
@@ -513,9 +529,54 @@ class EONBackend:
             raise ValueError("starting structure did not relax to a minimum")
         return _moved(source, relaxed.positions), float(relaxed.potential_energy)
 
-    def search(self, atoms: Atoms, *, seed: int) -> ProcessResult:
-        """Run one process search from a relaxed state; failures are results, not errors."""
+    def _raise_interrupt(self) -> None:
+        """Ctrl-C inside a model call, which EON's own code can take for a failed stage."""
 
+        for failure in self._failures:
+            if not isinstance(failure, Exception):
+                raise failure
+
+    def _check_model(self, atoms: Atoms) -> None:
+        """After the model failed in a search, stop the run if it fails on the search's start too.
+
+        The start is a structure it has evaluated before, so this tells a model that has stopped
+        working from a geometry it cannot handle. A failing search would otherwise be recorded, and
+        the next one started, for as long as the job lasts.
+        """
+
+        physical = canonical_copy(atoms)
+        physical.calc = self.calculator
+        try:
+            energy = physical.get_potential_energy()
+            forces = physical.get_forces(apply_constraint=False)
+            if not (np.isfinite(energy) and np.isfinite(forces).all()):
+                raise ValueError("calculator returned nonfinite energy or forces")
+        except Exception as error:
+            raise RuntimeError(
+                "the model fails on this search's starting structure, which it evaluated before, "
+                "so the search was not recorded and a rerun repeats it: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def search(self, atoms: Atoms, *, seed: int) -> ProcessResult:
+        """Run one process search from a relaxed state.
+
+        Failures are results, not errors, unless the model itself has stopped working or the search
+        was interrupted. Then this raises, and the search is repeated with its seed on a rerun.
+        """
+
+        self._failures.clear()
+        result = self._search(atoms, seed)
+        self._raise_interrupt()
+        if self._failures:
+            self._check_model(atoms)
+            # EON may have reported this as an ordinary ending, such as too many iterations.
+            raised = f"{type(self._failures[0]).__name__}: {self._failures[0]}"
+            if raised not in result.message:
+                result = replace(result, message=f"{result.message} (the model raised {raised})")
+        return result
+
+    def _search(self, atoms: Atoms, seed: int) -> ProcessResult:
         metadata: dict[str, Any] = {"seed": int(seed)}
         try:
             source = canonical_copy(atoms)
@@ -653,6 +714,7 @@ class EONBackend:
             with tempfile.TemporaryDirectory() as work, contextlib.chdir(work):
                 values = tuple(float(v) for v in self._eon.get_prefactors(parameters, *matters))
         except Exception:
+            self._raise_interrupt()
             return None
         low, high = parameters.prefactor_min_value, parameters.prefactor_max_value
         return values if all(low <= value <= high for value in values) else None

@@ -313,7 +313,9 @@ def test_cli_validate_has_no_campaign_size_ceiling(tmp_path, capsys) -> None:
     path = _campaign(tmp_path, count=130)
 
     assert main(["validate", str(path)]) == 0
-    assert json.loads(capsys.readouterr().out) == {
+    report = json.loads(capsys.readouterr().out)
+    assert len(report.pop("warnings")) == 2  # this toy has no cell at its pressure, and few steps
+    assert report == {
         "adapter_profile_counts": {"test": 130},
         "structure_atoms": {"structure.extxyz": 1},
         "campaign": str(path),

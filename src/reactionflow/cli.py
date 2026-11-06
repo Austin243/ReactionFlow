@@ -8,15 +8,19 @@ import json
 import math
 import os
 import socket
+import sys
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, replace
 from numbers import Integral
 from pathlib import Path
 from uuid import uuid4
 
+from ase import Atoms
+from ase.constraints import FixAtoms
 from ase.io import read
+from ase.io.formats import filetype, open_with_compression
 
 from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
@@ -24,8 +28,8 @@ from .campaign import CampaignConfig
 from .detection import _is_count
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
-from .pathway import check_saddle
-from .run import ReactionRun, ReactionRunConfig, RunSummary
+from .pathway import check_saddle, largest_forces
+from .run import ReactionRun, ReactionRunConfig, RunSummary, frame_ranges, missing_frames
 from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
 from .wizard import create_campaign
@@ -137,6 +141,58 @@ def visible_gpu(environment: Mapping[str, str] | None = None) -> str:
     return devices[0]
 
 
+def _start_warnings(campaign: CampaignConfig, indices: Iterable[int]) -> list[str]:
+    """What these trajectories' settings will silently do to their results. None of this stops them.
+
+    Each structure is read once, since a large campaign can name one for every trajectory.
+    """
+
+    notes: dict[str, None] = {}
+    structures: dict[Path, tuple[Atoms, bool]] = {}
+    for index in indices:
+        trajectory = campaign.trajectory(index)
+        path = campaign.structure_for(index)
+        if path not in structures:
+            try:
+                several = len(read(path, index=slice(0, 2))) > 1
+            except Exception:  # a format that reads one image and takes no slice
+                several = False
+            structures[path] = read(path), several
+        atoms, several = structures[path]
+        name = os.path.relpath(path, campaign.source.parent)
+        if several:
+            notes[f"{name} holds several frames; a run starts from the last one"] = None
+        if atoms.has("momenta"):
+            notes[
+                f"{name} carries momenta, which set the starting velocities in place of "
+                "temperature_K; the thermostat then moves them toward it"
+            ] = None
+        # ASE's .con reader attaches a FixAtoms that fixes nothing.
+        if any(not isinstance(c, FixAtoms) or len(c.index) for c in atoms.constraints):
+            notes[
+                f"{name} has constraints, which hold in MD and are removed in refinement, so its "
+                "barriers are for a system with every atom free"
+            ] = None
+        if trajectory.pressure_GPa is not None and (
+            not atoms.pbc.all() or atoms.cell.rank < 3 or atoms.cell.handedness <= 0
+        ):
+            notes[
+                f"{name} has no fully periodic right-handed cell, which refinement at a pressure "
+                "needs, so every event would end unresolved, with no barrier"
+            ] = None
+        run = campaign.reaction_run
+        # MD also observes the end of a last, shorter interval.
+        observations = -(-trajectory.total_steps // run.observation_interval)
+        needed = run.detector.persistence_frames + run.candidate_stability_frames - 1
+        if observations < needed:
+            notes[
+                f"{trajectory.total_steps} steps at one observation per "
+                f"{run.observation_interval} make {observations}, and confirming a reaction takes "
+                f"at least {needed}, so such a run cannot report one"
+            ] = None
+    return list(notes)
+
+
 def run_selected_trajectory(
     campaign: CampaignConfig,
     *,
@@ -159,6 +215,8 @@ def run_selected_trajectory(
         run = ReactionRun.open(root)
         atoms = read(campaign.structure_for(index)) if run.phase == "new" else None
     else:
+        for note in _start_warnings(campaign, [index]):
+            print(f"warning: {note}", file=sys.stderr)
         atoms = read(campaign.structure_for(index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         preflight = getattr(adapter, "preflight", None)
@@ -197,13 +255,31 @@ def check_band(
             config=campaign.reaction_run.pathway,
             pressure_GPa=pressure_GPa,
         )
+        forces = largest_forces(outcome, calculator)
     result: dict[str, object] = {
         "band": str(band.resolve()),
         "trajectory_id": trajectory.id,
         "reactionflow_version": __version__,
         **outcome.to_dict(),
+        "largest_force_eV_A": forces,
     }
     del result["method"]  # how the band was made is not known here
+    # This reports and does not decide: the verdict rests on curvature and connectivity alone.
+    if outcome.barrier is not None and None not in forces.values():
+        options = campaign.reaction_run.pathway
+        concerns = []
+        if forces["highest"] > options.neb_fmax:
+            concerns.append(
+                f"the highest image carries a force of {forces['highest']:.3g} eV/Å, where a "
+                f"stationary point would carry about neb_fmax, {options.neb_fmax:g}"
+            )
+        if max(forces["first"], forces["last"]) > options.relax_fmax:
+            concerns.append(
+                f"the ends carry forces of {forces['first']:.3g} and {forces['last']:.3g} eV/Å, "
+                f"where relaxed ends would carry about relax_fmax, {options.relax_fmax:g}, and "
+                "the barrier is measured from the first image as given"
+            )
+        result["message"] = "; ".join(concerns)
     path = band.with_name(f"{band.stem}.check.json")
     temporary = path.with_name(f".{path.name}-{uuid4().hex}.tmp")
     try:
@@ -222,8 +298,8 @@ def _scan_settings(
     if arguments.radius == "none":
         radius = None
     elif arguments.radius is not None:
-        if not arguments.radius.isdigit():
-            parser.error("--radius takes a non-negative integer or none")
+        if not arguments.radius.isdigit() or int(arguments.radius) < 1:
+            parser.error("--radius takes a positive integer or none")
         radius = int(arguments.radius)
     persistence = arguments.persistence
     if persistence is None:
@@ -252,6 +328,46 @@ def _scan_settings(
         "region_radius": radius,
         "species_every": arguments.every,
     }
+
+
+def _file_warnings(path: Path, first: Atoms) -> list[str]:
+    """What a trajectory file's form does to a scan of it, read off its first frame, to keep with
+    the scan's summary. A file with no cell is often a gas-phase run, so that note is only printed.
+    """
+
+    if not first.pbc.any():
+        print(
+            f"warning: {path.name} has no periodic cell, so an atom wrapped at a box boundary "
+            "reads as a bond change. A gas-phase trajectory is fine; otherwise use a format "
+            "that keeps it",
+            file=sys.stderr,
+        )
+    notes = []
+    try:
+        dump = filetype(str(path)) == "lammps-dump-text"
+    except Exception:  # the frames were read, so this only costs the note below
+        dump = False
+    if dump:
+        with open_with_compression(str(path)) as stream:
+            columns = next(
+                (line.split()[2:] for line in stream if line.startswith("ITEM: ATOMS")), []
+            )
+        if "element" not in columns and "mass" not in columns:
+            notes.append(
+                f"{path.name} names atoms only by LAMMPS type, which ASE reads as atomic numbers "
+                f"(type 1 as H, type 2 as He), so these results are for "
+                f"{first.get_chemical_formula()}. Add an element or mass column to the dump"
+            )
+    return notes
+
+
+def _noting_first_frame(
+    path: Path, frames: Iterator[tuple[int, float | None, Atoms]], notes: list[str]
+) -> Iterator[tuple[int, float | None, Atoms]]:
+    for number, item in enumerate(frames):
+        if number == 0:
+            notes.extend(_file_warnings(path, item[2]))
+        yield item
 
 
 def _print_scan(path: Path, result: ScanResult, **identity: object) -> None:
@@ -362,6 +478,9 @@ def _run_and_record(campaign: CampaignConfig, arguments: argparse.Namespace) -> 
             finally:
                 temporary.unlink(missing_ok=True)
         raise
+    lost = missing_frames(campaign.output_root / trajectory_id, summary.global_frame)
+    if lost:
+        payload["missing_frames"] = lost
     print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
 
 
@@ -384,9 +503,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if frame_ps is not None and not (math.isfinite(frame_ps) and frame_ps > 0):
             parser.error("--frame-ps must be a positive number")
         settings = _scan_settings(parser, arguments, ReactionRunConfig())
-        result = scan_frames(file_frames(arguments.campaign, frame_ps=frame_ps), **settings)
         source = arguments.campaign
+        notes: list[str] = []
+        frames = _noting_first_frame(source, file_frames(source, frame_ps=frame_ps), notes)
+        result = scan_frames(frames, **settings)
+        if notes:
+            result.summary["warnings"] = notes
         _print_scan(result.write(arguments.out or source.with_name(f"{source.name}-scan")), result)
+        for note in notes:
+            print(f"warning: {note}", file=sys.stderr)
         return 0
     raw = json.loads(arguments.campaign.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -424,21 +549,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         for index in indices:
             trajectory = campaign.trajectory(index)
             root = campaign.output_root / trajectory.id
+            state_path = root / "state.json"
             if not (root / "segments").is_dir():
-                missing = {"scan": None, "trajectory_id": trajectory.id, "message": "not started"}
+                message = "no saved frames" if state_path.is_file() else "not started"
+                missing = {"scan": None, "trajectory_id": trajectory.id, "message": message}
                 print(json.dumps(missing))
                 continue
-            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
-            base = ReactionRunConfig.from_dict(state["config"])
+            # A copy of the frames alone still scans, under the campaign's settings.
+            state = (
+                json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
+            )
+            base = (
+                campaign.reaction_run
+                if state is None
+                else ReactionRunConfig.from_dict(state["config"])
+            )
             settings = _scan_settings(parser, arguments, base)
             result = scan_frames(
                 run_frames(root, timestep_fs=trajectory.timestep_fs),
                 occurrences=recorded_occurrences(root),
+                last_frame=0 if state is None else state["global_frame"],
                 **settings,
             )
             out = root / "scan" if arguments.out is None else arguments.out / trajectory.id
             _print_scan(result.write(out), result, trajectory_id=trajectory.id)
+            if "missing_frames" in result.summary:
+                print(
+                    f"warning: {trajectory.id} lacks saved frames "
+                    f"{frame_ranges(result.summary['missing_frames'])}, so these tables leave them "
+                    "out, and the timing of any change across a gap is not known",
+                    file=sys.stderr,
+                )
     elif arguments.command == "validate":
+        count = len(campaign.trajectories)
         payload = {
             "campaign": str(campaign.source),
             "trajectories": len(campaign.trajectories),
@@ -449,6 +592,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
+        if warnings := _start_warnings(campaign, range(count)):
+            payload["warnings"] = warnings
         print(json.dumps(payload, sort_keys=True))
     elif arguments.command == "check":
         if arguments.index is None and len(campaign.trajectories) > 1:
@@ -461,7 +606,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif not math.isfinite(pressure):
             parser.error("--pressure must be a finite number")
         path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
-        summary = {key: result[key] for key in ("status", "barrier_eV", "message")}
+        keys = ("status", "barrier_eV", "message", "largest_force_eV_A")
+        summary = {key: result[key] for key in keys}
         print(json.dumps({"check": str(path), **summary}, sort_keys=True))
     else:
         _run_and_record(campaign, arguments)

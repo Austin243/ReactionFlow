@@ -303,9 +303,10 @@ every pathway stage. For CPU runs, set `device: "cpu"` and campaign `require_gpu
 worker must see exactly one usable GPU.
 
 Each checkpoint records the model files, options, package versions, adapter/runtime source, and the
-Torch/platform/device environment. A changed model file or option refuses the resume. A changed
-version, source hash, or device continues with a warning and a line in
-`restart-environment.jsonl`, because the run is then no longer bitwise exact
+Torch/platform/device environment. A changed model file or option refuses the resume, and that
+includes the campaign's `device` option, since it is part of the trajectory's contract. A changed
+version or source hash, or other hardware behind the same option, continues with a warning and a line
+in `restart-environment.jsonl`, because the run is then no longer bitwise exact
 ([exact restart](exact-restart.md)). Keep the environment of an active campaign when you can.
 For Torch backends, deterministic algorithms are enabled and TF32 is disabled; unsupported nondeterministic
 operations fail. UMA uses fixed float32 inference without compilation or MoLE merging, so its
