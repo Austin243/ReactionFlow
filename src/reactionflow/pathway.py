@@ -18,7 +18,7 @@ from ase.mep import NEB
 from ase.optimize import FIRE
 
 from .candidates import ReactionCandidate
-from .detection import Bond, BondDetectorConfig, atom_ids, canonical_copy, classify_bonds
+from .detection import Bond, BondDetectorConfig, _is_count, atom_ids, canonical_copy, classify_bonds
 from .ssneb import SSNEB, cell_filter
 
 CalculatorProvider = Callable[[str], AbstractContextManager[Calculator]]
@@ -95,8 +95,7 @@ class PathwayConfig:
             or self.curvature_cutoff_eV_A2 < 0
         ):
             raise ValueError("cell-change limits and the curvature cutoff must be non-negative")
-        lookback = self.reactant_lookback
-        if isinstance(lookback, bool) or not isinstance(lookback, Integral) or lookback < 0:
+        if not _is_count(self.reactant_lookback, 0):
             raise ValueError("reactant_lookback must be a non-negative whole number")
         if not isinstance(self.split_steps, bool):
             raise ValueError("split_steps must be true or false")
@@ -227,21 +226,19 @@ def _standard_cell(atoms: Atoms) -> None:
 
 
 def _prepare_frames(
-    frames: Sequence[Atoms],
-    config: PathwayConfig,
-    *,
-    variable_cell: bool = False,
-) -> list[Atoms]:
+    frames: Mapping[int, Atoms], config: PathwayConfig, *, variable_cell: bool
+) -> dict[int, Atoms]:
     """Constraint-free copies, each in the first frame's atom order and placed next to it."""
 
-    reactant = canonical_copy(frames[0])
+    frame_numbers = list(frames)
+    reactant = canonical_copy(frames[frame_numbers[0]])
     reactant.set_constraint()
     first_ids = atom_ids(reactant)
     if variable_cell:
         _standard_cell(reactant)
-    prepared = [reactant]
-    for frame in frames[1:]:
-        product = canonical_copy(frame)
+    prepared = {frame_numbers[0]: reactant}
+    for frame_number in frame_numbers[1:]:
+        product = canonical_copy(frames[frame_number])
         product.set_constraint()
         second_ids = atom_ids(product)
         if set(first_ids) != set(second_ids):
@@ -252,7 +249,6 @@ def _prepare_frames(
             raise ValueError("reactant and product elements differ")
         if reactant.pbc.tolist() != product.pbc.tolist():
             raise _EndpointUnresolved("reactant and product periodicity differs")
-        cells_differ = not np.array_equal(reactant.cell, product.cell)
         if variable_cell:
             _standard_cell(product)
             reference_positions = product.get_scaled_positions(wrap=False) @ reactant.cell
@@ -262,7 +258,7 @@ def _prepare_frames(
             product.set_scaled_positions(
                 np.linalg.solve(reactant.cell.T, (reactant.positions + displacement).T).T
             )
-        elif cells_differ:
+        elif not np.array_equal(reactant.cell, product.cell):
             if not reactant.pbc.all() or reactant.cell.rank < 3 or product.cell.rank < 3:
                 raise _EndpointUnresolved(
                     "changed cells require fully periodic nonsingular endpoints"
@@ -284,7 +280,7 @@ def _prepare_frames(
             if reactant.pbc.any():
                 displacement = find_mic(displacement, cell=reactant.cell, pbc=reactant.pbc)[0]
             product.positions = reactant.positions + displacement
-        prepared.append(product)
+        prepared[frame_number] = product
     return prepared
 
 
@@ -292,9 +288,8 @@ def _local(candidate: ReactionCandidate) -> Callable[[Collection[Bond]], set[Bon
     """Pairs inside the reacting region, plus any pair involving an atom of a changed bond."""
 
     region = set(candidate.atom_ids)
-    changed_atoms = {
-        atom_id for bond in candidate.reactant_bonds ^ candidate.product_bonds for atom_id in bond
-    }
+    changed = candidate.reactant_bonds ^ candidate.product_bonds
+    changed_atoms = {atom_id for bond in changed for atom_id in bond}
     return lambda bonds: {
         bond for bond in bonds if region.issuperset(bond) or changed_atoms.intersection(bond)
     }
@@ -328,10 +323,7 @@ def _made(
 
 
 def _matches_outside(
-    relaxed: Atoms,
-    frame: Atoms,
-    changed: Collection[Bond],
-    detector_config: BondDetectorConfig,
+    relaxed: Atoms, frame: Atoms, changed: Collection[Bond], detector_config: BondDetectorConfig
 ) -> bool:
     """Whether a relaxed structure has the frame's bonds everywhere but the changed ones.
 
@@ -374,8 +366,12 @@ def _endpoint_status(
     return None
 
 
-def _snapshots(images: list[Atoms]) -> tuple[Atoms, ...]:
-    return tuple(image.copy() for image in images)
+def _ended(status: str, images: list[Atoms], message: object) -> PathwayOutcome:
+    """An outcome with no barrier and calculator-free snapshots of the images it stopped at."""
+
+    return PathwayOutcome(
+        status, images=tuple(image.copy() for image in images), message=str(message)
+    )
 
 
 def _hessian(
@@ -397,10 +393,7 @@ def _hessian(
 
 
 def _validate_frequencies(
-    images: Sequence[Atoms],
-    profile: Sequence[float],
-    calculator: Calculator,
-    config: PathwayConfig,
+    images: Sequence[Atoms], profile: Sequence[float], calculator: Calculator, config: PathwayConfig
 ) -> FrequencyValidation:
     transition_state_index: int | None = None
     active_atom_ids: tuple[int, ...] = ()
@@ -431,6 +424,9 @@ def _validate_frequencies(
         weighted = np.linalg.eigvalsh(hessian * np.outer(weights, weights))
         # hbar sqrt(eV / Å² / amu) in cm⁻¹
         scale = units._hbar * 1e10 / np.sqrt(units._e * units._amu) / units.invcm
+        frequencies = np.sign(weighted) * scale * np.sqrt(np.abs(weighted))
+        lowest = vectors[:, 0]
+        primary = tuple(tuple(map(float, row)) for row in lowest.reshape(-1, 3)) if modes else ()
         along = tangent[active].reshape(-1)
         length = float(np.linalg.norm(along))
         return FrequencyValidation(
@@ -443,15 +439,9 @@ def _validate_frequencies(
             curvature_cutoff_eV_A2=config.curvature_cutoff_eV_A2,
             active_max_force_eV_A=active_max_force,
             eigenvalues_eV_A2=tuple(map(float, values)),
-            frequencies_cm1=tuple(
-                map(float, np.sign(weighted) * scale * np.sqrt(np.abs(weighted)))
-            ),
-            tangent_overlap=float(abs(vectors[:, 0] @ along) / length) if length else None,
-            primary_mode=(
-                tuple(tuple(map(float, row)) for row in vectors[:, 0].reshape(-1, 3))
-                if modes
-                else ()
-            ),
+            frequencies_cm1=tuple(map(float, frequencies)),
+            tangent_overlap=float(abs(lowest @ along) / length) if length else None,
+            primary_mode=primary,
         )
     except Exception as exc:
         return FrequencyValidation(
@@ -466,10 +456,7 @@ def _validate_frequencies(
 
 
 def _minimize(
-    atoms: Atoms,
-    calculator: Calculator,
-    config: PathwayConfig,
-    pressure_GPa: float | None,
+    atoms: Atoms, calculator: Calculator, config: PathwayConfig, pressure_GPa: float | None
 ) -> tuple[bool, int]:
     """Relax like an endpoint (cell filter at pressure for NPT); return (converged, steps)."""
 
@@ -485,16 +472,19 @@ def _minimize(
         atoms.calc = None
 
 
-def _relax(
-    atoms: Atoms,
-    *,
-    stage: str,
-    calculator_provider: CalculatorProvider,
-    config: PathwayConfig,
-    pressure_GPa: float | None = None,
-) -> bool:
-    with calculator_provider(stage) as calculator:
-        return _minimize(atoms, calculator, config, pressure_GPa)[0]
+@dataclass(frozen=True, slots=True)
+class _Refinement:
+    """What every relaxation and band of one ``refine_pathway`` call shares."""
+
+    calculator_provider: CalculatorProvider
+    options: PathwayConfig
+    detector_config: BondDetectorConfig
+    pressure_GPa: float | None
+
+
+def _relax(atoms: Atoms, stage: str, setup: _Refinement) -> bool:
+    with setup.calculator_provider(stage) as calculator:
+        return _minimize(atoms, calculator, setup.options, setup.pressure_GPa)[0]
 
 
 def _rmsd(atoms: Atoms, reference: Atoms) -> float:
@@ -613,15 +603,14 @@ def check_saddle(
             energies.append(float(image.get_potential_energy()))
         finally:
             image.calc = None
-    volumes = () if pressure_GPa is None else tuple(float(image.get_volume()) for image in band)
-    enthalpies = (
-        ()
-        if pressure_GPa is None
-        else tuple(
+    volumes: tuple[float, ...] = ()
+    enthalpies: tuple[float, ...] = ()
+    if pressure_GPa is not None:
+        volumes = tuple(float(image.get_volume()) for image in band)
+        enthalpies = tuple(
             energy + pressure_GPa * units.GPa * volume
             for energy, volume in zip(energies, volumes, strict=True)
         )
-    )
     profile = energies if pressure_GPa is None else enthalpies
     common: dict[str, Any] = {
         "energies": tuple(energies),
@@ -687,14 +676,15 @@ def refine_pathway(
         isinstance(pressure_GPa, bool) or not np.isfinite(pressure_GPa)
     ):
         raise ValueError("pressure_GPa must be a finite number or None")
-    outcome = _refine_pathway(
-        candidate,
-        calculator_provider=calculator_provider,
-        config=config,
-        detector_config=detector_config,
-        pressure_GPa=pressure_GPa,
-        frames=frames or {},
-    )
+    frames = frames or {}
+    if not candidate.resolved:
+        outcome = PathwayOutcome("unresolved", message="candidate topology was not resolved")
+    elif candidate.reactant_bonds == candidate.product_bonds:
+        outcome = PathwayOutcome("unresolved", message="candidate has no changed bonds")
+    else:
+        options = config or PathwayConfig()
+        setup = _Refinement(calculator_provider, options, detector_config, pressure_GPa)
+        outcome = _refine_pathway(candidate, setup, frames)
     method = "neb" if pressure_GPa is None else "ssneb"
     steps = tuple(
         replace(step, outcome=replace(step.outcome, method=method, pressure_GPa=pressure_GPa))
@@ -704,20 +694,9 @@ def refine_pathway(
 
 
 def _refine_pathway(
-    candidate: ReactionCandidate,
-    *,
-    calculator_provider: CalculatorProvider,
-    config: PathwayConfig | None,
-    detector_config: BondDetectorConfig,
-    pressure_GPa: float | None,
-    frames: Mapping[int, Atoms],
+    candidate: ReactionCandidate, setup: _Refinement, frames: Mapping[int, Atoms]
 ) -> PathwayOutcome:
-
-    if not candidate.resolved:
-        return PathwayOutcome("unresolved", message="candidate topology was not resolved")
-    if candidate.reactant_bonds == candidate.product_bonds:
-        return PathwayOutcome("unresolved", message="candidate has no changed bonds")
-    options = config or PathwayConfig()
+    options, detector_config = setup.options, setup.detector_config
     changed = candidate.reactant_bonds ^ candidate.product_bonds
     first, last = candidate.reactant_frame, candidate.product_frame
     saved = {**frames, first: candidate.reactant, last: candidate.product}
@@ -732,32 +711,17 @@ def _refine_pathway(
         ),
         first,
     )
-    numbers = [frame for frame in sorted(saved) if start <= frame <= last]
+    window = {frame: saved[frame] for frame in sorted(saved) if start <= frame <= last}
     images: list[Atoms] = []
     try:
-        variable_cell = pressure_GPa is not None
-        prepared = dict(
-            zip(
-                numbers,
-                _prepare_frames(
-                    [saved[frame] for frame in numbers], options, variable_cell=variable_cell
-                ),
-                strict=True,
-            )
-        )
+        prepared = _prepare_frames(window, options, variable_cell=setup.pressure_GPa is not None)
         if not set(candidate.atom_ids) <= set(atom_ids(prepared[first])):
             raise ValueError("candidate atom IDs are missing from its endpoints")
         images = [prepared[start], prepared[last]]
 
         def relaxed(frame: int, stage: str) -> tuple[Atoms, bool]:
             atoms = prepared[frame].copy()
-            converged = _relax(
-                atoms,
-                stage=stage,
-                calculator_provider=calculator_provider,
-                config=options,
-                pressure_GPa=pressure_GPa,
-            )
+            converged = _relax(atoms, stage, setup)
             return atoms, converged
 
         reactant, converged = relaxed(start, "relax_reactant")
@@ -772,7 +736,7 @@ def _refine_pathway(
         # that relaxes into it.
         ends: list[tuple[frozenset[Bond], int]] = []
         if options.split_steps and len(changed) > 1 and state is not None and state != changed:
-            for frame in numbers:
+            for frame in prepared:
                 if not start < frame < last:
                     continue
                 atoms, done = relaxed(frame, "relax_frame")
@@ -783,56 +747,34 @@ def _refine_pathway(
                     ends.append((made, frame))
         ends.append((changed, last))
     except BarrierTimeLimit as exc:
-        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc))
+        return _ended("time_limit", images, exc)
     except _EndpointUnresolved as exc:
-        return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc))
+        return _ended("unresolved", images, exc)
     except Exception as exc:
-        return PathwayOutcome("failed", images=_snapshots(images), message=str(exc))
+        return _ended("failed", images, exc)
 
+    initial = candidate.reactant_bonds
     steps: list[PathwayStep] = []
     before: frozenset[Bond] = frozenset()
     if options.split_steps and state is not None and 0 < len(state) < len(changed):
         # The reactant frame relaxes into an intermediate, so the steps from there still count.
         before = state
-        steps.append(
-            PathwayStep(
-                PathwayOutcome(
-                    "unresolved",
-                    images=_snapshots([reactant]),
-                    message="the reactant frame relaxes partway along the event",
-                ),
-                candidate.reactant_bonds,
-                candidate.reactant_bonds ^ state,
-            )
+        partway = _ended(
+            "unresolved", [reactant], "the reactant frame relaxes partway along the event"
         )
+        steps.append(PathwayStep(partway, initial, initial ^ state))
     source: int = start
     end: Atoms | None = reactant
     for made, frame in ends:
-        step = replace(
-            candidate,
-            reactant_bonds=candidate.reactant_bonds ^ before,
-            product_bonds=candidate.reactant_bonds ^ made,
-        )
+        step = replace(candidate, reactant_bonds=initial ^ before, product_bonds=initial ^ made)
         if steps and steps[-1].outcome.status == "time_limit":
             outcome = replace(steps[-1].outcome, images=())
         elif end is None:
             outcome = PathwayOutcome("unresolved", message="the step before ended elsewhere")
         else:
-            outcome, end = _refine_step(
-                step,
-                end,
-                converged,
-                prepared[frame],
-                calculator_provider=calculator_provider,
-                options=options,
-                detector_config=detector_config,
-                pressure_GPa=pressure_GPa,
-            )
-        steps.append(
-            PathwayStep(
-                replace(outcome, frames=(source, frame)), step.reactant_bonds, step.product_bonds
-            )
-        )
+            outcome, end = _refine_step(step, end, converged, prepared[frame], setup)
+        outcome = replace(outcome, frames=(source, frame))
+        steps.append(PathwayStep(outcome, step.reactant_bonds, step.product_bonds))
         before, source, converged = made, frame, True
     if len(steps) == 1:
         return steps[0].outcome
@@ -849,11 +791,7 @@ def _refine_step(
     reactant: Atoms,
     reactant_converged: bool,
     frame: Atoms,
-    *,
-    calculator_provider: CalculatorProvider,
-    options: PathwayConfig,
-    detector_config: BondDetectorConfig,
-    pressure_GPa: float | None,
+    setup: _Refinement,
 ) -> tuple[PathwayOutcome, Atoms | None]:
     """Refine the candidate from its relaxed reactant to a product built from the frame.
 
@@ -861,23 +799,19 @@ def _refine_step(
     next step starts.
     """
 
+    options = setup.options
     images = [reactant]
     end: Atoms | None = None
     try:
-        reacting = {
-            atom_id
-            for bond in candidate.reactant_bonds ^ candidate.product_bonds
-            for atom_id in bond
-        }
+        changed = candidate.reactant_bonds ^ candidate.product_bonds
+        reacting = {atom_id for bond in changed for atom_id in bond}
         index = {atom_id: position for position, atom_id in enumerate(atom_ids(reactant))}
-        moved = sorted(
-            {
-                index[atom_id]
-                for bond in candidate.reactant_bonds | candidate.product_bonds
-                if reacting.intersection(bond)
-                for atom_id in bond
-            }
-        )
+        moved = [
+            index[atom_id]
+            for bond in candidate.reactant_bonds | candidate.product_bonds
+            if reacting.intersection(bond)
+            for atom_id in bond
+        ]
         # The product starts from the relaxed reactant, cell included, with only the atoms in
         # changed bonds and the atoms bonded to them where they sat in the product frame. Every
         # other atom starts at the same minimum in both endpoints, so the band spends its images
@@ -892,41 +826,26 @@ def _refine_step(
         product.set_cell(reactant.cell)
         product.set_scaled_positions(start)
         images = [reactant, product]
-        product_converged = _relax(
-            product,
-            stage="relax_product",
-            calculator_provider=calculator_provider,
-            config=options,
-            pressure_GPa=pressure_GPa,
-        )
+        product_converged = _relax(product, "relax_product", setup)
         if not reactant_converged or not product_converged:
-            return PathwayOutcome(
-                "relaxation_failed",
-                images=_snapshots(images),
-                message="endpoint relaxation did not converge",
-            ), None
+            return _ended("relaxation_failed", images, "endpoint relaxation did not converge"), None
 
-        endpoint_status = _endpoint_status(candidate, reactant, product, detector_config)
+        endpoint_status = _endpoint_status(candidate, reactant, product, setup.detector_config)
         if endpoint_status is not None:
             status, message = endpoint_status
-            return PathwayOutcome(status, images=_snapshots(images), message=message), None
+            return _ended(status, images, message), None
 
         end = product
         images = [reactant]
         images.extend(reactant.copy() for _ in range(options.images - 2))
         images.append(product)
-        if pressure_GPa is None:
-            band = NEB(
-                images,
-                climb=False,
-                allow_shared_calculator=True,
-                method="improvedtangent",
-            )
+        if setup.pressure_GPa is None:
+            band = NEB(images, climb=False, allow_shared_calculator=True, method="improvedtangent")
             band.interpolate(method="idpp", mic=True)
         else:
-            band = SSNEB(images, pressure_GPa=pressure_GPa)
+            band = SSNEB(images, pressure_GPa=setup.pressure_GPa)
             band.interpolate()
-        with calculator_provider("neb") as calculator:
+        with setup.calculator_provider("neb") as calculator:
             for image in images:
                 image.calc = calculator
             try:
@@ -936,47 +855,33 @@ def _refine_step(
                     endpoint.calc = SinglePointCalculator(
                         endpoint, energy=endpoint.get_potential_energy()
                     )
-                neb_converged = bool(
-                    FIRE(band, logfile=None).run(
-                        fmax=options.neb_fmax,
-                        steps=options.neb_steps,
-                    )
+                neb_converged = FIRE(band, logfile=None).run(
+                    fmax=options.neb_fmax, steps=options.neb_steps
                 )
                 if not neb_converged:
-                    return PathwayOutcome(
-                        "neb_failed",
-                        images=_snapshots(images),
-                        message="initial NEB did not converge",
-                    ), end
+                    return _ended("neb_failed", images, "initial NEB did not converge"), end
                 band.climb = True
-                ci_neb_converged = bool(
-                    FIRE(band, logfile=None).run(
-                        fmax=options.neb_fmax,
-                        steps=options.ci_neb_steps,
-                    )
+                ci_neb_converged = FIRE(band, logfile=None).run(
+                    fmax=options.neb_fmax, steps=options.ci_neb_steps
                 )
                 if not ci_neb_converged:
-                    return PathwayOutcome(
-                        "ci_neb_failed",
-                        images=_snapshots(images),
-                        message="climbing-image NEB did not converge",
+                    return _ended(
+                        "ci_neb_failed", images, "climbing-image NEB did not converge"
                     ), end
                 return check_saddle(
                     images,
                     calculator,
-                    detector_config=detector_config,
+                    detector_config=setup.detector_config,
                     config=options,
-                    pressure_GPa=pressure_GPa,
+                    pressure_GPa=setup.pressure_GPa,
                 ), end
             finally:
                 for image in images:
                     image.calc = None
     except BarrierTimeLimit as exc:
-        return PathwayOutcome("time_limit", images=_snapshots(images), message=str(exc)), None
-    except _EndpointUnresolved as exc:
-        return PathwayOutcome("unresolved", images=_snapshots(images), message=str(exc)), end
+        return _ended("time_limit", images, exc), None
     except Exception as exc:
-        return PathwayOutcome("failed", images=_snapshots(images), message=str(exc)), end
+        return _ended("failed", images, exc), end
 
 
 __all__ = [

@@ -18,7 +18,7 @@ import numpy as np
 from ase import Atoms
 from ase.io.trajectory import Trajectory
 
-from ._durable import ensure_directory, flush_to_disk, publish, sync_directory
+from ._durable import ensure_directory, flush_to_disk, publish, publishing, sync_directory
 from ._version import __version__
 from .candidates import ReactionCandidate, ReactionTracker
 from .detection import BondChangeDetector, BondDetectorConfig, canonical_copy, transport_copy
@@ -31,7 +31,7 @@ from .pathway import (
 )
 from .restart import ExactRestartSnapshot
 from .runtime import ExactDynamicsRuntime, ExactRuntimeProvider
-from .store import OccurrenceRecord, OccurrenceStore
+from .store import OccurrenceStore
 
 _PHASES = {"new", "running", "refining", "completed", "failed"}
 
@@ -51,10 +51,8 @@ class ReactionRunConfig:
     pathway: PathwayConfig = field(default_factory=PathwayConfig)
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("observation_interval", self.observation_interval),
-            ("candidate_stability_frames", self.candidate_stability_frames),
-        ):
+        for name in ("observation_interval", "candidate_stability_frames"):
+            value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         radius = self.candidate_region_radius
@@ -182,12 +180,7 @@ class ReactionRun:
         self._refine_after_md = False
 
     @classmethod
-    def create(
-        cls,
-        root: str | Path,
-        *,
-        config: ReactionRunConfig | None = None,
-    ) -> ReactionRun:
+    def create(cls, root: str | Path, *, config: ReactionRunConfig | None = None) -> ReactionRun:
         """Create a new durable run directory."""
 
         path = Path(root).resolve()
@@ -217,8 +210,7 @@ class ReactionRun:
         run._barrier_seconds = float(value.get("barrier_seconds", 0.0))
         if value.get("detector_state") is not None:
             run._detector = BondChangeDetector.from_state(
-                value["detector_state"],
-                config=run.config.detector,
+                value["detector_state"], config=run.config.detector
             )
         if value.get("active_checkpoint") is not None:
             run._active_checkpoint = run.root / value["active_checkpoint"]
@@ -294,16 +286,11 @@ class ReactionRun:
         )
         final = self.runtime_checkpoints / name
         temporary = self.runtime_checkpoints / f".{name}.tmp"
-        temporary.mkdir()
-        try:
+        # The previous checkpoint is removed once state.json names this one, so this one must
+        # already be on disk if the node fails.
+        with publishing(temporary, final):
             snapshot.write(temporary / "exact-restart")
             self._tracker.write_checkpoint(temporary / "tracker")
-            # The previous checkpoint is removed once state.json names this one, so this one must
-            # already be on disk if the node fails.
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
         self._active_checkpoint = final
         self._snapshot = snapshot
         self._write_state()
@@ -355,27 +342,22 @@ class ReactionRun:
             self._initial = initial
             self._phase = "running"
 
-    def _queue_pathway(self, record: OccurrenceRecord, candidate: ReactionCandidate) -> None:
-        # Every resolved occurrence is refined, also one that repeats an earlier reaction,
-        # because the reactions around it can change its barrier.
-        if (
-            candidate.resolved
-            and record.occurrence_id not in self._pending
-            and not (self.pathways / record.occurrence_id).is_dir()
-        ):
-            self._pending.append(record.occurrence_id)
-
     def _register(self, candidates: tuple[ReactionCandidate, ...], *, label: str) -> None:
         # Registration is idempotent, so an exact replay of an observation that was interrupted
         # before its checkpoint queues the same pathways again.
         for index, candidate in enumerate(candidates):
             occurrence_id = f"segment-{self._generation:04d}-frame-{label}-{index:04d}"
-            record, _ = self.occurrences.register(
-                occurrence_id,
-                candidate,
-                detector_config=self.config.detector,
+            self.occurrences.register(
+                occurrence_id, candidate, detector_config=self.config.detector
             )
-            self._queue_pathway(record, candidate)
+            # Every resolved occurrence is refined, also one that repeats an earlier reaction,
+            # because the reactions around it can change its barrier.
+            if (
+                candidate.resolved
+                and occurrence_id not in self._pending
+                and not (self.pathways / occurrence_id).is_dir()
+            ):
+                self._pending.append(occurrence_id)
 
     def _observe(self, atoms: Atoms, global_step: int, total_steps: int) -> None:
         """Advance the monitor one frame and register every completed occurrence."""
@@ -455,11 +437,7 @@ class ReactionRun:
         """Log a restore under other software or hardware than the checkpoint recorded."""
 
         assert self._snapshot is not None
-        before = {
-            **self._snapshot.calculator.metadata,
-            **_dynamics_versions(self._snapshot.dynamics.metadata),
-        }
-        after = {**resumed.calculator.metadata, **_dynamics_versions(resumed.dynamics.metadata)}
+        before, after = _environment(self._snapshot), _environment(resumed)
         changed = {
             key: [before.get(key), after.get(key)]
             for key in sorted(before.keys() | after.keys())
@@ -500,8 +478,7 @@ class ReactionRun:
     def _publish_outcome(self, occurrence_id: str, outcome: PathwayOutcome) -> None:
         final = self.pathways / occurrence_id
         temporary = self.pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
-        temporary.mkdir()
-        try:
+        with publishing(temporary, final):
             identity = {
                 "schema_version": 1,
                 "occurrence_id": occurrence_id,
@@ -517,10 +494,6 @@ class ReactionRun:
                 folder = temporary / f"step-{number}"
                 folder.mkdir()
                 _write_result(folder, step.outcome, {**identity, "step": number, **bonds})
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
 
     def _time_limited(
         self, provider: CalculatorProvider, max_hours: float | None
@@ -562,9 +535,7 @@ class ReactionRun:
         return lease
 
     def _refine_pending(
-        self,
-        calculator_provider: CalculatorProvider,
-        pressure_GPa: float | None,
+        self, calculator_provider: CalculatorProvider, pressure_GPa: float | None
     ) -> None:
         """Refine each queued occurrence serially and publish its immutable result.
 
@@ -699,8 +670,10 @@ class ReactionRun:
         return self.summary()
 
 
-def _dynamics_versions(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    return {f"dynamics_{key}": metadata.get(key) for key in ("ase_version", "numpy_version")}
+def _environment(snapshot: ExactRestartSnapshot) -> dict[str, Any]:
+    versions = ("ase_version", "numpy_version")
+    dynamics = {f"dynamics_{key}": snapshot.dynamics.metadata.get(key) for key in versions}
+    return {**snapshot.calculator.metadata, **dynamics}
 
 
 __all__ = ["ReactionRun", "ReactionRunConfig", "RunSummary"]

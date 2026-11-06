@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import sqlite3
 from contextlib import closing
@@ -15,7 +14,7 @@ from uuid import uuid4
 from ase import Atoms
 from ase.io import read, write
 
-from ._durable import ensure_directory, publish, sync_directory
+from ._durable import SAFE_NAME, ensure_directory, publishing, sync_directory
 from .candidates import ReactionCandidate, ReactionClasses
 from .detection import BondDetectorConfig, atom_ids, canonical_copy, transport_copy
 
@@ -152,10 +151,7 @@ class OccurrenceStore:
         return class_id
 
     def _insert(
-        self,
-        db: sqlite3.Connection,
-        occurrence_id: str,
-        candidate: ReactionCandidate,
+        self, db: sqlite3.Connection, occurrence_id: str, candidate: ReactionCandidate
     ) -> tuple[OccurrenceRecord, bool]:
         existing = self._row(db, occurrence_id)
         if existing is not None:
@@ -186,8 +182,9 @@ class OccurrenceStore:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             registered = {row["occurrence_id"] for row in db.execute("SELECT * FROM occurrences")}
-            for occurrence_id in sorted(registered - bundles):
-                raise FileNotFoundError(self.candidates / occurrence_id)
+            missing = registered - bundles
+            if missing:
+                raise FileNotFoundError(self.candidates / min(missing))
             # A complete bundle left before its row was committed is registered now.
             for occurrence_id in sorted(bundles - registered):
                 metadata, candidate = _read_bundle(self.candidates / occurrence_id)
@@ -197,10 +194,7 @@ class OccurrenceStore:
             db.commit()
 
     def _publish(
-        self,
-        occurrence_id: str,
-        candidate: ReactionCandidate,
-        metadata: dict[str, object],
+        self, occurrence_id: str, candidate: ReactionCandidate, metadata: dict[str, object]
     ) -> ReactionCandidate:
         final = self.candidates / occurrence_id
         if final.exists():
@@ -213,18 +207,12 @@ class OccurrenceStore:
         temporary = self.candidates / f".{occurrence_id}.tmp"
         if temporary.exists():
             shutil.rmtree(temporary)
-        temporary.mkdir()
-        try:
+        with publishing(temporary, final):
             write(temporary / "reactant.traj", transport_copy(candidate.reactant))
             write(temporary / "product.traj", transport_copy(candidate.product))
             (temporary / "candidate.json").write_text(
-                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
         return _read_bundle(final)[1]
 
     def register(
@@ -236,7 +224,7 @@ class OccurrenceStore:
     ) -> tuple[OccurrenceRecord, bool]:
         """Retain an occurrence and return its assignment plus whether it was inserted."""
 
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", occurrence_id):
+        if not SAFE_NAME.fullmatch(occurrence_id):
             raise ValueError("occurrence_id must be a filesystem-safe name")
         metadata = {
             "schema_version": 1,

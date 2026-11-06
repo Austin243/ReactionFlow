@@ -15,10 +15,6 @@ from .restart import ComponentState
 _STATE_KIND = "ase.langevin_baoab"
 
 
-def _copy_attribute(dynamics: LangevinBAOAB, name: str) -> np.ndarray:
-    return np.asarray(getattr(dynamics, name)).copy()
-
-
 def snapshot_langevin_baoab(dynamics: LangevinBAOAB) -> ComponentState:
     """Capture every mutable quantity used by the next BAOAB step."""
 
@@ -44,12 +40,13 @@ def snapshot_langevin_baoab(dynamics: LangevinBAOAB) -> ComponentState:
         metadata["rng_bit_generator"] = type(dynamics.rng.bit_generator).__name__
         metadata["rng_state"] = dynamics.rng.bit_generator.state
 
-    arrays = {"accel": _copy_attribute(dynamics, "accel")}
+    # ComponentState takes its own copy of each array.
+    arrays = {"accel": np.asarray(dynamics.accel)}
     if dynamics.externalstress is not None:
         arrays.update(
-            p_eps=_copy_attribute(dynamics, "p_eps"),
-            force_eps=_copy_attribute(dynamics, "force_eps"),
-            gamma_mod=_copy_attribute(dynamics, "gamma_mod"),
+            p_eps=np.asarray(dynamics.p_eps),
+            force_eps=np.asarray(dynamics.force_eps),
+            gamma_mod=np.asarray(dynamics.gamma_mod),
         )
     return ComponentState(kind=_STATE_KIND, metadata=metadata, arrays=arrays)
 
@@ -67,9 +64,7 @@ def _restore_rng(metadata: dict[str, Any]) -> np.random.Generator | None:
 
 
 def restore_langevin_baoab(
-    atoms: Atoms,
-    calculator: Calculator,
-    state: ComponentState,
+    atoms: Atoms, calculator: Calculator, state: ComponentState
 ) -> LangevinBAOAB:
     """Reconstruct BAOAB so its next step matches an uninterrupted run."""
 

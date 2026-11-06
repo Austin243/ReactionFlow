@@ -123,7 +123,6 @@ class ExactRestartSnapshot:
         final.mkdir(parents=True)
         atoms_path = final / "atoms.traj"
         arrays_path = final / "arrays.npz"
-        state_path = final / "restart.json"
         write(atoms_path, self.atoms, format="traj")
 
         archive: dict[str, np.ndarray] = {}
@@ -136,10 +135,7 @@ class ExactRestartSnapshot:
             archive[archive_name] = array
             atom_arrays[name] = archive_name
         components: dict[str, dict[str, Any]] = {}
-        for label, component in (
-            ("dynamics", self.dynamics),
-            ("calculator", self.calculator),
-        ):
+        for label, component in (("dynamics", self.dynamics), ("calculator", self.calculator)):
             names: dict[str, str] = {}
             for index, (name, array) in enumerate(sorted(component.arrays.items())):
                 archive_name = f"{label}_{index:04d}"
@@ -162,9 +158,8 @@ class ExactRestartSnapshot:
                 "arrays.npz": file_digest(arrays_path),
             },
         }
-        state_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
+        (final / "restart.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
         )
         return final
 
@@ -193,11 +188,9 @@ class ExactRestartSnapshot:
             atom_arrays = manifest.get("atom_arrays", {})
             if not isinstance(atom_arrays, dict):
                 raise ValueError("exact-restart manifest has invalid atom arrays")
+            # The manifest is JSON, so every name is a string.
             if any(
-                not isinstance(name, str)
-                or not name
-                or not isinstance(archive_name, str)
-                or not archive_name
+                not name or not archive_name or not isinstance(archive_name, str)
                 for name, archive_name in atom_arrays.items()
             ):
                 raise ValueError("exact-restart manifest has an invalid atom array")
@@ -206,11 +199,9 @@ class ExactRestartSnapshot:
                 atoms.set_array(name, np.asarray(archive[archive_name]).copy())
             for label in ("dynamics", "calculator"):
                 value = components[label]
-                referenced_arrays.update(value.get("arrays", {}).values())
-                arrays = {
-                    name: np.asarray(archive[archive_name]).copy()
-                    for name, archive_name in value.get("arrays", {}).items()
-                }
+                names = value.get("arrays", {})
+                referenced_arrays.update(names.values())
+                arrays = {name: archive[archive_name] for name, archive_name in names.items()}
                 restored[label] = ComponentState(
                     kind=value["kind"],
                     version=value["version"],
@@ -220,11 +211,7 @@ class ExactRestartSnapshot:
                 )
             if referenced_arrays != set(archive.files):
                 raise ValueError("exact-restart array archive does not match its manifest")
-        return cls(
-            atoms=atoms,
-            dynamics=restored["dynamics"],
-            calculator=restored["calculator"],
-        )
+        return cls(atoms=atoms, dynamics=restored["dynamics"], calculator=restored["calculator"])
 
 
 __all__ = ["ComponentState", "ExactRestartSnapshot"]

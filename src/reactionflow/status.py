@@ -15,7 +15,7 @@ from ase.formula import Formula
 
 from .campaign import CampaignConfig
 from .candidates import ReactionCandidate, ReactionClasses, _reaction_graph
-from .detection import atom_ids
+from .detection import _symbols_by_id
 from .pathway import CONVERGED_STATUSES
 from .store import _read_bundle
 
@@ -42,9 +42,7 @@ def _occurrences(root: Path) -> list[sqlite3.Row]:
 
 
 def _describe(candidate: ReactionCandidate, radius: int) -> str:
-    symbols = dict(
-        zip(atom_ids(candidate.reactant), candidate.reactant.get_chemical_symbols(), strict=True)
-    )
+    symbols = _symbols_by_id(candidate.reactant)
     changes = Counter(
         f"{kind} {'-'.join(sorted(symbols[atom_id] for atom_id in bond))}"
         for kind, bonds in (
@@ -186,23 +184,18 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                     entry["connectivity"][connectivity["status"]] += 1
                 if result["status"] == "saddle_validated":
                     entry["barriers_eV"].append(result["barrier_eV"])
-    reactions = [
-        {
-            **entry,
-            "pathways": dict(entry["pathways"]),
-            "frequency": dict(entry["frequency"]),
-            "connectivity": dict(entry["connectivity"]),
-        }
-        for entry in entries.values()
-    ]
-    reactions.sort(
+    for entry in entries.values():
+        for key in ("pathways", "frequency", "connectivity"):
+            entry[key] = dict(entry[key])
+    reactions = sorted(
+        entries.values(),
         key=lambda item: (
             item["model"],
             item["pressure_GPa"] is not None,
             item["pressure_GPa"] or 0.0,
             -item["events"],
             item["reaction"],
-        )
+        ),
     )
     return {
         "campaign": str(campaign.source),
