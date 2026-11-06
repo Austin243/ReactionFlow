@@ -86,6 +86,14 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
         row["missing_frames"] = lost
     if state.get("pending_pathway_ids"):
         row["queued"] = len(state["pending_pathway_ids"])
+    changes = root / "restart-environment.jsonl"
+    if changes.is_file():
+        try:
+            lines = [json.loads(line) for line in changes.read_text().splitlines()]
+            fields = sorted({field for line in lines for field in line["changed"]})
+            row["environment_changes"] = {"resumes": len(lines), "fields": fields}
+        except Exception:
+            unreadable["restart-environment.jsonl"] += 1
     members: dict[str, list[sqlite3.Row]] = {}
     for record in records:
         members.setdefault(record["class_id"], []).append(record)
@@ -168,7 +176,10 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                     steps.append((part, 1, [step_result], occurrence["occurrence_id"], [part]))
         classes.append((candidate, len(occurrences), results, example, refined))
     row.update(events=len(records), pathways=dict(pathways))
-    notes = [f"{count} {what}{'' if count == 1 else 's'}" for what, count in unreadable.items()]
+    notes = [
+        what if what.endswith("jsonl") else f"{count} {what}{'' if count == 1 else 's'}"
+        for what, count in unreadable.items()
+    ]
     if not (root / "reactions.sqlite3").is_file():
         bundles = root.glob("candidates/[!.]*/candidate.json")
         if count := sum(1 for _ in bundles):
@@ -365,6 +376,15 @@ def format_status(report: dict[str, Any]) -> str:
         where = ", ".join(f"{row['queued']} in {row['trajectory']}" for row in queued[:5])
         more = f", and {len(queued) - 5} more trajectories" if len(queued) > 5 else ""
         lines += [f"Waiting to be refined, not yet in the converged column: {where}{more}.", ""]
+    for row in report["trajectories"]:
+        if "environment_changes" in row:
+            changes = row["environment_changes"]
+            lines += [
+                f"{row['trajectory']} resumed {changes['resumes']} time(s) under another "
+                f"environment, so it is no longer bitwise exact: {', '.join(changes['fields'])}. "
+                "A changed calculator source can mean a changed potential.",
+                "",
+            ]
     incomplete = sum("unreadable: " in (row["error"] or "") for row in report["trajectories"])
     if incomplete:
         lines += [
