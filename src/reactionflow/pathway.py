@@ -576,6 +576,26 @@ def _verdict(
     return "saddle_unchecked", f"the connectivity check was inconclusive{detail}"
 
 
+def _one_atom_list(images: Sequence[Atoms]) -> list[Atoms]:
+    """The images in the first one's atom order, or a refusal if they do not hold the same atoms."""
+
+    first = images[0]
+    ids = atom_ids(first)
+    band = [first]
+    for number, image in enumerate(images[1:], 1):
+        order = {atom_id: index for index, atom_id in enumerate(atom_ids(image))}
+        if order.keys() != set(ids):
+            raise ValueError(f"band image {number} holds different atoms from image 0")
+        if list(order) != list(ids):
+            image = image[[order[atom_id] for atom_id in ids]]
+        if image.get_chemical_symbols() != first.get_chemical_symbols():
+            raise ValueError(f"band image {number} holds different elements from image 0")
+        if image.pbc.tolist() != first.pbc.tolist():
+            raise ValueError(f"band image {number} has different periodicity from image 0")
+        band.append(image)
+    return band
+
+
 def check_saddle(
     images: Sequence[Atoms],
     calculator: Calculator,
@@ -593,9 +613,14 @@ def check_saddle(
     """
 
     options = config or PathwayConfig()
-    band = [canonical_copy(image) for image in images]
-    if len(band) < 3:
+    if len(images) < 3:
         raise ValueError("a band needs its two ends and at least one image between them")
+    carrying = {"atom_id" in image.arrays or "atom_ids" in image.info for image in images}
+    if len(carrying) > 1:
+        raise ValueError("some band images carry atom IDs and others do not, so atoms cannot match")
+    band = _one_atom_list([canonical_copy(image) for image in images])
+    if pressure_GPa is not None and band[0].cell.rank < 3:
+        raise ValueError("a band checked at a pressure needs a full cell, for its volume")
     energies = []
     for image in band:
         image.calc = calculator
@@ -619,6 +644,9 @@ def check_saddle(
         "images": tuple(band),
         "pressure_GPa": pressure_GPa,
     }
+    if not np.isfinite(profile).all():
+        message = "the model returned a non-finite energy for a band image"
+        return PathwayOutcome("saddle_unchecked", message=message, **common)
     # A saddle between two minima lies above both. When an endpoint is the highest point, the band
     # has not found one, so there is no barrier or saddle to check.
     if max(profile[1:-1]) <= max(profile[0], profile[-1]):
