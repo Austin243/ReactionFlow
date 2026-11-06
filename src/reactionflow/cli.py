@@ -25,7 +25,7 @@ from .campaign import CampaignConfig
 from .detection import _is_count
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
-from .pathway import check_saddle
+from .pathway import check_saddle, largest_forces
 from .run import ReactionRun, ReactionRunConfig, RunSummary, frame_ranges, missing_frames
 from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
@@ -198,13 +198,31 @@ def check_band(
             config=campaign.reaction_run.pathway,
             pressure_GPa=pressure_GPa,
         )
+        forces = largest_forces(outcome, calculator)
     result: dict[str, object] = {
         "band": str(band.resolve()),
         "trajectory_id": trajectory.id,
         "reactionflow_version": __version__,
         **outcome.to_dict(),
+        "largest_force_eV_A": forces,
     }
     del result["method"]  # how the band was made is not known here
+    # This reports and does not decide: the verdict rests on curvature and connectivity alone.
+    if outcome.barrier is not None and None not in forces.values():
+        options = campaign.reaction_run.pathway
+        concerns = []
+        if forces["highest"] > options.neb_fmax:
+            concerns.append(
+                f"the highest image carries a force of {forces['highest']:.3g} eV/Å, where a "
+                f"stationary point would carry about neb_fmax, {options.neb_fmax:g}"
+            )
+        if max(forces["first"], forces["last"]) > options.relax_fmax:
+            concerns.append(
+                f"the ends carry forces of {forces['first']:.3g} and {forces['last']:.3g} eV/Å, "
+                f"where relaxed ends would carry about relax_fmax, {options.relax_fmax:g}, and "
+                "the barrier is measured from the first image as given"
+            )
+        result["message"] = "; ".join(concerns)
     path = band.with_name(f"{band.stem}.check.json")
     temporary = path.with_name(f".{path.name}-{uuid4().hex}.tmp")
     try:
@@ -482,7 +500,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif not math.isfinite(pressure):
             parser.error("--pressure must be a finite number")
         path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
-        summary = {key: result[key] for key in ("status", "barrier_eV", "message")}
+        keys = ("status", "barrier_eV", "message", "largest_force_eV_A")
+        summary = {key: result[key] for key in keys}
         print(json.dumps({"check": str(path), **summary}, sort_keys=True))
     else:
         _run_and_record(campaign, arguments)

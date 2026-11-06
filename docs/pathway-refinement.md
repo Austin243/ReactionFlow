@@ -204,6 +204,13 @@ of a pathway's `result.json`, and its status, barrier, and message are printed. 
 the same atoms, elements, and periodicity, or the check refuses the band; images with atom IDs in
 another order are put in the first image's order, and a file without IDs is taken in its own order.
 
+The verdict rests on curvature and connectivity, and the barrier is the highest image minus the first
+image as given, so it means what it says only for relaxed ends and a stationary highest image, which
+a band from another code may not have. `largest_force_eV_A` in the verdict gives the largest atomic
+force on the first, highest, and last images, and the message of a validated band says when these
+pass `neb_fmax` or `relax_fmax`. A converged band of this package can pass `neb_fmax` slightly,
+because that tolerance applies to the band's projected forces. Neither changes the verdict.
+
 Campaign and state files written before the saddle check may name `active_radius` and
 `imaginary_frequency_cutoff_cm1`. They still open, and those two settings are ignored. A trajectory
 started before the check cannot resume under it, because its pathway settings, and so its campaign

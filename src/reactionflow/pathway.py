@@ -681,6 +681,31 @@ def check_saddle(
     )
 
 
+def largest_forces(outcome: PathwayOutcome, calculator: Calculator) -> dict[str, float | None]:
+    """The largest atomic force in eV/Å on a checked band's first, highest and last images, or None
+    for an image where the model fails or gives no finite one.
+
+    ``check_saddle`` asks only about curvature and connectivity, and takes the barrier from the
+    first image as given. These say whether the images it read are stationary points at all.
+    """
+
+    profile = outcome.enthalpies or outcome.energies
+    forces: dict[str, float | None] = {}
+    for name, index in (
+        ("first", 0),
+        ("highest", 1 + int(np.argmax(profile[1:-1]))),
+        ("last", len(profile) - 1),
+    ):
+        atoms = outcome.images[index].copy()
+        atoms.calc = calculator
+        try:
+            largest = float(np.linalg.norm(atoms.get_forces(apply_constraint=False), axis=1).max())
+        except Exception:  # the verdict is already made, and this must not cost it
+            largest = float("nan")
+        forces[name] = largest if np.isfinite(largest) else None
+    return forces
+
+
 def refine_pathway(
     candidate: ReactionCandidate,
     *,
