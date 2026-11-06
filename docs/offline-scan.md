@@ -13,9 +13,11 @@ reactionflow scan XDATCAR --pair C-O 1.6 2.0 --frame-ps 0.05
 ## Campaign runs
 
 A run saves one frame per observation in `segments/<generation>/trajectory.traj`. A new generation
-starts with the frame it resumed from, and the scan reads that frame once. It stops at the first
-frame it cannot read, such as the one a running job is writing, and it prints `"scan": null` for a
-trajectory with no saved frames yet.
+starts with the frame it resumed from, and the scan reads that frame once. It reads a segment up to
+the first frame it cannot read, such as the one a running job is writing, and passes over a segment
+that is missing, empty or cut. Frames the run has checkpointed that the scan could not read are
+listed as `missing_frames`, in the summary and on standard error, and the timing of a change across
+such a gap is not known. It prints `"scan": null` for a trajectory with no saved frames.
 
 With no options the scan uses the run's own settings from `state.json`, so it finds the candidates
 the run recorded. `candidates.csv` gives each one's occurrence ID, and in `summary.json`
@@ -62,7 +64,8 @@ directory.
     unresolved;
   - `net_changes_in_resolved` and `classes_in_resolved`, the bond changes and local classes in the
     resolved candidates;
-  - `recorded_by_run` and `matching_recorded` for a campaign run.
+  - `recorded_by_run` and `matching_recorded` for a campaign run;
+  - `missing_frames`, only when a campaign run's saved frames have gaps.
 
 These counts separate the stages between a threshold crossing and a candidate: what persistence
 filters, what is confirmed, how confirmed changes group into candidates, and how many never come

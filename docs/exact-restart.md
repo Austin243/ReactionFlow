@@ -87,7 +87,12 @@ run keeps a single runtime checkpoint.
 `state.json` records the phase, generation, global counters, pending pathway occurrence IDs,
 detector state, configuration, any durable-state failure, and the active checkpoint. Each
 generation writes one frame per observation to `segments/<generation>/trajectory.traj`; a frame is
-written before its checkpoint, so an interrupted attempt never leaves a gap. An MD state with a
+written before its checkpoint, so an interrupted attempt never leaves a gap. A segment lost later,
+to a node crash or a cut copy, cannot change the state in the checkpoint, so MD continues, and every
+`run`, `status` and `scan` then names the missing frames. `run` and `status` read each segment's
+ends, so damage inside a segment shows only in `scan`, which reads every frame. The one refusal is a
+current segment that cannot be appended to: restore it, or move it aside to continue in a new file.
+An MD state with a
 non-finite position, momentum, cell, or integrator array gets neither: the job stops with a non-zero
 exit, and the next job repeats from the last checkpoint, or starts over if there is none. A frame or
 checkpoint an earlier version wrote from such a state is not repaired.

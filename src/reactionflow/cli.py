@@ -8,6 +8,7 @@ import json
 import math
 import os
 import socket
+import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -25,7 +26,7 @@ from .detection import _is_count
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .pathway import check_saddle
-from .run import ReactionRun, ReactionRunConfig, RunSummary, missing_frames
+from .run import ReactionRun, ReactionRunConfig, RunSummary, frame_ranges, missing_frames
 from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
 from .wizard import create_campaign
@@ -427,20 +428,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         for index in indices:
             trajectory = campaign.trajectory(index)
             root = campaign.output_root / trajectory.id
+            state_path = root / "state.json"
             if not (root / "segments").is_dir():
-                missing = {"scan": None, "trajectory_id": trajectory.id, "message": "not started"}
+                message = "no saved frames" if state_path.is_file() else "not started"
+                missing = {"scan": None, "trajectory_id": trajectory.id, "message": message}
                 print(json.dumps(missing))
                 continue
-            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
-            base = ReactionRunConfig.from_dict(state["config"])
+            # A copy of the frames alone still scans, under the campaign's settings.
+            state = (
+                json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
+            )
+            base = (
+                campaign.reaction_run
+                if state is None
+                else ReactionRunConfig.from_dict(state["config"])
+            )
             settings = _scan_settings(parser, arguments, base)
             result = scan_frames(
                 run_frames(root, timestep_fs=trajectory.timestep_fs),
                 occurrences=recorded_occurrences(root),
+                last_frame=0 if state is None else state["global_frame"],
                 **settings,
             )
             out = root / "scan" if arguments.out is None else arguments.out / trajectory.id
             _print_scan(result.write(out), result, trajectory_id=trajectory.id)
+            if "missing_frames" in result.summary:
+                print(
+                    f"warning: {trajectory.id} lacks saved frames "
+                    f"{frame_ranges(result.summary['missing_frames'])}, so these tables leave them "
+                    "out, and the timing of any change across a gap is not known",
+                    file=sys.stderr,
+                )
     elif arguments.command == "validate":
         payload = {
             "campaign": str(campaign.source),
