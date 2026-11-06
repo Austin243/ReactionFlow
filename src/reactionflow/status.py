@@ -14,7 +14,7 @@ from typing import Any
 from ase.formula import Formula
 
 from .campaign import CampaignConfig
-from .candidates import ReactionCandidate, ReactionClasses, _reaction_graph
+from .candidates import ReactionCandidate, ReactionClasses, _isomorphic, _reaction_graph
 from .detection import _symbols_by_id
 from .pathway import CONVERGED_STATUSES
 from .run import frame_ranges, missing_frames
@@ -64,10 +64,10 @@ def _describe(candidate: ReactionCandidate, radius: int) -> str:
 def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     """Fill one trajectory's status row and return its classes.
 
-    Each class is (candidate, events, results, occurrence ID of the candidate). Each step of an
-    event refined in steps is one more, an event of its own with the step's bonds. The candidate is
-    None when no bundle of the class can be read, as in a copy of a run's results alone, so that its
-    counts and barriers still show.
+    Each class is (candidate, events, results, occurrence ID of the candidate, and for each result
+    the event it refined, for its direction). Each step of an event refined in steps is one more, an
+    event of its own with the step's bonds. The candidate is None when no bundle of the class can be
+    read, as in a copy of a run's results alone, so that its counts and barriers still show.
 
     The row is filled as reading progresses, so a damaged file later on still leaves the phase and
     step from state.json in place. Files that cannot be read are named in ``row["unreadable"]``,
@@ -103,6 +103,26 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 unreadable["candidate bundle"] += 1
         return read[name]
 
+    def as_refined(
+        occurrence: sqlite3.Row, candidate: ReactionCandidate | None
+    ) -> ReactionCandidate | None:
+        """The class's candidate with this occurrence's bonds, read without its structures, since
+        each atom's element is the same throughout a trajectory."""
+
+        if candidate is None:
+            return None
+        try:
+            data = _read_json(root / occurrence["bundle"] / "candidate.json")["candidate"]
+            return replace(
+                candidate,
+                atom_ids=tuple(data["atom_ids"]),
+                reactant_bonds=frozenset(map(tuple, data["reactant_bonds"])),
+                product_bonds=frozenset(map(tuple, data["product_bonds"])),
+            )
+        except Exception:
+            unreadable["candidate bundle"] += 1
+            return None
+
     def result_file(path: Path) -> dict[str, Any] | None:
         try:
             result = _read_json(path)
@@ -120,13 +140,15 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
             if candidate is not None:
                 example = occurrence["occurrence_id"]
                 break
-        results = []
+        results, refined = [], []
         for occurrence in occurrences:
             path = root / "pathways" / occurrence["occurrence_id"] / "result.json"
             result = result_file(path) if path.is_file() else None
             if result is None:
                 continue
             results.append(result)
+            validated = result["status"] == "saddle_validated"
+            refined.append(as_refined(occurrence, candidate) if validated else None)
             if result.get("steps"):
                 event = bundle(occurrence)
                 for step in result["steps"]:
@@ -141,14 +163,14 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                             for key in ("reactant_bonds", "product_bonds")
                         },
                     )
-                    steps.append((part, 1, [step_result], occurrence["occurrence_id"]))
-        classes.append((candidate, len(occurrences), results, example))
+                    steps.append((part, 1, [step_result], occurrence["occurrence_id"], [part]))
+        classes.append((candidate, len(occurrences), results, example, refined))
     row.update(events=len(records), pathways=dict(pathways))
     notes = [f"{count} {what}{'' if count == 1 else 's'}" for what, count in unreadable.items()]
     if not (root / "reactions.sqlite3").is_file():
         bundles = root.glob("candidates/[!.]*/candidate.json")
         if count := sum(1 for _ in bundles):
-            notes.append(f"no reactions.sqlite3 to count {count} candidates")
+            notes.append(f"reactions.sqlite3 is missing, with {count} on disk")
     if notes:
         row["unreadable"] = notes
     return classes + steps
@@ -166,6 +188,7 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
     # Only barriers from the same model and pressure are comparable, so classes merge within those.
     known: dict[tuple[Any, ...], ReactionClasses] = {}
     entries: dict[str, dict[str, Any]] = {}
+    labelled: dict[str, Any] = {}  # the graph of the direction each class is named for
     for index, spec in enumerate(campaign.trajectories):
         model = campaign.adapter_profile_for(index)
         row: dict[str, Any] = {
@@ -203,16 +226,17 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
             notes.insert(0, "unreadable: " + ", ".join(row["unreadable"]))
         row["error"] = "; ".join(notes) or None
         merged = known.setdefault((model, spec.pressure_GPa), ReactionClasses(radius))
-        for candidate, events, results, occurrence_id in classes:
+        for candidate, events, results, occurrence_id, refined in classes:
             # A class with no readable candidate has no graph to merge by, so it keeps its own row.
             name = None if candidate is None else merged.find(candidate)
             if name is None:
                 name = str(len(entries))
                 if candidate is not None:
                     merged.add(name, candidate)
+                    labelled[name] = _reaction_graph(candidate, radius=radius)
                 entries[name] = {
                     "reaction": (
-                        f"class of {occurrence_id} (no readable candidate)"
+                        f"class of {occurrence_id} (no readable candidate, direction unknown)"
                         if candidate is None
                         else _describe(candidate, radius)
                     ),
@@ -233,7 +257,7 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
             if spec.id not in entry["trajectories"]:
                 entry["trajectories"].append(spec.id)
             entry["events"] += events
-            for result in results:
+            for result, event in zip(results, refined, strict=True):
                 entry["pathways"][result["status"]] += 1
                 validation = result.get("frequency_validation")
                 if validation:
@@ -242,7 +266,15 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                 if connectivity:
                     entry["connectivity"][connectivity["status"]] += 1
                 if result["status"] == "saddle_validated":
-                    entry["barriers_eV"].append(result["barrier_eV"])
+                    key = "barriers_eV"
+                    # A barrier is measured from each event's own reactant, so a class that runs
+                    # both ways has two barriers. A row with no candidate names no direction.
+                    if candidate is not None:
+                        if event is None:
+                            key = "unknown_direction_barriers_eV"
+                        elif not _isomorphic(labelled[name], _reaction_graph(event, radius=radius)):
+                            key = "reverse_barriers_eV"
+                    entry.setdefault(key, []).append(result["barrier_eV"])
     for entry in entries.values():
         for key in ("pathways", "frequency", "connectivity"):
             entry[key] = dict(entry[key])
@@ -274,6 +306,13 @@ def _table(header: list[str], rows: list[list[str]]) -> str:
 
 def _pressure(value: float | None) -> str:
     return "NVT" if value is None else f"{value:g}"
+
+
+def _spread(barriers: list[float]) -> str:
+    if not barriers:
+        return "-"
+    values = (min(barriers), statistics.median(barriers), max(barriers))
+    return " / ".join(f"{value:.3f}" for value in values)
 
 
 def _converged(pathways: dict[str, int]) -> str:
@@ -321,9 +360,9 @@ def format_status(report: dict[str, Any]) -> str:
     if not report["reactions"]:
         lines.append("No reactions could be read." if incomplete else "No reactions recorded yet.")
         return "\n".join(lines)
+    both_ways = any("reverse_barriers_eV" in entry for entry in report["reactions"])
     reaction_rows = []
     for entry in report["reactions"]:
-        barriers = entry["barriers_eV"]
         reaction_rows.append(
             [
                 entry["reaction"],
@@ -333,12 +372,8 @@ def format_status(report: dict[str, Any]) -> str:
                 str(entry["events"]),
                 _converged(entry["pathways"]),
                 str(entry["pathways"].get("saddle_validated", 0)),
-                "-"
-                if not barriers
-                else " / ".join(
-                    f"{value:.3f}"
-                    for value in (min(barriers), statistics.median(barriers), max(barriers))
-                ),
+                _spread(entry["barriers_eV"]),
+                *([_spread(entry.get("reverse_barriers_eV", []))] if both_ways else []),
             ]
         )
     lines.append(
@@ -352,11 +387,23 @@ def format_status(report: dict[str, Any]) -> str:
                 "converged",
                 "validated",
                 "barrier eV (min / median / max)",
+                *(["reverse barrier eV (min / median / max)"] if both_ways else []),
             ],
             reaction_rows,
         )
     )
     lines.append("")
+    if both_ways:
+        lines.append(
+            "A class holds both directions of a reaction. Barrier is for the direction the row "
+            "names, and reverse barrier for the other."
+        )
+    unknown = sum(len(e.get("unknown_direction_barriers_eV", [])) for e in report["reactions"])
+    if unknown:
+        lines.append(
+            f"{unknown} barrier{'' if unknown == 1 else 's'} of unknown direction, whose candidate "
+            "files cannot be read, left out of the table and listed in --json."
+        )
     verdicts = sum((Counter(entry["pathways"]) for entry in report["reactions"]), Counter())
     if any(verdicts[status] for status in _CONVERGED):
         line = (

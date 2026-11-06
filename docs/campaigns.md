@@ -262,8 +262,10 @@ pressure, because only those barriers are comparable. Classes merge by the local
 changed bonds and the atoms within `--radius` bonds of them (default 2), including forward/reverse
 equivalence ([local classes](reaction-identity.md#local-classes)). Each row lists the bond changes
 with the formula of those atoms, the number of trajectories and events, converged bands out of
-those refined, validated saddles, and the minimum, median, and maximum barrier. Each step of an
-event refined in steps is an event of its own local class
+those refined, validated saddles, and the minimum, median, and maximum barrier. A barrier is measured
+from each event's own reactant, so a class that runs both ways has two barriers: the row's barrier
+is for the direction it names, and a further column, `reverse_barriers_eV` in `--json`, is for the
+other. Each step of an event refined in steps is an event of its own local class
 ([steps](pathway-refinement.md#reactant-frame-and-steps)). Barriers come only from validated
 saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
 totals the saddle check's verdicts across the campaign (validated, no saddle, rejected, unchecked)
