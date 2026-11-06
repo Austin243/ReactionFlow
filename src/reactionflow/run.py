@@ -709,6 +709,12 @@ class ReactionRun:
             self._start(atoms)
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
+        if self._phase == "completed" and total_steps > self._global_step:
+            raise ValueError(
+                f"this run completed at step {self._global_step} and cannot be extended to "
+                f"{total_steps}: its last candidates are closed. Start a new trajectory from a "
+                "saved frame, which carries its momenta"
+            )
         self._refine_after_md = refine_after_md
         lost = missing_frames(self.root, self._global_frame)
         if lost:
