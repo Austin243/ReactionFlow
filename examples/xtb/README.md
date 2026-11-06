@@ -31,7 +31,9 @@ Saddle check: 9 validated, 0 no saddle, 0 rejected, 0 unchecked. Barriers come o
 Each proton transfer is one occurrence of the same reaction class, the O-H bond that breaks and
 the O-H bond that forms in malonaldehyde. Every saddle has one imaginary mode near 1150i cm⁻¹ and
 connects the two enols. The number of events and their barriers change with the machine, because
-floating-point differences grow along a chaotic trajectory. Eight 20 ps runs from 400 to 800 K
+floating-point differences grow along a chaotic trajectory, and with every pause or kill, because
+tblite reuses its wavefunction ([exact restart](../../docs/exact-restart.md)). On one machine this
+example gave 7 events uninterrupted and 10 after three kills. Eight 20 ps runs from 400 to 800 K
 gave 55 transfers, all validated, at 0.04 to 0.19 eV.
 
 Each refinement is in `pathways/<occurrence>/`: `images.traj` holds the band, and `result.json`

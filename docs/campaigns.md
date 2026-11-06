@@ -236,8 +236,9 @@ marked failed refines its queue when resubmitted, then reports the failure again
 
 MD restarts exactly after a pause, and refinement reads only saved frames, so with a model that
 keeps no state between evaluations both orders give the same frames, events, and barriers. A model
-with internal state, such as ASE's EMT and its neighbor list, can differ at rounding level, as it
-does after any restart. The setting is not part of a trajectory's contract, so you can change it
+with internal state can differ, as it does after any restart: ASE's EMT and its neighbor list at
+rounding level, and tblite's xTB, which reuses its wavefunction, by a whole different path
+([exact restart](exact-restart.md)). The setting is not part of a trajectory's contract, so you can change it
 when you resubmit. A trajectory already paused for refinement finishes that refinement first.
 
 `validate`, and `run` when it starts a trajectory, warn about settings that quietly shape the result,

@@ -40,13 +40,18 @@ Bitwise continuation requires the same ASE and NumPy versions, so the codec reco
 do not influence the propagated state.
 
 Calculator state is not guessed. An MLIP adapter must either serialize all mutable state or
-declare that deterministic reconstruction from pinned model/configuration data is exact. An
-adapter that cannot satisfy that contract cannot be used in strict exact-restart mode.
+declare that deterministic reconstruction from pinned model/configuration data is exact.
 
 The generic ASE calculator adapter is for deterministic, stateless inference. It binds the
 calculator factory and kwargs, model-file SHA-256 values, calculator source, and selected installed
 package versions to the checkpoint. Calculators with mutable inference state or their own RNG must
-use a custom adapter that snapshots that state explicitly.
+use a custom adapter that snapshots that state explicitly. Nothing tests this at run time: the
+adapter labels every calculator exact and gives no warning when one is not. tblite reuses its
+previous wavefunction, so each pause or kill of the xTB example changes its path: 6e-8 Å by step 100,
+growing to 6.3 Å within 20 ps, with 7 events uninterrupted, 8 with `refine_after_md`, and 10 after
+three kills, on one machine. Each is still a valid sample, but not the same trajectory. ASE's EMT and
+LJ differ at rounding level, at most 7e-15 Å over 3 ps. ANI-1xnr, AIMNet2-RXN, MACE and UMA on a CPU
+stayed bitwise exact in the cases tried; no GPU has been tested.
 
 The built-in Torch adapters, ANI-1xnr included, use deterministic PyTorch execution, disable TF32,
 and fix the cuBLAS workspace configuration. They record the model-file SHA-256 values, options,
