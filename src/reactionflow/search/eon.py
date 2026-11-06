@@ -148,6 +148,11 @@ class EONSettings:
                 raise ValueError("eon.displace_centers holds element symbols or atom indices")
             if isinstance(center, Integral) and center < 0:
                 raise ValueError("eon.displace_centers atom indices must be non-negative")
+        if centers and self.displace != "local" and self.guide is None:
+            raise ValueError(
+                "eon.displace_centers applies only to a local push; "
+                "set eon.displace to 'local', or leave the centers out"
+            )
         object.__setattr__(self, "displace_centers", tuple(centers))
         if type(self.equivalent_atoms) is not bool:
             raise ValueError("eon.equivalent_atoms must be true or false")
