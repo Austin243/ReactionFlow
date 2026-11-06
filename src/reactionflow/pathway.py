@@ -753,20 +753,20 @@ def _refine_pathway(
     changed = candidate.reactant_bonds ^ candidate.product_bonds
     first, last = candidate.reactant_frame, candidate.product_frame
     saved = {**frames, first: candidate.reactant, last: candidate.product}
-    # By the tracker's reactant frame a changed bond can already be inside its hysteresis gap, and
-    # relaxing that frame can carry the change on, so the reactant comes from the latest frame
-    # before the bonds began to change.
-    start = next(
-        (
-            frame
-            for frame in range(first, first - options.reactant_lookback - 1, -1)
-            if frame in saved and _on_reactant_side(saved[frame], candidate, detector_config)
-        ),
-        first,
-    )
-    window = {frame: saved[frame] for frame in sorted(saved) if start <= frame <= last}
     images: list[Atoms] = []
     try:
+        # By the tracker's reactant frame a changed bond can already be inside its hysteresis gap,
+        # and relaxing that frame can carry the change on, so the reactant comes from the latest
+        # frame before the bonds began to change.
+        start = next(
+            (
+                frame
+                for frame in range(first, first - options.reactant_lookback - 1, -1)
+                if frame in saved and _on_reactant_side(saved[frame], candidate, detector_config)
+            ),
+            first,
+        )
+        window = {frame: saved[frame] for frame in sorted(saved) if start <= frame <= last}
         prepared = _prepare_frames(window, options, variable_cell=setup.pressure_GPa is not None)
         if not set(candidate.atom_ids) <= set(atom_ids(prepared[first])):
             raise ValueError("candidate atom IDs are missing from its endpoints")
@@ -783,6 +783,7 @@ def _refine_pathway(
         ):
             # Bonds away from the event differ between the two frames, so keep the tracker's.
             start = first
+            images[0] = prepared[start]
             reactant, converged = relaxed(start, "relax_reactant")
         state = _made(reactant, candidate, detector_config) if converged else None
         # The intermediates in the order the trajectory reached them, each with the first frame
