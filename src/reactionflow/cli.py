@@ -10,7 +10,7 @@ import os
 import socket
 import sys
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, replace
 from numbers import Integral
@@ -18,6 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ase import Atoms
+from ase.constraints import FixAtoms
 from ase.io import read
 from ase.io.formats import filetype
 
@@ -140,47 +141,56 @@ def visible_gpu(environment: Mapping[str, str] | None = None) -> str:
     return devices[0]
 
 
-def _start_warnings(campaign: CampaignConfig, index: int) -> list[str]:
-    """What a trajectory's settings will silently do to its result. None of this stops it."""
+def _start_warnings(campaign: CampaignConfig, indices: Iterable[int]) -> list[str]:
+    """What these trajectories' settings will silently do to their results. None of this stops them.
 
-    trajectory = campaign.trajectory(index)
-    path = campaign.structure_for(index)
-    name = os.path.relpath(path, campaign.source.parent)
-    atoms = read(path)
-    notes = []
-    try:
-        several = len(read(path, index=slice(0, 2))) > 1
-    except Exception:  # a format that reads one image and takes no slice
-        several = False
-    if several:
-        notes.append(f"{name} holds several frames; a run starts from the last one")
-    if atoms.has("momenta"):
-        notes.append(
-            f"{name} carries momenta, which set the starting velocities in place of temperature_K; "
-            "the thermostat then moves them toward it"
-        )
-    if atoms.constraints:
-        notes.append(
-            f"{name} has constraints, which hold in MD and are removed in refinement, so its "
-            "barriers are for a system with every atom free"
-        )
-    if trajectory.pressure_GPa is not None and (
-        not atoms.pbc.all() or atoms.cell.rank < 3 or atoms.cell.handedness <= 0
-    ):
-        notes.append(
-            f"{name} has no fully periodic right-handed cell, which refinement at a pressure "
-            "needs, so MD can run but every event would end unresolved, with no barrier"
-        )
-    run = campaign.reaction_run
-    observations = trajectory.total_steps // run.observation_interval
-    needed = run.detector.persistence_frames + run.candidate_stability_frames - 1
-    if observations < needed:
-        notes.append(
-            f"{trajectory.total_steps} steps at one observation per {run.observation_interval} "
-            f"make {observations}, and confirming a reaction takes at least {needed}, so such a "
-            "run cannot report one"
-        )
-    return notes
+    Each structure is read once, since a large campaign can name one for every trajectory.
+    """
+
+    notes: dict[str, None] = {}
+    structures: dict[Path, tuple[Atoms, bool]] = {}
+    for index in indices:
+        trajectory = campaign.trajectory(index)
+        path = campaign.structure_for(index)
+        if path not in structures:
+            try:
+                several = len(read(path, index=slice(0, 2))) > 1
+            except Exception:  # a format that reads one image and takes no slice
+                several = False
+            structures[path] = read(path), several
+        atoms, several = structures[path]
+        name = os.path.relpath(path, campaign.source.parent)
+        if several:
+            notes[f"{name} holds several frames; a run starts from the last one"] = None
+        if atoms.has("momenta"):
+            notes[
+                f"{name} carries momenta, which set the starting velocities in place of "
+                "temperature_K; the thermostat then moves them toward it"
+            ] = None
+        # ASE's .con reader attaches a FixAtoms that fixes nothing.
+        if any(not isinstance(c, FixAtoms) or len(c.index) for c in atoms.constraints):
+            notes[
+                f"{name} has constraints, which hold in MD and are removed in refinement, so its "
+                "barriers are for a system with every atom free"
+            ] = None
+        if trajectory.pressure_GPa is not None and (
+            not atoms.pbc.all() or atoms.cell.rank < 3 or atoms.cell.handedness <= 0
+        ):
+            notes[
+                f"{name} has no fully periodic right-handed cell, which refinement at a pressure "
+                "needs, so every event would end unresolved, with no barrier"
+            ] = None
+        run = campaign.reaction_run
+        # MD also observes the end of a last, shorter interval.
+        observations = -(-trajectory.total_steps // run.observation_interval)
+        needed = run.detector.persistence_frames + run.candidate_stability_frames - 1
+        if observations < needed:
+            notes[
+                f"{trajectory.total_steps} steps at one observation per "
+                f"{run.observation_interval} make {observations}, and confirming a reaction takes "
+                f"at least {needed}, so such a run cannot report one"
+            ] = None
+    return list(notes)
 
 
 def run_selected_trajectory(
@@ -205,7 +215,7 @@ def run_selected_trajectory(
         run = ReactionRun.open(root)
         atoms = read(campaign.structure_for(index)) if run.phase == "new" else None
     else:
-        for note in _start_warnings(campaign, index):
+        for note in _start_warnings(campaign, [index]):
             print(f"warning: {note}", file=sys.stderr)
         atoms = read(campaign.structure_for(index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
@@ -582,8 +592,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
-        notes = (note for index in range(count) for note in _start_warnings(campaign, index))
-        if warnings := list(dict.fromkeys(notes)):
+        if warnings := _start_warnings(campaign, range(count)):
             payload["warnings"] = warnings
         print(json.dumps(payload, sort_keys=True))
     elif arguments.command == "check":
