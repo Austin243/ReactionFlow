@@ -10,14 +10,16 @@ import os
 import socket
 import sys
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, replace
 from numbers import Integral
 from pathlib import Path
 from uuid import uuid4
 
+from ase import Atoms
 from ase.io import read
+from ase.io.formats import filetype
 
 from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
@@ -318,6 +320,46 @@ def _scan_settings(
     }
 
 
+def _file_warnings(path: Path, first: Atoms) -> list[str]:
+    """What a trajectory file's form does to a scan of it, read off its first frame, to keep with
+    the scan's summary. A file with no cell is often a gas-phase run, so that note is only printed.
+    """
+
+    if not first.pbc.any():
+        print(
+            f"warning: {path.name} has no periodic cell, so an atom wrapped at a box boundary "
+            "reads as a bond change. A gas-phase trajectory is fine; otherwise use a format "
+            "that keeps it",
+            file=sys.stderr,
+        )
+    notes = []
+    try:
+        dump = filetype(str(path)) == "lammps-dump-text"
+    except Exception:  # the frames were read, so this only costs the note below
+        dump = False
+    if dump:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            columns = next(
+                (line.split()[2:] for line in stream if line.startswith("ITEM: ATOMS")), []
+            )
+        if "element" not in columns and "mass" not in columns:
+            notes.append(
+                f"{path.name} names atoms only by LAMMPS type, which ASE reads as atomic numbers "
+                f"(type 1 as H, type 2 as He), so these results are for "
+                f"{first.get_chemical_formula()}. Add an element or mass column to the dump"
+            )
+    return notes
+
+
+def _noting_first_frame(
+    path: Path, frames: Iterator[tuple[int, float | None, Atoms]], notes: list[str]
+) -> Iterator[tuple[int, float | None, Atoms]]:
+    for number, item in enumerate(frames):
+        if number == 0:
+            notes.extend(_file_warnings(path, item[2]))
+        yield item
+
+
 def _print_scan(path: Path, result: ScanResult, **identity: object) -> None:
     counts = {key: value for key, value in result.summary.items() if key != "settings"}
     print(json.dumps({"scan": str(path), **identity, **counts}, sort_keys=True))
@@ -451,9 +493,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if frame_ps is not None and not (math.isfinite(frame_ps) and frame_ps > 0):
             parser.error("--frame-ps must be a positive number")
         settings = _scan_settings(parser, arguments, ReactionRunConfig())
-        result = scan_frames(file_frames(arguments.campaign, frame_ps=frame_ps), **settings)
         source = arguments.campaign
+        notes: list[str] = []
+        frames = _noting_first_frame(source, file_frames(source, frame_ps=frame_ps), notes)
+        result = scan_frames(frames, **settings)
+        if notes:
+            result.summary["warnings"] = notes
         _print_scan(result.write(arguments.out or source.with_name(f"{source.name}-scan")), result)
+        for note in notes:
+            print(f"warning: {note}", file=sys.stderr)
         return 0
     raw = json.loads(arguments.campaign.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):

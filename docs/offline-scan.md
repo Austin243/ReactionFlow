@@ -40,7 +40,10 @@ Any source that is not a `.json` campaign file is read as a trajectory file, in 
 reads, for example an XDATCAR, an extxyz file, or a LAMMPS dump. Atoms keep the IDs the file
 carries, such as an `atom_id` column in extxyz, and otherwise get IDs 0 to N−1 in file order, so
 the file must keep its atom order. ASE sorts a LAMMPS dump by its `id` column, and it names the
-elements from an `element` or `mass` column, because types alone do not. The settings start from
+elements from an `element` or `mass` column, because types alone do not: a dump with only types is
+read as H, He, and so on, and the scan warns, on standard error and under `warnings` in the summary.
+It also warns on standard error about a file with no periodic cell, where a wrapped atom reads as a
+bond change. The settings start from
 the defaults of a campaign (thresholds from covalent radii, persistence 3, stability 3, radius 2)
 and take the same options. `--frame-ps` gives the time between frames for the time columns, which
 are empty without it. The tables go to `<file>-scan/` beside the file unless `--out` names another
