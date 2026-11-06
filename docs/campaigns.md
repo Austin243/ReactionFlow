@@ -240,6 +240,13 @@ with internal state, such as ASE's EMT and its neighbor list, can differ at roun
 does after any restart. The setting is not part of a trajectory's contract, so you can change it
 when you resubmit. A trajectory already paused for refinement finishes that refinement first.
 
+`validate`, and `run` when it starts a trajectory, warn about settings that quietly shape the result,
+on standard error for `run` and under `warnings` for `validate`: a structure with several frames, of
+which the run takes the last; momenta in the structure, which replace `temperature_K` for the
+starting velocities; constraints, which hold in MD and are removed in refinement; a cell at a pressure
+that refinement cannot use; and a run with too few observations to confirm any reaction. None of
+these stops the run.
+
 ## Campaign status
 
 `reactionflow status campaign.json` summarizes a campaign without changing it, so it is safe to

@@ -138,6 +138,49 @@ def visible_gpu(environment: Mapping[str, str] | None = None) -> str:
     return devices[0]
 
 
+def _start_warnings(campaign: CampaignConfig, index: int) -> list[str]:
+    """What a trajectory's settings will silently do to its result. None of this stops it."""
+
+    trajectory = campaign.trajectory(index)
+    path = campaign.structure_for(index)
+    name = os.path.relpath(path, campaign.source.parent)
+    atoms = read(path)
+    notes = []
+    try:
+        several = len(read(path, index=slice(0, 2))) > 1
+    except Exception:  # a format that reads one image and takes no slice
+        several = False
+    if several:
+        notes.append(f"{name} holds several frames; a run starts from the last one")
+    if atoms.has("momenta"):
+        notes.append(
+            f"{name} carries momenta, which set the starting velocities in place of temperature_K; "
+            "the thermostat then moves them toward it"
+        )
+    if atoms.constraints:
+        notes.append(
+            f"{name} has constraints, which hold in MD and are removed in refinement, so its "
+            "barriers are for a system with every atom free"
+        )
+    if trajectory.pressure_GPa is not None and (
+        not atoms.pbc.all() or atoms.cell.rank < 3 or atoms.cell.handedness <= 0
+    ):
+        notes.append(
+            f"{name} has no fully periodic right-handed cell, which refinement at a pressure "
+            "needs, so MD can run but every event would end unresolved, with no barrier"
+        )
+    run = campaign.reaction_run
+    observations = trajectory.total_steps // run.observation_interval
+    needed = run.detector.persistence_frames + run.candidate_stability_frames - 1
+    if observations < needed:
+        notes.append(
+            f"{trajectory.total_steps} steps at one observation per {run.observation_interval} "
+            f"make {observations}, and confirming a reaction takes at least {needed}, so such a "
+            "run cannot report one"
+        )
+    return notes
+
+
 def run_selected_trajectory(
     campaign: CampaignConfig,
     *,
@@ -160,6 +203,8 @@ def run_selected_trajectory(
         run = ReactionRun.open(root)
         atoms = read(campaign.structure_for(index)) if run.phase == "new" else None
     else:
+        for note in _start_warnings(campaign, index):
+            print(f"warning: {note}", file=sys.stderr)
         atoms = read(campaign.structure_for(index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         preflight = getattr(adapter, "preflight", None)
@@ -478,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
     elif arguments.command == "validate":
+        count = len(campaign.trajectories)
         payload = {
             "campaign": str(campaign.source),
             "trajectories": len(campaign.trajectories),
@@ -488,6 +534,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
+        notes = (note for index in range(count) for note in _start_warnings(campaign, index))
+        if warnings := list(dict.fromkeys(notes)):
+            payload["warnings"] = warnings
         print(json.dumps(payload, sort_keys=True))
     elif arguments.command == "check":
         if arguments.index is None and len(campaign.trajectories) > 1:
