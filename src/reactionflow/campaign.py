@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import json
 import math
-import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from ._durable import SAFE_NAME
 from .pathway import _RETIRED_KEYS
 from .run import DEFAULT_MAX_HOURS_PER_BARRIER, ReactionRunConfig
-
-_TRAJECTORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _mapping(value: object, name: str) -> Mapping[str, Any]:
@@ -23,10 +21,10 @@ def _mapping(value: object, name: str) -> Mapping[str, Any]:
     return value
 
 
-def _positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return int(value)
+def _reject_unknown(given: Iterable[str], allowed: Iterable[str], label: str) -> None:
+    unknown = set(given) - set(allowed)
+    if unknown:
+        raise ValueError(f"unknown {label}: {sorted(unknown)}")
 
 
 def _finite_float(value: object, name: str, *, minimum: float | None = None) -> float:
@@ -57,15 +55,9 @@ class AdapterSpec:
     @classmethod
     def from_dict(cls, value: object) -> AdapterSpec:
         mapping = _mapping(value, "adapter")
-        unknown = set(mapping) - {"factory", "options"}
-        if unknown:
-            raise ValueError(f"unknown adapter keys: {sorted(unknown)}")
+        _reject_unknown(mapping, {"factory", "options"}, "adapter keys")
         factory = mapping.get("factory")
-        if (
-            not isinstance(factory, str)
-            or factory.count(":") != 1
-            or any(not part for part in factory.split(":"))
-        ):
+        if not isinstance(factory, str) or factory.count(":") != 1 or not all(factory.split(":")):
             raise ValueError("adapter.factory must be 'module:callable'")
         return cls(
             factory=factory,
@@ -88,24 +80,9 @@ class TrajectorySpec:
     @classmethod
     def from_dict(cls, value: object) -> TrajectorySpec:
         mapping = _mapping(value, "trajectory")
-        allowed = {
-            "id",
-            "total_steps",
-            "timestep_fs",
-            "temperature_K",
-            "pressure_GPa",
-            "seed",
-            "conditions",
-        }
-        unknown = set(mapping) - allowed
-        if unknown:
-            raise ValueError(f"unknown trajectory keys: {sorted(unknown)}")
+        _reject_unknown(mapping, [item.name for item in fields(TrajectorySpec)], "trajectory keys")
         trajectory_id = mapping.get("id")
-        if (
-            not isinstance(trajectory_id, str)
-            or not _TRAJECTORY_ID.fullmatch(trajectory_id)
-            or trajectory_id in {".", ".."}
-        ):
+        if not isinstance(trajectory_id, str) or not SAFE_NAME.fullmatch(trajectory_id):
             raise ValueError("trajectory.id must be a safe non-empty file name")
         seed = mapping.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, Integral) or not 0 <= seed < 2**64:
@@ -118,9 +95,12 @@ class TrajectorySpec:
         )
         if timestep_fs == 0:
             raise ValueError("trajectory.timestep_fs must be positive")
+        steps = mapping.get("total_steps")
+        if isinstance(steps, bool) or not isinstance(steps, Integral) or steps < 1:
+            raise ValueError("trajectory.total_steps must be a positive integer")
         return cls(
             id=trajectory_id,
-            total_steps=_positive_int(mapping.get("total_steps"), "trajectory.total_steps"),
+            total_steps=int(steps),
             timestep_fs=timestep_fs,
             temperature_K=_finite_float(
                 mapping.get("temperature_K"),
@@ -138,18 +118,14 @@ class TrajectorySpec:
 def _run_config(value: object) -> ReactionRunConfig:
     overrides = _mapping(value, "reaction_run")
     merged = ReactionRunConfig().to_dict()
-    unknown = set(overrides) - set(merged)
-    if unknown:
-        raise ValueError(f"unknown reaction_run keys: {sorted(unknown)}")
+    _reject_unknown(overrides, merged, "reaction_run keys")
     for key, item in overrides.items():
         if key in {"detector", "pathway"}:
             nested = _mapping(item, f"reaction_run.{key}")
-            known = set(merged[key])  # type: ignore[arg-type]
+            known = set(merged[key])  # type: ignore[call-overload]
             if key == "pathway":
                 known |= _RETIRED_KEYS
-            unknown_nested = set(nested) - known
-            if unknown_nested:
-                raise ValueError(f"unknown reaction_run.{key} keys: {sorted(unknown_nested)}")
+            _reject_unknown(nested, known, f"reaction_run.{key} keys")
             merged[key] = {**merged[key], **nested}  # type: ignore[dict-item]
         else:
             merged[key] = item
@@ -179,7 +155,7 @@ class CampaignConfig:
             raise ValueError("unsupported campaign schema; use schema_version 2")
         if value.get("mode", "md") != "md":
             raise ValueError("MD campaign requires mode 'md'")
-        unknown = set(value) - {
+        known = (
             "schema_version",
             "mode",
             "structure",
@@ -190,9 +166,8 @@ class CampaignConfig:
             "refine_after_md",
             "adapter_profiles",
             "max_hours_per_barrier",
-        }
-        if unknown:
-            raise ValueError(f"unknown campaign keys: {sorted(unknown)}")
+        )
+        _reject_unknown(value, known, "campaign keys")
         output_value = value.get("output_root")
         if not isinstance(output_value, str) or not output_value:
             raise ValueError("campaign.output_root must be a path string")
@@ -206,29 +181,23 @@ class CampaignConfig:
             return path
 
         # A trajectory's own structure overrides the campaign-wide one.
-        default_structure = (
-            structure_path(value["structure"], "campaign.structure")
-            if "structure" in value
-            else None
-        )
+        default_structure = None
+        if "structure" in value:
+            default_structure = structure_path(value["structure"], "campaign.structure")
 
         raw_profiles = _mapping(value.get("adapter_profiles"), "campaign.adapter_profiles")
         if not raw_profiles:
             raise ValueError("campaign.adapter_profiles must be a non-empty object")
         adapter_profiles: dict[str, AdapterSpec] = {}
         for name, raw_profile in raw_profiles.items():
-            if not _TRAJECTORY_ID.fullmatch(name) or name in {".", ".."}:
+            if not SAFE_NAME.fullmatch(name):
                 raise ValueError(
                     f"adapter profile name must be a safe non-empty identifier: {name!r}"
                 )
             adapter_profiles[name] = AdapterSpec.from_dict(raw_profile)
 
         raw_trajectories = value.get("trajectories")
-        if (
-            not isinstance(raw_trajectories, Sequence)
-            or isinstance(raw_trajectories, (str, bytes))
-            or not raw_trajectories
-        ):
+        if not isinstance(raw_trajectories, list) or not raw_trajectories:
             raise ValueError("campaign.trajectories must be a non-empty array")
         trajectories: list[TrajectorySpec] = []
         trajectory_profiles: list[str] = []
@@ -251,8 +220,7 @@ class CampaignConfig:
             trajectories.append(TrajectorySpec.from_dict(trajectory))
             trajectory_profiles.append(profile)
             trajectory_structures.append(structure)
-        identifiers = [trajectory.id for trajectory in trajectories]
-        if len(set(identifiers)) != len(identifiers):
+        if len({trajectory.id for trajectory in trajectories}) != len(trajectories):
             raise ValueError("trajectory IDs must be unique")
         max_hours = value.get("max_hours_per_barrier", DEFAULT_MAX_HOURS_PER_BARRIER)
         if max_hours is not None:

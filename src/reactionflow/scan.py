@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import networkx as nx
 from ase import Atoms
 from ase.formula import Formula
 from ase.io import iread
 from ase.io.trajectory import Trajectory
 
 from .candidates import ReactionCandidate, ReactionClasses, ReactionTracker
-from .detection import Bond, BondChangeDetector, BondDetectorConfig, atom_ids, canonical_copy
+from .detection import Bond, BondChangeDetector, BondDetectorConfig, _symbols_by_id, canonical_copy
 from .status import _describe
 
 type Frame = tuple[int, float | None, Atoms]
@@ -123,29 +124,19 @@ def recorded_occurrences(root: str | Path) -> dict[OccurrenceKey, str]:
             continue
         metadata = json.loads(path.read_text(encoding="utf-8"))
         data = metadata["candidate"]
-        changes = {tuple(bond) for bond in data["reactant_bonds"]} ^ {
-            tuple(bond) for bond in data["product_bonds"]
-        }
+        changes = set(map(tuple, data["reactant_bonds"])) ^ set(map(tuple, data["product_bonds"]))
         frames = (data["reactant_frame"], data["product_frame"], data["observed_frame"])
         recorded[(frames, frozenset(changes))] = metadata["occurrence_id"]
     return recorded
 
 
-def _components(atoms: Iterable[int], bonds: Iterable[Bond]) -> dict[int, int]:
-    """Map each atom ID to the smallest atom ID of its bonded component."""
+def _components(atoms: Iterable[int], bonds: Iterable[Bond]) -> nx.utils.UnionFind:
+    """Partition the atom IDs into bonded components."""
 
-    parent = {atom_id: atom_id for atom_id in atoms}
-
-    def root(atom_id: int) -> int:
-        while parent[atom_id] != atom_id:
-            parent[atom_id] = parent[parent[atom_id]]
-            atom_id = parent[atom_id]
-        return atom_id
-
+    components = nx.utils.UnionFind(atoms)
     for first, second in bonds:
-        first, second = root(first), root(second)
-        parent[max(first, second)] = min(first, second)
-    return {atom_id: root(atom_id) for atom_id in parent}
+        components.union(first, second)
+    return components
 
 
 def _changes(candidate: ReactionCandidate, symbols: Mapping[int, str]) -> str:
@@ -184,7 +175,7 @@ def scan_frames(
     labels: list[str] = []
     times: dict[int, float | None] = {}
     symbols: dict[int, str] = {}
-    molecule: dict[int, int] = {}
+    molecule = nx.utils.UnionFind()
     bond_changes: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     species: list[dict[str, Any]] = []
@@ -223,7 +214,7 @@ def scan_frames(
         times[frame] = time_ps
         events = detector.process(atoms, frame=frame)
         if not symbols:
-            symbols = dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
+            symbols = _symbols_by_id(atoms)
             molecule = _components(symbols, detector.stable_bonds)
         # A crossing that leaves the pending list without being confirmed reverted in time.
         pending = detector.pending_changes
@@ -253,15 +244,12 @@ def scan_frames(
         ):
             add(candidate, at_end=False)
         if frame % species_every == 0:
-            members: dict[int, list[int]] = {}
-            for atom_id, root in _components(symbols, detector.stable_bonds).items():
-                members.setdefault(root, []).append(atom_id)
             counts = Counter(
                 (
                     Formula.from_list([symbols[atom_id] for atom_id in group]).format("hill"),
                     len({molecule[atom_id] for atom_id in group}),
                 )
-                for group in members.values()
+                for group in _components(symbols, detector.stable_bonds).to_sets()
             )
             species.extend(
                 {

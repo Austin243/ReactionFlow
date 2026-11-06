@@ -19,10 +19,9 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 
 from .._durable import file_digest
 from ..ase_npt import restore_langevin_baoab, snapshot_langevin_baoab
-from ..campaign import TrajectorySpec
+from ..campaign import TrajectorySpec, _reject_unknown
 from ..restart import ComponentState, ExactRestartSnapshot
 
-_CALCULATOR_KIND = "reactionflow.ase-calculator"
 _ALLOWED_OPTIONS = {
     "calculator_factory",
     "calculator_kwargs",
@@ -141,9 +140,7 @@ class ASELangevinBAOABAdapter:
     """Shared exact NVT/NPT runtime for adapters that lease ASE calculators."""
 
     def __init__(self, *, trajectory: TrajectorySpec) -> None:
-        unknown_conditions = set(trajectory.conditions) - _ALLOWED_CONDITIONS
-        if unknown_conditions:
-            raise ValueError(f"unknown ASE trajectory conditions: {sorted(unknown_conditions)}")
+        _reject_unknown(trajectory.conditions, _ALLOWED_CONDITIONS, "ASE trajectory conditions")
         self.trajectory = trajectory
 
     def _lease(self) -> AbstractContextManager[tuple[Calculator, ComponentState]]:
@@ -160,9 +157,7 @@ class ASELangevinBAOABAdapter:
             # SSNEB rotates each endpoint cell into lower-triangular form but cannot rotate the
             # field with it, so the cell must start in that form and keep its shape.
             _, rotation = atoms.cell.standard_form()
-            if not bool(conditions.get("hydrostatic", True)) or not np.allclose(
-                rotation, np.eye(3)
-            ):
+            if not conditions.get("hydrostatic", True) or not np.allclose(rotation, np.eye(3)):
                 raise ValueError(
                     "an external field under pressure needs hydrostatic NPT and a "
                     "lower-triangular cell; rotate the structure and field together first"
@@ -171,11 +166,9 @@ class ASELangevinBAOABAdapter:
         atoms.calc = calculator
         if "momenta" not in atoms.arrays:
             MaxwellBoltzmannDistribution(
-                atoms,
-                temperature_K=self.trajectory.temperature_K,
-                rng=rng,
+                atoms, temperature_K=self.trajectory.temperature_K, rng=rng
             )
-            if bool(conditions.get("zero_total_momentum", True)):
+            if conditions.get("zero_total_momentum", True):
                 Stationary(atoms, preserve_temperature=True)
         pressure = self.trajectory.pressure_GPa
         return LangevinBAOAB(
@@ -184,24 +177,15 @@ class ASELangevinBAOABAdapter:
             temperature_K=self.trajectory.temperature_K,
             externalstress=None if pressure is None else -pressure * units.GPa,
             hydrostatic=bool(conditions.get("hydrostatic", True)),
-            T_tau=_positive_float(
-                conditions.get("thermostat_tau_fs", 100.0),
-                "thermostat_tau_fs",
-            )
+            T_tau=_positive_float(conditions.get("thermostat_tau_fs", 100.0), "thermostat_tau_fs")
             * units.fs,
             P_tau=(
                 None
                 if pressure is None
-                else _positive_float(
-                    conditions.get("barostat_tau_fs", 1000.0),
-                    "barostat_tau_fs",
-                )
+                else _positive_float(conditions.get("barostat_tau_fs", 1000.0), "barostat_tau_fs")
                 * units.fs
             ),
-            P_mass=_optional_positive_float(
-                conditions.get("barostat_mass"),
-                "barostat_mass",
-            ),
+            P_mass=_optional_positive_float(conditions.get("barostat_mass"), "barostat_mass"),
             disable_cell_langevin=bool(conditions.get("disable_cell_langevin", False)),
             rng=rng,
             logfile=None,
@@ -240,15 +224,9 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
     """Load one deterministic ASE calculator from a campaign configuration."""
 
     def __init__(self, *, trajectory: TrajectorySpec, options: Mapping[str, Any]) -> None:
-        unknown_options = set(options) - _ALLOWED_OPTIONS
-        if unknown_options:
-            raise ValueError(f"unknown ASE calculator adapter options: {sorted(unknown_options)}")
+        _reject_unknown(options, _ALLOWED_OPTIONS, "ASE calculator adapter options")
         factory = options.get("calculator_factory")
-        if (
-            not isinstance(factory, str)
-            or factory.count(":") != 1
-            or any(not part for part in factory.split(":"))
-        ):
+        if not isinstance(factory, str) or factory.count(":") != 1 or not all(factory.split(":")):
             raise ValueError("calculator_factory must be 'module:callable'")
         kwargs = options.get("calculator_kwargs", {})
         if not isinstance(kwargs, Mapping) or any(not isinstance(key, str) for key in kwargs):
@@ -256,10 +234,8 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
         super().__init__(trajectory=trajectory)
         self.calculator_factory = factory
         self.calculator_kwargs = dict(kwargs)
-        self.model_files = tuple(
-            Path(item).expanduser().resolve()
-            for item in _string_sequence(options.get("model_files", []), "model_files")
-        )
+        files = _string_sequence(options.get("model_files", []), "model_files")
+        self.model_files = tuple(Path(item).expanduser().resolve() for item in files)
         self.packages = _string_sequence(options.get("packages", []), "packages")
         self.torch_device = options.get("torch_device")
         if self.torch_device not in {None, "cpu", "cuda"}:
@@ -267,23 +243,14 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
         self._model_hashes: dict[str, str] | None = None
         self._contract: ComponentState | None = None
 
-    def _factory(self) -> tuple[Any, Any]:
-        module_name, factory_name = self.calculator_factory.split(":", 1)
-        module = import_module(module_name)
-        factory = getattr(module, factory_name, None)
-        if not callable(factory):
-            raise TypeError(f"ASE calculator factory {self.calculator_factory!r} is not callable")
-        return module, factory
-
     def _model_file_hashes(self) -> dict[str, str]:
-        if self._model_hashes is not None:
-            return self._model_hashes
-        hashes: dict[str, str] = {}
-        for path in self.model_files:
-            if not path.is_file():
-                raise FileNotFoundError(f"MLIP model file is missing: {path}")
-            hashes[str(path)] = file_digest(path)
-        self._model_hashes = hashes
+        if self._model_hashes is None:
+            hashes: dict[str, str] = {}
+            for path in self.model_files:
+                if not path.is_file():
+                    raise FileNotFoundError(f"MLIP model file is missing: {path}")
+                hashes[str(path)] = file_digest(path)
+            self._model_hashes = hashes
         return self._model_hashes
 
     def _package_versions(self, module_name: str) -> dict[str, str]:
@@ -313,7 +280,7 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
             None if source_path is None or not source_path.is_file() else file_digest(source_path)
         )
         self._contract = ComponentState(
-            kind=_CALCULATOR_KIND,
+            kind="reactionflow.ase-calculator",
             metadata={
                 "factory": self.calculator_factory,
                 "calculator_type": calculator_type,
@@ -333,7 +300,11 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
     @contextmanager
     def _lease(self) -> Iterator[tuple[Calculator, ComponentState]]:
         self._model_file_hashes()
-        module, factory = self._factory()
+        module_name, factory_name = self.calculator_factory.split(":", 1)
+        module = import_module(module_name)
+        factory = getattr(module, factory_name, None)
+        if not callable(factory):
+            raise TypeError(f"ASE calculator factory {self.calculator_factory!r} is not callable")
         torch_environment: Mapping[str, object] = {}
         if self.torch_device is None:
             calculator = factory(**self.calculator_kwargs)

@@ -17,7 +17,7 @@ from typing import Any
 from ase import Atoms
 from ase.io import read
 
-from ..campaign import AdapterSpec, TrajectorySpec
+from ..campaign import AdapterSpec, TrajectorySpec, _reject_unknown
 from ..detection import canonical_copy
 from ..mlip import load_mlip_adapter
 from ..model_setup import install_and_prepare, prepare_adapter, prepare_campaign
@@ -61,7 +61,7 @@ class SearchCampaign:
             raise ValueError("unsupported campaign schema; use schema_version 2")
         if data.get("mode") != "eon":
             raise ValueError("search campaign requires mode 'eon'")
-        unknown = data.keys() - {
+        known = {
             "schema_version",
             "mode",
             "structure",
@@ -71,8 +71,7 @@ class SearchCampaign:
             "akmc",
             "eon",
         }
-        if unknown:
-            raise ValueError(f"unknown EON campaign keys: {sorted(unknown)}")
+        _reject_unknown(data, known, "EON campaign keys")
 
         def resolve(value: Any, label: str) -> Path:
             if not isinstance(value, str) or not value:
@@ -99,16 +98,15 @@ class SearchCampaign:
         Adapters are built for MD. EON uses only their calculator, so the MD fields are unused.
         """
 
-        return (
-            TrajectorySpec(
-                id="eon",
-                total_steps=1,
-                timestep_fs=1.0,
-                temperature_K=self.akmc.temperature_K,
-                pressure_GPa=None,
-                seed=self.akmc.seed,
-            ),
+        spec = TrajectorySpec(
+            id="eon",
+            total_steps=1,
+            timestep_fs=1.0,
+            temperature_K=self.akmc.temperature_K,
+            pressure_GPa=None,
+            seed=self.akmc.seed,
         )
+        return (spec,)
 
     def adapter_for(self, index: int) -> AdapterSpec:
         if index != 0:
@@ -221,9 +219,8 @@ def _format_status(report: dict[str, Any]) -> str:
     for row in report["step_rows"]:
         kind = ""
         if row["chemical"] is not None:
-            kind = f"{'chemical' if row['chemical'] else 'into unexplored conformer'}, " + (
-                f"basin of {row['basin_states']}; "
-            )
+            name = "chemical" if row["chemical"] else "into unexplored conformer"
+            kind = f"{name}, basin of {row['basin_states']}; "
         lines.append(
             f"step {row['step']}: {row['from']} -> {row['to']} via {row['process']} "
             f"({kind}{row['barrier_eV']:.4g} eV; {row['bonds']}), dt {row['dt_s']:.4g} s, "
@@ -260,21 +257,17 @@ def handle_command(arguments: argparse.Namespace) -> int:
     command = arguments.command
     if command == "prepare":
         if arguments.install:
-            return install_and_prepare(
-                campaign,
-                index=arguments.index,
-                extra_packages=(f"pyeonclient[ase]=={EON_VERSION}",),
-            )
+            extra = (f"pyeonclient[ase]=={EON_VERSION}",)
+            return install_and_prepare(campaign, index=arguments.index, extra_packages=extra)
         models = prepare_campaign(campaign, index=arguments.index)
         print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
         return 0
     if command == "status":
         report = search_status(campaign)
-        print(
-            json.dumps(report, indent=2, sort_keys=True)
-            if arguments.json
-            else _format_status(report)
-        )
+        if arguments.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(_format_status(report))
         return 0
     if command == "run":
         from ..cli import resolve_task_index, visible_gpu
@@ -287,24 +280,20 @@ def handle_command(arguments: argparse.Namespace) -> int:
     atoms = campaign.starting_atoms()
     warnings = [PINNED] if free_rotation(atoms) == "pinned" else []
     if command == "validate":
-        print(
-            json.dumps(
-                {
-                    "campaign": str(campaign.source),
-                    "mode": "eon",
-                    "atoms": len(atoms),
-                    "output_root": str(campaign.output_root),
-                    "tasks": 1,
-                    "kmc_steps": campaign.akmc.steps,
-                    "temperature_K": campaign.akmc.temperature_K,
-                    "adapter_factory": campaign.adapter.factory,
-                    "require_gpu": campaign.require_gpu,
-                    "rigid_rotation": campaign.eon.rotation_for(atoms),
-                    "warnings": warnings,
-                },
-                sort_keys=True,
-            )
-        )
+        report = {
+            "campaign": str(campaign.source),
+            "mode": "eon",
+            "atoms": len(atoms),
+            "output_root": str(campaign.output_root),
+            "tasks": 1,
+            "kmc_steps": campaign.akmc.steps,
+            "temperature_K": campaign.akmc.temperature_K,
+            "adapter_factory": campaign.adapter.factory,
+            "require_gpu": campaign.require_gpu,
+            "rigid_rotation": campaign.eon.rotation_for(atoms),
+            "warnings": warnings,
+        }
+        print(json.dumps(report, sort_keys=True))
         return 0
     adapter = load_mlip_adapter(campaign.adapter, campaign.trajectories[0])
     preflight = getattr(adapter, "preflight", None)
@@ -322,16 +311,13 @@ def handle_command(arguments: argparse.Namespace) -> int:
     # One model load gives the calculator and the same identity an MD restart records.
     with lease() as (calculator, identity), _eon_output(log):
         backend = EONBackend(calculator, campaign.eon, campaign.akmc.temperature_K)
+        contract = {
+            "adapter": asdict(campaign.adapter),
+            "calculator": asdict(identity),
+            "eon": backend.contract,
+        }
         run_exploration(
-            campaign.output_root,
-            atoms,
-            backend=backend,
-            contract={
-                "adapter": asdict(campaign.adapter),
-                "calculator": asdict(identity),
-                "eon": backend.contract,
-            },
-            config=campaign.akmc,
+            campaign.output_root, atoms, backend=backend, contract=contract, config=campaign.akmc
         )
     print(json.dumps(search_status(campaign), sort_keys=True))
     return 0

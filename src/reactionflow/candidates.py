@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection
-from dataclasses import dataclass
-from numbers import Integral
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import networkx as nx
@@ -13,7 +12,7 @@ from ase import Atoms
 from ase.io import read, write
 
 from ._durable import file_digest
-from .detection import Bond, atom_ids, canonical_copy, transport_copy
+from .detection import Bond, _is_count, _symbols_by_id, canonical_copy, transport_copy
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,19 +41,17 @@ class _ReactantOrigin:
 @dataclass(slots=True)
 class _PendingTopology:
     atom_ids: tuple[int, ...]
-    reactant: Atoms
-    reactant_bonds: frozenset[Bond]
-    reactant_frame: int
+    reactant: _ReactantOrigin
     bonds: frozenset[Bond]
     product: Atoms
     product_frame: int
+    origins: tuple[_ReactantOrigin, ...]
     count: int = 0
-    origins: tuple[_ReactantOrigin, ...] = ()
 
 
 def _within(bonds: frozenset[Bond], region: Collection[int]) -> frozenset[Bond]:
     ids = set(region)
-    return frozenset(bond for bond in bonds if set(bond) <= ids)
+    return frozenset(bond for bond in bonds if bond[0] in ids and bond[1] in ids)
 
 
 def _select_origin(
@@ -90,72 +87,34 @@ def _bonds(values: Collection[Bond], valid_ids: set[int]) -> frozenset[Bond]:
 
 
 def _changed_regions(
-    reactant: frozenset[Bond],
-    product: frozenset[Bond],
-    stable: frozenset[Bond] | None = None,
-    radius: int | None = None,
+    reactant: frozenset[Bond], product: frozenset[Bond], stable: frozenset[Bond], radius: int | None
 ) -> tuple[tuple[int, ...], ...]:
-    stable = product if stable is None else stable
     changed_atoms = {
         atom_id for bond in (reactant ^ product) | (stable ^ product) for atom_id in bond
     }
-    neighbors: dict[int, set[int]] = {}
-    for first, second in reactant | product | stable:
-        neighbors.setdefault(first, set()).add(second)
-        neighbors.setdefault(second, set()).add(first)
-
-    if radius is not None:
-        # Each changed atom and the atoms within `radius` bonds of it; overlapping ones merge.
-        merged: list[set[int]] = []
-        for atom_id in sorted(changed_atoms):
-            region = frontier = {atom_id}
-            for _ in range(radius):
-                frontier = {n for current in frontier for n in neighbors.get(current, ())} - region
-                region = region | frontier
-            for other in [item for item in merged if item & region]:
-                merged.remove(other)
-                region |= other
-            merged.append(region)
-        return tuple(sorted(tuple(sorted(region)) for region in merged))
-
-    regions: list[tuple[int, ...]] = []
-    unseen = set(changed_atoms)
-    while unseen:
-        start = min(unseen)
-        region = {start}
-        stack = [start]
-        while stack:
-            current = stack.pop()
-            for neighbor in neighbors.get(current, ()):
-                if neighbor not in region:
-                    region.add(neighbor)
-                    stack.append(neighbor)
-        unseen -= region
-        regions.append(tuple(sorted(region)))
-    return tuple(sorted(regions))
+    if not changed_atoms:
+        return ()
+    graph = nx.from_edgelist(reactant | product | stable)
+    # Each changed atom and the atoms within `radius` bonds of it, or its whole bonded component
+    # if `radius` is None; overlapping ones merge.
+    if radius is None:
+        merged = [c for c in nx.connected_components(graph) if not changed_atoms.isdisjoint(c)]
+    else:
+        regions = nx.utils.UnionFind()
+        for atom_id in changed_atoms:
+            distances = nx.single_source_shortest_path_length(graph, atom_id, cutoff=radius)
+            regions.union(*distances)
+        merged = regions.to_sets()
+    return tuple(sorted(tuple(sorted(region)) for region in merged))
 
 
 def _reaction_graph(
     candidate: ReactionCandidate, *, reverse: bool = False, radius: int | None = None
 ) -> nx.Graph:
-    if radius is not None and (
-        isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 0
-    ):
+    if radius is not None and not _is_count(radius, 0):
         raise ValueError("radius must be a non-negative integer or None")
-    reactant_symbols = dict(
-        zip(
-            atom_ids(candidate.reactant),
-            candidate.reactant.get_chemical_symbols(),
-            strict=True,
-        )
-    )
-    product_symbols = dict(
-        zip(
-            atom_ids(candidate.product),
-            candidate.product.get_chemical_symbols(),
-            strict=True,
-        )
-    )
+    reactant_symbols = _symbols_by_id(candidate.reactant)
+    product_symbols = _symbols_by_id(candidate.product)
     region = set(candidate.atom_ids)
     if (
         not region <= reactant_symbols.keys()
@@ -164,22 +123,17 @@ def _reaction_graph(
     ):
         raise ValueError("candidate endpoint identities do not match")
 
-    reactant = set(_bonds(candidate.reactant_bonds, region))
-    product = set(_bonds(candidate.product_bonds, region))
+    reactant = _bonds(candidate.reactant_bonds, region)
+    product = _bonds(candidate.product_bonds, region)
+    if reverse:
+        reactant, product = product, reactant
     graph = nx.Graph()
     graph.add_nodes_from(
         (atom_id, {"element": reactant_symbols[atom_id]}) for atom_id in candidate.atom_ids
     )
-    for first, second in reactant | product:
-        if (first, second) in reactant and (first, second) in product:
-            change = "unchanged"
-        elif (first, second) in product:
-            change = "formed"
-        else:
-            change = "broken"
-        if reverse:
-            change = {"formed": "broken", "broken": "formed"}.get(change, change)
-        graph.add_edge(first, second, change=change)
+    graph.add_edges_from(reactant & product, change="unchanged")
+    graph.add_edges_from(product - reactant, change="formed")
+    graph.add_edges_from(reactant - product, change="broken")
     if radius is None:
         return graph
     # The local change: the atoms of the changed bonds and every atom within `radius` bonds.
@@ -189,6 +143,10 @@ def _reaction_graph(
         frontier = {neighbor for atom_id in frontier for neighbor in graph[atom_id]} - nodes
         nodes |= frontier
     return graph.subgraph(nodes).copy()
+
+
+def _directions(candidate: ReactionCandidate, radius: int | None) -> list[nx.Graph]:
+    return [_reaction_graph(candidate, reverse=reverse, radius=radius) for reverse in (False, True)]
 
 
 def _isomorphic(first: nx.Graph, second: nx.Graph) -> bool:
@@ -214,18 +172,13 @@ def same_reaction(
     """
 
     graph = _reaction_graph(first, radius=radius)
-    return _isomorphic(graph, _reaction_graph(second, radius=radius)) or _isomorphic(
-        graph, _reaction_graph(second, reverse=True, radius=radius)
-    )
+    return any(_isomorphic(graph, direction) for direction in _directions(second, radius))
 
 
 def reaction_key(candidate: ReactionCandidate, *, radius: int | None = None) -> str:
     """Hash shared by forward/reverse-equivalent candidates; confirm matches with same_reaction."""
 
-    return min(
-        _graph_hash(_reaction_graph(candidate, reverse=reverse, radius=radius))
-        for reverse in (False, True)
-    )
+    return min(map(_graph_hash, _directions(candidate, radius)))
 
 
 class ReactionClasses:
@@ -241,10 +194,7 @@ class ReactionClasses:
     def find(self, candidate: ReactionCandidate) -> str | None:
         """Return the name of the class equivalent to this candidate, if one is known."""
 
-        directions = [
-            _reaction_graph(candidate, reverse=reverse, radius=self.radius)
-            for reverse in (False, True)
-        ]
+        directions = _directions(candidate, self.radius)
         for name, graph in self._graphs.get(min(map(_graph_hash, directions)), ()):
             if any(_isomorphic(graph, direction) for direction in directions):
                 return name
@@ -265,17 +215,9 @@ class ReactionTracker:
     """
 
     def __init__(self, *, stability_frames: int = 3, region_radius: int | None = 2) -> None:
-        if (
-            isinstance(stability_frames, bool)
-            or not isinstance(stability_frames, Integral)
-            or stability_frames < 1
-        ):
+        if not _is_count(stability_frames, 1):
             raise ValueError("stability_frames must be a positive integer")
-        if region_radius is not None and (
-            isinstance(region_radius, bool)
-            or not isinstance(region_radius, Integral)
-            or region_radius < 0
-        ):
+        if region_radius is not None and not _is_count(region_radius, 0):
             raise ValueError("region_radius must be a non-negative integer or None")
         self.stability_frames = int(stability_frames)
         self.region_radius = None if region_radius is None else int(region_radius)
@@ -295,16 +237,18 @@ class ReactionTracker:
     def _candidate(
         self, pending: _PendingTopology, *, observed_frame: int, resolved: bool
     ) -> ReactionCandidate | None:
-        reactant_bonds = _within(pending.reactant_bonds, pending.atom_ids)
+        """The region's change, or None for a region that ended where it began."""
+
+        reactant_bonds = _within(pending.reactant.bonds, pending.atom_ids)
         if reactant_bonds == pending.bonds:
             return None
         return ReactionCandidate(
-            reactant=pending.reactant.copy(),
+            reactant=pending.reactant.atoms.copy(),
             product=pending.product.copy(),
             atom_ids=pending.atom_ids,
             reactant_bonds=reactant_bonds,
             product_bonds=pending.bonds,
-            reactant_frame=pending.reactant_frame,
+            reactant_frame=pending.reactant.frame,
             product_frame=pending.product_frame,
             observed_frame=observed_frame,
             resolved=resolved,
@@ -328,12 +272,12 @@ class ReactionTracker:
 
         if self._last_frame is not None and frame <= self._last_frame:
             raise ValueError("frame numbers must increase")
-        ids = atom_ids(atoms)
-        symbols = dict(zip(ids, atoms.get_chemical_symbols(), strict=True))
+        symbols = _symbols_by_id(atoms)
         if self._symbols is not None and symbols != self._symbols:
             raise ValueError("atom identities changed between frames")
-        bonds = _bonds(stable_bonds, set(ids))
-        proposal = bonds if pending_bonds is None else _bonds(pending_bonds, set(ids))
+        ids = set(symbols)
+        bonds = _bonds(stable_bonds, ids)
+        proposal = bonds if pending_bonds is None else _bonds(pending_bonds, ids)
         if self._accepted_bonds is None and pending_bonds is not None:
             raise ValueError("start the tracker before the detector has pending changes")
         snapshot = atoms.copy()
@@ -367,11 +311,7 @@ class ReactionTracker:
                         for origin in item.origins:
                             support = tuple(sorted(set(origin.atom_ids).intersection(region)))
                             if support:
-                                origins.append(
-                                    _ReactantOrigin(
-                                        support, origin.atoms, origin.bonds, origin.frame
-                                    )
-                                )
+                                origins.append(replace(origin, atom_ids=support))
                                 covered.update(support)
                     added = tuple(sorted(set(region) - covered))
                     if added:
@@ -380,28 +320,24 @@ class ReactionTracker:
                                 added, self._accepted, self._last_bonds, self._accepted_frame
                             )
                         )
-                    reactant = _select_origin(origins, region, self._accepted_bonds, local_product)
                     pending = _PendingTopology(
                         atom_ids=region,
-                        reactant=reactant.atoms,
-                        reactant_bonds=reactant.bonds,
-                        reactant_frame=reactant.frame,
+                        reactant=_select_origin(
+                            origins, region, self._accepted_bonds, local_product
+                        ),
                         bonds=local_product,
                         product=snapshot,
                         product_frame=frame,
                         origins=tuple(origins),
                     )
-                if _within(bonds ^ proposal, region):
-                    pending.count = 0
-                else:
-                    pending.count += 1
+                pending.count = 0 if _within(bonds ^ proposal, region) else pending.count + 1
                 if pending.count < self.stability_frames:
                     remaining.append(pending)
                     continue
                 # If a region joins an independently accepted event, the oldest snapshot can
                 # precede that event. Keep this overlapping history as unresolved, rather than
                 # claiming a reactant topology that does not match the retained geometry.
-                resolved = _within(pending.reactant_bonds, region) == _within(
+                resolved = _within(pending.reactant.bonds, region) == _within(
                     self._accepted_bonds, region
                 )
                 candidate = self._candidate(pending, observed_frame=frame, resolved=resolved)
@@ -494,10 +430,7 @@ class ReactionTracker:
 
     @classmethod
     def read_checkpoint(
-        cls,
-        path: str | Path,
-        *,
-        stability_frames: int | None = None,
+        cls, path: str | Path, *, stability_frames: int | None = None
     ) -> ReactionTracker:
         """Restore a tracker written by ``write_checkpoint``."""
 
@@ -538,13 +471,10 @@ class ReactionTracker:
                 )
                 for origin in item["origins"]
             )
-            reactant = _select_origin(origins, region, tracker._accepted_bonds, bonds)
             tracker._pending.append(
                 _PendingTopology(
                     atom_ids=region,
-                    reactant=reactant.atoms,
-                    reactant_bonds=reactant.bonds,
-                    reactant_frame=reactant.frame,
+                    reactant=_select_origin(origins, region, tracker._accepted_bonds, bonds),
                     bonds=bonds,
                     product=snapshots[item["product"]],
                     product_frame=int(item["product_frame"]),
@@ -561,9 +491,7 @@ def _checkpoint_bonds(values: Collection[Bond] | None) -> list[list[int]] | None
     return [list(bond) for bond in sorted(values)]
 
 
-def _restore_bonds(
-    values: Collection[Collection[int]] | None,
-) -> frozenset[Bond] | None:
+def _restore_bonds(values: Collection[Collection[int]] | None) -> frozenset[Bond] | None:
     if values is None:
         return None
     return frozenset(

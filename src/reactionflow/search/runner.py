@@ -76,15 +76,6 @@ def _processes(store: SearchStore, identifiers: list[str]) -> list[dict[str, Any
     return [{**store.read("processes", pid).data, "id": pid} for pid in identifiers]
 
 
-def _in_window(processes: list[dict[str, Any]], config: AKMCConfig) -> list[dict[str, Any]]:
-    """Processes inside the thermal window above the lowest barrier."""
-
-    if not processes:
-        return []
-    lowest = min(process["barrier_eV"] for process in processes)
-    return [p for p in processes if in_window(p["barrier_eV"], lowest, config)]
-
-
 def is_internal(process: dict[str, Any]) -> bool:
     """A process that forms and breaks no bond stays inside its chemical basin."""
 
@@ -92,13 +83,17 @@ def is_internal(process: dict[str, Any]) -> bool:
 
 
 def kept_processes(processes: list[dict[str, Any]], config: AKMCConfig) -> list[dict[str, Any]]:
-    """Processes in the rate table. With basins, the window compares chemical exits only, so a
-    fast conformational change does not push the chemistry out of the window."""
+    """Processes in the rate table, inside the thermal window above the lowest barrier. With
+    basins, the window compares chemical exits only, so a fast conformational change does not push
+    the chemistry out of the window."""
 
     if config.basins == "none":
-        return _in_window(processes, config)
-    internal = [p for p in processes if is_internal(p)]
-    return internal + _in_window([p for p in processes if not is_internal(p)], config)
+        internal, compared = [], processes
+    else:
+        internal = [p for p in processes if is_internal(p)]
+        compared = [p for p in processes if not is_internal(p)]
+    lowest = min((p["barrier_eV"] for p in compared), default=0.0)
+    return internal + [p for p in compared if in_window(p["barrier_eV"], lowest, config)]
 
 
 def _repeat(store: SearchStore, backend: Any, known: list[dict], saddle: Atoms, energy: float):
@@ -123,22 +118,19 @@ def _reverse(
     if _repeat(store, backend, known, structures["saddle"], data["saddle_energy_eV"]):
         return None
     reactant = store.read("states", data["state"])
-    store.write(
-        "processes",
-        reverse_id,
-        {
-            "state": data["product"],
-            "product": data["state"],
-            "barrier_eV": data["saddle_energy_eV"] - data["product_energy_eV"],
-            "saddle_energy_eV": data["saddle_energy_eV"],
-            "product_energy_eV": reactant.data["energy_eV"],
-            "prefactor_s": data["reverse_prefactor_s"],
-            "reverse_prefactor_s": data["prefactor_s"],
-            "bonds": reversed_changes(data["bonds"]),
-            "source": f"reverse of {forward_id}",
-        },
-        structures={"saddle": structures["saddle"], "product": reactant.structures["atoms"]},
-    )
+    process = {
+        "state": data["product"],
+        "product": data["state"],
+        "barrier_eV": data["saddle_energy_eV"] - data["product_energy_eV"],
+        "saddle_energy_eV": data["saddle_energy_eV"],
+        "product_energy_eV": reactant.data["energy_eV"],
+        "prefactor_s": data["reverse_prefactor_s"],
+        "reverse_prefactor_s": data["prefactor_s"],
+        "bonds": reversed_changes(data["bonds"]),
+        "source": f"reverse of {forward_id}",
+    }
+    keep = {"saddle": structures["saddle"], "product": reactant.structures["atoms"]}
+    store.write("processes", reverse_id, process, structures=keep)
     return reverse_id
 
 
@@ -188,9 +180,8 @@ def _attempt(
         return {**search, "status": "new", "process": forward_id, "reverse": reverse}, {}
     origin = store.read("states", origin_id)
     energy = origin.data["energy_eV"]
-    data: dict[str, Any] = dict(active)
     result = backend.search(origin.structures["atoms"].copy(), seed=active["seed"])
-    data.update(backend=result.metadata, message=result.message)
+    data = {**active, "backend": result.metadata, "message": result.message}
     if result.status == "no_push":
         return {**data, "status": "no_push"}, {}
     reference, extra = energy, {}
@@ -228,30 +219,27 @@ def _attempt(
         return {**data, "status": "outside_window"}, {}
     repeated = _repeat(store, backend, known, result.saddle, result.saddle_energy)
     if repeated is not None:
-        relevant = repeated["id"] in {process["id"] for process in kept_processes(known, config)}
+        relevant = repeated in kept_processes(known, config)
         return {**data, "status": "repeat", "process": repeated["id"], "relevant": relevant}, {}
     data["product"] = _state_id(store, backend, result.product, result.product_energy)
     if data["product"] == origin_id:
         # Equivalent atoms exchanged places: no state change, so no part of the kinetics.
         return {**data, "status": "same_state"}, {}
     data["status"] = "new"
-    store.write(
-        "processes",
-        forward_id,
-        {
-            "state": origin_id,
-            "product": data["product"],
-            "barrier_eV": barrier,
-            "saddle_energy_eV": result.saddle_energy,
-            "product_energy_eV": result.product_energy,
-            "prefactor_s": result.prefactor,
-            "reverse_prefactor_s": result.reverse_prefactor,
-            "bonds": bonds,
-            "source": active["id"],
-            "search": data,
-        },
-        structures={"saddle": result.saddle, "product": result.product, **extra},
-    )
+    process = {
+        "state": origin_id,
+        "product": data["product"],
+        "barrier_eV": barrier,
+        "saddle_energy_eV": result.saddle_energy,
+        "product_energy_eV": result.product_energy,
+        "prefactor_s": result.prefactor,
+        "reverse_prefactor_s": result.reverse_prefactor,
+        "bonds": bonds,
+        "source": active["id"],
+        "search": data,
+    }
+    keep = {"saddle": result.saddle, "product": result.product, **extra}
+    store.write("processes", forward_id, process, structures=keep)
     reverse = _reverse(store, backend, state, forward_id, store.read("processes", forward_id))
     return {**data, "process": forward_id, "reverse": reverse}, {}
 
@@ -277,19 +265,17 @@ def _commit_attempt(state: dict[str, Any], result: dict[str, Any]) -> None:
     state["active"] = None
 
 
-def _basin_step(
+def _basin_exit(
     store: SearchStore, state: dict[str, Any], config: AKMCConfig
-) -> dict[str, Any] | None:
-    """Leave the explored part of the current chemical basin, or return None if it is closed.
+) -> tuple[dict[str, Any], float, dict[str, Any]] | None:
+    """Pick the exit from the explored part of the current chemical basin, its time, and what the
+    step records about the basin, or return None if the basin is closed.
 
     The basin holds every state reached from the current one through processes that form and
     break no bond and that has been searched to the confidence target. Its exits are chemical
     processes and bond-preserving processes into states not yet searched to confidence.
     """
 
-    identifier = f"step-{state['steps']:06d}"
-    if identifier in store.ids("steps"):
-        return store.read("steps", identifier).data
     current = state["current"]
     explored = {
         name
@@ -321,48 +307,44 @@ def _basin_step(
     order = sorted(probabilities)
     pick, dt = kmc_step([probabilities[e] / mean for e in order], [config.seed, 1, state["steps"]])
     chosen = exits[order[pick]]
-    counters = state["states"][current]
-    data = {
-        "from": current,
-        "to": chosen["product"],
-        "process": chosen["id"],
+    details = {
         "exit_state": chosen["state"],
         "chemical": not is_internal(chosen),
-        "dt_s": dt,
-        "time_s": state["time_s"] + dt,
         "total_rate_s": 1.0 / mean,
         "mean_escape_time_s": mean,
         "escape_probability": probabilities[chosen["id"]],
         "basin_states": len(basin),
         "processes_in_window": len(order),
-        "confidence": confidence(counters["repeats"]),
-        "searches": counters["searches"],
     }
-    store.write("steps", identifier, data)
-    return data
+    return chosen, dt, details
 
 
 def _step(store: SearchStore, state: dict[str, Any], config: AKMCConfig) -> dict[str, Any] | None:
-    if config.basins == "bonds":
-        return _basin_step(store, state, config)
     identifier = f"step-{state['steps']:06d}"
     if identifier in store.ids("steps"):
         return store.read("steps", identifier).data
     current = state["current"]
     counters = state["states"][current]
-    window = _in_window(_processes(store, counters["processes"]), config)
-    rates = [rate(p["prefactor_s"], p["barrier_eV"], config.kT) for p in window]
-    pick, dt = kmc_step(rates, [config.seed, 1, state["steps"]])
+    if config.basins == "bonds":
+        found = _basin_exit(store, state, config)
+        if found is None:
+            return None
+        chosen, dt, details = found
+    else:
+        window = kept_processes(_processes(store, counters["processes"]), config)
+        rates = [rate(p["prefactor_s"], p["barrier_eV"], config.kT) for p in window]
+        pick, dt = kmc_step(rates, [config.seed, 1, state["steps"]])
+        chosen = window[pick]
+        details = {"total_rate_s": float(sum(rates)), "processes_in_window": len(window)}
     data = {
         "from": current,
-        "to": window[pick]["product"],
-        "process": window[pick]["id"],
+        "to": chosen["product"],
+        "process": chosen["id"],
         "dt_s": dt,
         "time_s": state["time_s"] + dt,
-        "total_rate_s": float(sum(rates)),
-        "processes_in_window": len(window),
         "confidence": confidence(counters["repeats"]),
         "searches": counters["searches"],
+        **details,
     }
     store.write("steps", identifier, data)
     return data
@@ -428,15 +410,15 @@ def run_exploration(
                 state["chemical_steps"] = 0
             _save_state(root, state)
         counted = "chemical_steps" if config.basins == "bonds" else "steps"
+        stop_reason = "steps_completed"
         while state[counted] < config.steps:
             if state["active"] is None:
                 counters = state["states"][state["current"]]
                 if confidence(counters["repeats"]) >= config.confidence:
                     step = _step(store, state, config)
                     if step is None:
-                        state["stop_reason"] = "no_chemical_exit"
-                        _save_state(root, state)
-                        return state
+                        stop_reason = "no_chemical_exit"
+                        break
                     state.update(current=step["to"], time_s=step["time_s"])
                     state["steps"] += 1
                     if step.get("chemical"):
@@ -460,10 +442,9 @@ def run_exploration(
             _commit_attempt(state, result)
             if result["status"] == "no_push":
                 # Every later search from this state would select nothing as well.
-                state["stop_reason"] = "no_push"
-                _save_state(root, state)
-                return state
+                stop_reason = "no_push"
+                break
             _save_state(root, state)
-        state["stop_reason"] = "steps_completed"
+        state["stop_reason"] = stop_reason
         _save_state(root, state)
         return state

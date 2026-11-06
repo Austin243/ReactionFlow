@@ -1,4 +1,4 @@
-"""Small, explicit helpers for optional model packages and cached weights."""
+"""Small, explicit helpers for adapter options, optional model packages and cached weights."""
 
 from __future__ import annotations
 
@@ -13,7 +13,17 @@ from pathlib import Path
 from urllib.request import urlopen
 from uuid import uuid4
 
-from .._durable import ensure_directory, file_digest, publish, sync_directory
+from .._durable import ensure_directory, file_digest, publishing, sync_directory
+
+
+def check_paths(options: Mapping[str, object], names: tuple[str, ...], message: str) -> None:
+    """Refuse each named option that is present but not an absolute path string."""
+
+    for name in names:
+        if name in options:
+            value = options[name]
+            if not isinstance(value, str) or not value or not Path(value).is_absolute():
+                raise ValueError(message.format(name))
 
 
 def require_package(name: str, expected: str, extra: str) -> None:
@@ -31,13 +41,12 @@ def require_package(name: str, expected: str, extra: str) -> None:
 def model_cache(options: Mapping[str, object], backend: str) -> Path:
     raw = options.get("cache_dir", os.environ.get("REACTIONFLOW_MODEL_CACHE"))
     if raw is None:
-        root = Path.home() / ".cache" / "reactionflow" / "models"
-    else:
-        if not isinstance(raw, str) or not raw:
-            raise ValueError("cache_dir must be an absolute path string")
-        root = Path(raw).expanduser()
-        if not root.is_absolute():
-            raise ValueError("cache_dir must be an absolute path")
+        return Path.home() / ".cache" / "reactionflow" / "models" / backend
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("cache_dir must be an absolute path string")
+    root = Path(raw).expanduser()
+    if not root.is_absolute():
+        raise ValueError("cache_dir must be an absolute path")
     return root / backend
 
 
@@ -74,8 +83,7 @@ def cached_download(url: str, cache_dir: Path, *, download: bool) -> Path:
         if final.exists():
             return _cached_file(final, url)
         temporary = cache_dir / f".{key}-{uuid4().hex}.tmp"
-        temporary.mkdir()
-        try:
+        with publishing(temporary, final):
             path = temporary / "model"
             with urlopen(url, timeout=60) as response, path.open("wb") as handle:
                 expected_size = response.headers.get("Content-Length")
@@ -90,8 +98,4 @@ def cached_download(url: str, cache_dir: Path, *, download: bool) -> Path:
                 json.dumps({"url": url, "sha256": file_digest(path)}, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            publish(temporary, final)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
     return final / "model"

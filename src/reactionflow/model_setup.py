@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Iterable
+from contextlib import suppress
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -32,17 +33,10 @@ def model_catalog(backend: str | None = None) -> list[dict]:
     }
     if backend is not None:
         backend = backend.replace("-", "_")
-    if backend is not None and backend not in modules:
-        raise ValueError(f"unknown backend {backend!r}; choose from {sorted(modules)}")
-    selected = modules.values() if backend is None else (modules[backend],)
-    return [
-        {
-            "backend": module.rsplit(".", 1)[1],
-            "factory": f"{module}:create_adapter",
-            **import_module(module).catalog(),
-        }
-        for module in selected
-    ]
+        if backend not in modules:
+            raise ValueError(f"unknown backend {backend!r}; choose from {sorted(modules)}")
+        modules = {backend: modules[backend]}
+    return [import_module(module).catalog() for module in modules.values()]
 
 
 def _selected_adapters(campaign: CampaignConfig, index: int | None) -> tuple[AdapterSpec, ...]:
@@ -72,23 +66,14 @@ def prepare_campaign(campaign: CampaignConfig, *, index: int | None = None) -> l
 
     results = []
     for spec in _selected_adapters(campaign, index):
-        if spec.factory not in _PACKAGES:
+        if spec.factory in _PACKAGES:
+            files = {name: str(path) for name, path in prepare_adapter(spec).items()}
+            results.append({"factory": spec.factory, "status": "prepared", "files": files})
+        else:
+            message = "This adapter manages its own dependencies and model files."
             results.append(
-                {
-                    "factory": spec.factory,
-                    "status": "external_setup",
-                    "message": "This adapter manages its own dependencies and model files.",
-                }
+                {"factory": spec.factory, "status": "external_setup", "message": message}
             )
-            continue
-        files = prepare_adapter(spec)
-        results.append(
-            {
-                "factory": spec.factory,
-                "status": "prepared",
-                "files": {name: str(path) for name, path in files.items()},
-            }
-        )
     return results
 
 
@@ -96,13 +81,11 @@ def backend_conflict(factories: Iterable[str]) -> str | None:
     """Return why these built-in backends cannot share one Python environment, or None."""
 
     packages = {_PACKAGES[factory] for factory in factories if factory in _PACKAGES}
-    mace = "mace-torch==0.3.16" in packages
-    uma = "fairchem-core==2.23.0" in packages
-    ani = "torchani==2.8.4" in packages
-    if mace and uma:
-        return "MACE requires e3nn==0.4.4, but UMA requires e3nn>=0.5"
-    if ani and uma:
-        return "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13"
+    if "fairchem-core==2.23.0" in packages:
+        if "mace-torch==0.3.16" in packages:
+            return "MACE requires e3nn==0.4.4, but UMA requires e3nn>=0.5"
+        if "torchani==2.8.4" in packages:
+            return "ANI-1xnr pins Torch 2.11, but UMA's FAIR-Chem version requires Torch 2.13"
     return None
 
 
@@ -123,28 +106,19 @@ def install_and_prepare(
     packages = list(
         dict.fromkeys(_PACKAGES[spec.factory] for spec in selected if spec.factory in _PACKAGES)
     )
-    mace = "mace-torch==0.3.16" in packages
-    uma = "fairchem-core==2.23.0" in packages
     ani = "torchani==2.8.4" in packages
     conflicts = []
-    if ani:
-        conflicts.append(("fairchem-core", "2.23.0"))
-    if uma:
-        conflicts.extend(
-            [("mace-torch", "0.3.16"), ("mace-torch", "0.3.15"), ("torchani", "2.8.4")]
-        )
-    if mace:
-        conflicts.append(("fairchem-core", "2.23.0"))
+    if "fairchem-core==2.23.0" in packages:  # backend_conflict has ruled out MACE and ANI-1xnr
+        conflicts = [("mace-torch", "0.3.16"), ("mace-torch", "0.3.15"), ("torchani", "2.8.4")]
+    elif ani or "mace-torch==0.3.16" in packages:
+        conflicts = [("fairchem-core", "2.23.0")]
     for name, pinned in conflicts:
-        try:
-            installed_version = version(name)
-        except PackageNotFoundError:
-            continue
-        if installed_version == pinned:
-            raise ValueError(
-                f"selected backends conflict with installed {name}=={pinned}; "
-                "use a fresh Python environment to preserve the existing model setup"
-            )
+        with suppress(PackageNotFoundError):
+            if version(name) == pinned:
+                raise ValueError(
+                    f"selected backends conflict with installed {name}=={pinned}; "
+                    "use a fresh Python environment to preserve the existing model setup"
+                )
     if any(
         spec.factory == "reactionflow.adapters.mace:create_adapter"
         and spec.options.get("family") == "polar"

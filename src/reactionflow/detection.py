@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cache
 from numbers import Integral
 from typing import Any, Literal
 
@@ -27,6 +28,10 @@ def _element_pair(value: object) -> ElementPair:
     return tuple(sorted((first, second)))  # type: ignore[return-value]
 
 
+def _is_count(value: object, minimum: int) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool) and not value < minimum
+
+
 def _bond(first: int, second: int) -> Bond:
     if first == second:
         raise ValueError("a bond must connect two distinct atom IDs")
@@ -43,12 +48,21 @@ def atom_ids(atoms: Atoms) -> tuple[int, ...]:
         raise ValueError("stable atom IDs are required")
     if getattr(raw, "dtype", None) is not None and not np.issubdtype(raw.dtype, np.integer):
         raise ValueError("atom IDs must be integers")
-    if any(isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral) for value in raw):
-        raise ValueError("atom IDs must be integers")
-    ids = tuple(int(value) for value in raw)
+    if type(raw) is np.ndarray and raw.ndim == 1 and raw.dtype.kind in "iu":
+        ids = tuple(raw.tolist())  # an integer array holds only integers
+    else:
+        if any(
+            isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral) for value in raw
+        ):
+            raise ValueError("atom IDs must be integers")
+        ids = tuple(int(value) for value in raw)
     if len(ids) != len(atoms) or len(set(ids)) != len(ids):
         raise ValueError("each atom needs one unique stable ID")
     return ids
+
+
+def _symbols_by_id(atoms: Atoms) -> dict[int, str]:
+    return dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
 
 
 def assign_atom_ids(atoms: Atoms) -> Atoms:
@@ -109,11 +123,7 @@ class BondDetectorConfig:
         breaking = float(self.break_scale)
         if not 0 < form < breaking:
             raise ValueError("scales must satisfy 0 < form_scale < break_scale")
-        if (
-            isinstance(self.persistence_frames, bool)
-            or not isinstance(self.persistence_frames, Integral)
-            or self.persistence_frames < 1
-        ):
+        if not _is_count(self.persistence_frames, 1):
             raise ValueError("persistence_frames must be positive")
         thresholds = {
             _element_pair(pair): _threshold(threshold)
@@ -126,7 +136,7 @@ class BondDetectorConfig:
     def threshold_for(self, first: str, second: str) -> tuple[float, float]:
         pair = _element_pair((first, second))
         if pair in self.pair_thresholds:
-            return self.pair_thresholds[pair]  # type: ignore[index,return-value]
+            return self.pair_thresholds[pair]  # type: ignore[return-value]
         radius = covalent_radii[atomic_numbers[first]] + covalent_radii[atomic_numbers[second]]
         return self.form_scale * radius, self.break_scale * radius
 
@@ -171,7 +181,7 @@ def bond_distances(atoms: Atoms, config: BondDetectorConfig) -> dict[Bond, float
 def classify_bonds(atoms: Atoms, config: BondDetectorConfig) -> tuple[set[Bond], set[Bond]]:
     """Return the pairs within their formation distance and those inside the hysteresis gap."""
 
-    symbols = dict(zip(atom_ids(atoms), atoms.get_chemical_symbols(), strict=True))
+    symbols = _symbols_by_id(atoms)
     bonded: set[Bond] = set()
     ambiguous: set[Bond] = set()
     for bond, distance in bond_distances(atoms, config).items():
@@ -253,12 +263,9 @@ class BondChangeDetector:
     def last_frame(self) -> int | None:
         return self._last_frame
 
-    def _threshold(self, bond: Bond) -> tuple[float, float]:
+    def _elements(self, bond: Bond) -> ElementPair:
         assert self._numbers is not None
-        return self.config.threshold_for(
-            chemical_symbols[self._numbers[bond[0]]],
-            chemical_symbols[self._numbers[bond[1]]],
-        )
+        return chemical_symbols[self._numbers[bond[0]]], chemical_symbols[self._numbers[bond[1]]]
 
     def _distances(self, atoms: Atoms, ids: tuple[int, ...]) -> dict[Bond, float]:
         distances = bond_distances(atoms, self.config)
@@ -266,11 +273,7 @@ class BondChangeDetector:
         indices = {atom_id: index for index, atom_id in enumerate(ids)}
         for bond in self._stable - distances.keys():
             distances[bond] = float(
-                atoms.get_distance(
-                    indices[bond[0]],
-                    indices[bond[1]],
-                    mic=bool(atoms.pbc.any()),
-                )
+                atoms.get_distance(indices[bond[0]], indices[bond[1]], mic=bool(atoms.pbc.any()))
             )
         return distances
 
@@ -281,15 +284,18 @@ class BondChangeDetector:
             raise ValueError("frame numbers must increase")
         ids = atom_ids(atoms)
         numbers = dict(zip(ids, map(int, atoms.numbers), strict=True))
-        if self._numbers is not None and numbers != self._numbers:
-            raise ValueError("atom identities changed between frames")
         if self._numbers is None:
             self._numbers = numbers
+        elif numbers != self._numbers:
+            raise ValueError("atom identities changed between frames")
 
         distances = self._distances(atoms, ids)
+        thresholds = cache(lambda first, second: self.config.threshold_for(first, second))
         if self._last_frame is None:
             self._stable = {
-                bond for bond, distance in distances.items() if distance <= self._threshold(bond)[0]
+                bond
+                for bond, distance in distances.items()
+                if distance <= thresholds(*self._elements(bond))[0]
             }
             self._last_frame = frame
             return []
@@ -297,7 +303,8 @@ class BondChangeDetector:
         active: set[tuple[Bond, EventType]] = set()
         events: list[BondEvent] = []
         for bond, distance in sorted(distances.items()):
-            form_distance, break_distance = self._threshold(bond)
+            pair = self._elements(bond)
+            form_distance, break_distance = thresholds(*pair)
             event_type: EventType | None = None
             if bond in self._stable and distance >= break_distance:
                 event_type = "broken"
@@ -321,10 +328,7 @@ class BondChangeDetector:
                 BondEvent(
                     event_type=event_type,
                     atom_ids=bond,
-                    symbols=(
-                        chemical_symbols[numbers[bond[0]]],
-                        chemical_symbols[numbers[bond[1]]],
-                    ),
+                    symbols=pair,
                     distance=distance,
                     form_distance=form_distance,
                     break_distance=break_distance,
@@ -363,10 +367,7 @@ class BondChangeDetector:
 
     @classmethod
     def from_state(
-        cls,
-        state: Mapping[str, Any],
-        *,
-        config: BondDetectorConfig | None = None,
+        cls, state: Mapping[str, Any], *, config: BondDetectorConfig | None = None
     ) -> BondChangeDetector:
         """Restore a detector from a version-1 checkpoint."""
 
@@ -387,8 +388,7 @@ class BondChangeDetector:
             bond = _bond(*map(int, item["atom_ids"]))
             event_type = item["event_type"]
             detector._pending[(bond, event_type)] = _PendingChange(
-                first_seen_frame=int(item["first_seen_frame"]),
-                count=int(item["count"]),
+                first_seen_frame=int(item["first_seen_frame"]), count=int(item["count"])
             )
         detector._last_frame = state.get("last_frame")
         return detector

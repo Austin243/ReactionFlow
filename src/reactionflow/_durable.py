@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
-from hashlib import sha256
+import re
+import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def file_digest(path: Path) -> str:
     """SHA-256 of a file's contents."""
 
-    checksum = sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def sync_directory(path: Path) -> None:
@@ -54,3 +57,16 @@ def publish(temporary: Path, final: Path) -> None:
     flush_to_disk(temporary)
     os.replace(temporary, final)
     sync_directory(final.parent)
+
+
+@contextmanager
+def publishing(temporary: Path, final: Path) -> Iterator[None]:
+    """Make a temporary sibling directory to fill, publish it, and remove it after an Exception."""
+
+    temporary.mkdir()
+    try:
+        yield
+        publish(temporary, final)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise

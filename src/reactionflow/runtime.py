@@ -30,8 +30,7 @@ class ExactRuntimeProvider(Protocol):
     def start(self, atoms: Atoms) -> AbstractContextManager[ExactDynamicsRuntime]: ...
 
     def restore(
-        self,
-        snapshot: ExactRestartSnapshot,
+        self, snapshot: ExactRestartSnapshot
     ) -> AbstractContextManager[ExactDynamicsRuntime]: ...
 
 
