@@ -438,6 +438,8 @@ class ReactionRun:
     def _run_segment(self, total_steps: int, runtime_provider: ExactRuntimeProvider) -> None:
         """Run MD from the current checkpoint until refinement is due or the run ends."""
 
+        # A restore may hand back the snapshot's own atoms, so compare with a copy from before it.
+        saved_atoms = None if self._snapshot is None else self._snapshot.atoms.copy()
         manager = (
             runtime_provider.start(self._initial)
             if self._snapshot is None
@@ -449,6 +451,8 @@ class ReactionRun:
                 self._checkpoint(runtime)
             elif int(runtime.nsteps) != self._global_step:
                 raise ValueError("exact runtime step counter does not match the durable run")
+            elif not _same_atomic_state(runtime.atoms, saved_atoms):
+                raise ValueError("exact runtime restored other atoms than its checkpoint holds")
             else:
                 self._record_environment_change(runtime.snapshot())
 
