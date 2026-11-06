@@ -57,9 +57,12 @@ class ReactionRunConfig:
                 raise ValueError(f"{name} must be a positive integer")
         radius = self.candidate_region_radius
         if radius is not None and (
-            isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 0
+            isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 1
         ):
-            raise ValueError("candidate_region_radius must be a non-negative integer or null")
+            raise ValueError(
+                "candidate_region_radius must be a positive integer or null: at 0 a region holds "
+                "single atoms, so no bond can change in it and the run finds no reactions"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {

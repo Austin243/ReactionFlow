@@ -241,8 +241,8 @@ def _scan_settings(
     if arguments.radius == "none":
         radius = None
     elif arguments.radius is not None:
-        if not arguments.radius.isdigit():
-            parser.error("--radius takes a non-negative integer or none")
+        if not arguments.radius.isdigit() or int(arguments.radius) < 1:
+            parser.error("--radius takes a positive integer or none")
         radius = int(arguments.radius)
     persistence = arguments.persistence
     if persistence is None:

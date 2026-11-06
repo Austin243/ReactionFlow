@@ -24,7 +24,8 @@ the run recorded. `candidates.csv` gives each one's occurrence ID, and in `summa
 `matching_recorded` equals `recorded_by_run` for a finished run. Options change the replay and
 nothing else:
 
-- `--radius R` sets the region radius in bonds, and `--radius none` takes whole bonded components.
+- `--radius R` sets the region radius in bonds, from 1, and `--radius none` takes whole bonded
+  components.
 - `--persistence N` sets how many observations a crossing must last to become a bond change.
 - `--stability N` sets how many observations a region's new bonds must hold.
 - `--pair A-B FORM BREAK` sets the formation and break distances in Å for one element pair. It can

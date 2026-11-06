@@ -31,8 +31,9 @@ Start the detector and tracker together so the tracker sees a baseline before an
 
 - The first stable topology establishes the accepted reactant basin.
 - Each changed region has its own stability window. A region is the changed atoms and the atoms
-  within `region_radius` bonds of them (2 by default), over the union of accepted, stable, and
-  provisional bonds. Regions that share an atom merge, so interacting changes stay together.
+  within `region_radius` bonds of them (2 by default, at least 1), over the union of accepted,
+  stable, and provisional bonds. Regions that share an atom merge, so interacting changes stay
+  together.
 - `region_radius=None` makes a region the whole bonded component instead. In a polymer, network,
   or slab that component holds every change in it, so unrelated changes merge and a crossing
   anywhere holds back a finished one. A campaign sets the radius as
