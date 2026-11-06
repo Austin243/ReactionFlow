@@ -653,8 +653,13 @@ class ReactionRun:
         assert self._active_checkpoint is not None
         snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
         with runtime_provider.restore(snapshot) as runtime:
-            if runtime.atoms.calc is not None and not np.isfinite(runtime.atoms.get_forces()).all():
+            atoms = runtime.atoms
+            if atoms.calc is None:
+                return
+            if not np.isfinite(atoms.get_forces()).all():
                 raise ValueError("the model returned non-finite forces at the last checkpoint")
+            if not np.isfinite(atoms.get_potential_energy()):
+                raise ValueError("the model returned a non-finite energy at the last checkpoint")
 
     def _refine_due(self) -> bool:
         """Whether to refine now: the queue waits only for running MD under ``refine_after_md``."""
