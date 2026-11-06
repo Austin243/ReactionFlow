@@ -84,6 +84,8 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     lost = missing_frames(root, state["global_frame"])
     if lost:
         row["missing_frames"] = lost
+    if state.get("pending_pathway_ids"):
+        row["queued"] = len(state["pending_pathway_ids"])
     members: dict[str, list[sqlite3.Row]] = {}
     for record in records:
         members.setdefault(record["class_id"], []).append(record)
@@ -358,6 +360,11 @@ def format_status(report: dict[str, Any]) -> str:
         + ", ".join(f"{count} {phase}" for phase, count in sorted(phases.items())),
         "",
     ]
+    queued = [row for row in report["trajectories"] if row.get("queued")]
+    if queued:
+        where = ", ".join(f"{row['queued']} in {row['trajectory']}" for row in queued[:5])
+        more = f", and {len(queued) - 5} more trajectories" if len(queued) > 5 else ""
+        lines += [f"Waiting to be refined, not yet in the converged column: {where}{more}.", ""]
     incomplete = sum("unreadable: " in (row["error"] or "") for row in report["trajectories"])
     if incomplete:
         lines += [

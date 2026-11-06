@@ -262,7 +262,8 @@ table says the report is incomplete. A class whose candidate bundles cannot all 
 of a run's results alone, keeps its counts and barriers in a row of its own, because classes merge
 only by their graphs. Saved frames that are gone appear in the error column and as `missing_frames`.
 Pathway counts include every refined occurrence. An event refined in steps counts each step as a
-refined pathway, and only its steps can converge.
+refined pathway, and only its steps can converge. Events still waiting to be refined are not among
+them: a line under the table counts them, and `--json` gives `queued`.
 
 The second table merges reaction classes across trajectories that share a model profile and
 pressure, because only those barriers are comparable. Classes merge by the local change: the
