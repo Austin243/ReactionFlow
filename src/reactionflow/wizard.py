@@ -18,7 +18,7 @@ import shlex
 from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +30,7 @@ from .campaign import CampaignConfig
 from .model_setup import backend_conflict, model_catalog
 from .run import ReactionRunConfig
 
-# A catalog list field that a model requires one value from, and the option it sets.
-_CHOICES = {"heads": "head", "tasks": "task", "modals": "modal"}
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-class _Quit(Exception):
-    """The session ended before the file was written."""
 
 
 def _ask(question: str, default: str | None = None) -> str:
@@ -44,10 +38,7 @@ def _ask(question: str, default: str | None = None) -> str:
 
     shown = f" [{default}]" if default else ""
     while True:
-        try:
-            answer = input(f"{question}{shown}: ").strip()
-        except EOFError:
-            raise _Quit from None
+        answer = input(f"{question}{shown}: ").strip()
         if answer or default is not None:
             return answer or default
 
@@ -160,10 +151,10 @@ def _menu(
     return picks if many else picks[0]
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Structure:
     path: Path
-    atoms: Atoms = field(compare=False)
+    atoms: Atoms
 
     @property
     def periodic(self) -> bool:
@@ -186,8 +177,6 @@ def _structures(text: str) -> list[_Structure]:
             except Exception as error:
                 raise ValueError(f"cannot read {name}: {error}") from None
             found.setdefault(path, _Structure(path, atoms))
-    if not found:
-        raise ValueError("enter at least one structure file")
     for structure in found.values():
         atoms, cell = structure.atoms, "periodic" if structure.periodic else "not periodic"
         formula = atoms.get_chemical_formula()
@@ -235,7 +224,7 @@ def _absolute_paths(text: str) -> list[str]:
 
 
 def _builtin(backend: dict[str, Any]) -> _Profile:
-    """Turn one catalog model, and any head, task, or modal it needs, into adapter options."""
+    """Turn one catalog model, and any head or task it needs, into adapter options."""
 
     name = backend["backend"]
     models = backend["models"]
@@ -250,11 +239,10 @@ def _builtin(backend: dict[str, Any]) -> _Profile:
     options: dict[str, Any] = {} if name == "ani1xnr" else {"model": entry["name"]}
     if "family" in entry:
         options["family"] = entry["family"]
-    for choices, option in _CHOICES.items():
-        values = entry.get(choices) or []
-        if values:
-            described = backend.get(choices) if isinstance(backend.get(choices), dict) else {}
-            labels = [f"{value:<16} {described.get(value, '')}".rstrip() for value in values]
+    # A catalog list field that a model requires one value from, and the option it sets.
+    for choices, option in (("heads", "head"), ("tasks", "task")):
+        if values := entry.get(choices):
+            labels = [f"{value:<16} {backend[choices][value]}" for value in values]
             options[option] = values[_menu(f"{option.capitalize()} for {entry['name']}", labels)]
     if name == "mace" and entry["name"] == "mh-0":
         options["head"] = _ask("Head name in the MACE-MH-0 checkpoint")
@@ -262,7 +250,7 @@ def _builtin(backend: dict[str, Any]) -> _Profile:
     parts = [] if name.replace("_", "") in model.lower().replace("-", "") else [name]
     if options.get("family", "mp") != "mp" and options["family"] not in model:
         parts.append(options["family"])
-    parts += [model, *(options[key] for key in ("head", "task", "modal") if key in options)]
+    parts += [model, *(options[key] for key in ("head", "task") if key in options)]
     return _Profile(_safe("-".join(parts)), backend["factory"], options, name)
 
 
@@ -293,11 +281,10 @@ def _profile_name(text: str) -> str:
 
 
 def _needs_charge_and_spin(profile: _Profile) -> bool:
-    options = profile.options
     return (
         profile.backend == "aimnet2"
-        or (profile.backend == "uma" and options.get("task") == "omol")
-        or (profile.backend == "mace" and options.get("family") == "polar")
+        or (profile.backend == "uma" and profile.options.get("task") == "omol")
+        or (profile.backend == "mace" and profile.options.get("family") == "polar")
     )
 
 
@@ -305,9 +292,7 @@ def _models(
     catalog: list[dict], previous: list[_Profile] | None, *, single: bool = False
 ) -> list[_Profile]:
     labels = [
-        f"{backend['backend']:<11} {len(backend['models'])} "
-        f"model{'s' if len(backend['models']) > 1 else ''}"
-        for backend in catalog
+        f"{backend['backend']:<11} {_count(len(backend['models']), 'model')}" for backend in catalog
     ]
     labels.append("another model with an ASE calculator")
     if single:
@@ -379,31 +364,22 @@ def _group(number: int, catalog: list[dict], previous: _Group | None, used: list
         )
     hydrostatic = True
     if any(pressure is not None for pressure in pressures):
-        hydrostatic = (
-            _menu(
-                "Under pressure, the cell",
-                ["keeps its shape and scales uniformly", "may also change shape"],
-                default="1" if not previous or previous.hydrostatic else "2",
-            )
-            == 0
+        cell_choice = _menu(
+            "Under pressure, the cell",
+            ["keeps its shape and scales uniformly", "may also change shape"],
+            default="1" if not previous or previous.hydrostatic else "2",
         )
+        hydrostatic = cell_choice == 0
     combinations = len(structures) * len(profiles) * len(temperatures) * len(pressures)
     runs = _ask_until_valid(
         f"Runs of each of these {combinations} combinations",
         _positive(),
         str(previous.runs) if previous else "1",
     )
-    factors = [
-        (structures, "structure"),
-        (profiles, "model"),
-        (temperatures, "temperature"),
-        (pressures, "pressure"),
-        (range(runs), "run"),
-    ]
     print(
-        "  "
-        + " x ".join(_count(len(items), word) for items, word in factors)
-        + f" = {_count(combinations * runs, 'trajectory')}"
+        f"  {_count(len(structures), 'structure')} x {_count(len(profiles), 'model')}"
+        f" x {_count(len(temperatures), 'temperature')} x {_count(len(pressures), 'pressure')}"
+        f" x {_count(len(range(runs)), 'run')} = {_count(combinations * runs, 'trajectory')}"
     )
     return _Group(structures, profiles, temperatures, pressures, hydrostatic, runs)
 
@@ -427,25 +403,25 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
         for profile in group.profiles:
             profiles.setdefault(profile.key, profile)
     names: dict[str, str] = {}
+    adapter_profiles: dict[str, Any] = {}
     for key, profile in profiles.items():
         name, number = profile.name, 2
-        while name in names.values():
+        while name in adapter_profiles:
             name, number = f"{profile.name}-{number}", number + 1
         names[key] = name
+        options = dict(profile.options)
+        if profile.backend:
+            options["device"] = "cuda" if settings["gpu"] else "cpu"
+        adapter_profiles[name] = {"factory": profile.factory, "options": options}
     structures = list(dict.fromkeys(s.path for group in groups for s in group.structures))
     labels = _labels(structures)
     several_structures, several_models = len(structures) > 1, len(profiles) > 1
-
-    def relative(structure: Path) -> str:
-        return os.path.relpath(structure, path.parent)
-
     stems, trajectories = [], []
     seed = secrets.randbelow(2**32)
     for group in groups:
-        combinations = itertools.product(
+        for structure, profile, temperature, pressure in itertools.product(
             group.structures, group.profiles, group.temperatures, group.pressures
-        )
-        for structure, profile, temperature, pressure in combinations:
+        ):
             anisotropic = pressure is not None and not group.hydrostatic
             parts = [labels[structure.path]] if several_structures else []
             if several_models:
@@ -458,7 +434,7 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
             for _ in range(group.runs):
                 trajectory = {"adapter_profile": names[profile.key]}
                 if several_structures:
-                    trajectory["structure"] = relative(structure.path)
+                    trajectory["structure"] = os.path.relpath(structure.path, path.parent)
                 trajectory |= {
                     "total_steps": settings["steps"],
                     "timestep_fs": settings["timestep"],
@@ -478,15 +454,9 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
         counted[stem] += 1
         trajectories[index] = {"id": f"{stem}-{counted[stem]:0{width}d}", **trajectories[index]}
 
-    adapter_profiles = {}
-    for key, profile in profiles.items():
-        options = dict(profile.options)
-        if profile.backend:
-            options["device"] = "cuda" if settings["gpu"] else "cpu"
-        adapter_profiles[names[key]] = {"factory": profile.factory, "options": options}
     campaign: dict[str, Any] = {"schema_version": 2}
     if not several_structures:
-        campaign["structure"] = relative(structures[0])
+        campaign["structure"] = os.path.relpath(structures[0], path.parent)
     return campaign | {
         "output_root": settings["output"],
         "require_gpu": settings["gpu"],
@@ -496,7 +466,7 @@ def _campaign(path: Path, groups: list[_Group], settings: dict[str, Any]) -> dic
     }
 
 
-def _write(path: Path, campaign: dict[str, Any], load: Callable = CampaignConfig.load) -> None:
+def _write(path: Path, campaign: dict[str, Any], load: Callable) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     temporary.write_text(json.dumps(campaign, indent=2) + "\n", encoding="utf-8")
@@ -558,12 +528,15 @@ def _eon_session(path: Path, catalog: list[dict]) -> int:
             "structure, which has none. In an extxyz file, add charge=0 spin=1 (your values) "
             "to the comment line."
         )
+    temperature = _ask_until_valid("Temperature in K", _positive(float), "300")
+    steps = _ask_until_valid("Kinetic Monte Carlo steps", _positive(), "100")
+    confidence = _ask_until_valid(
+        "Confidence to reach in each state before stepping", _fraction, "0.95"
+    )
     akmc = {
-        "temperature_K": _ask_until_valid("Temperature in K", _positive(float), "300"),
-        "steps": _ask_until_valid("Kinetic Monte Carlo steps", _positive(), "100"),
-        "confidence": _ask_until_valid(
-            "Confidence to reach in each state before stepping", _fraction, "0.95"
-        ),
+        "temperature_K": temperature,
+        "steps": steps,
+        "confidence": confidence,
         "seed": secrets.randbelow(2**32),
     }
     eon: dict[str, Any] = {}
@@ -655,11 +628,10 @@ def _session(path: Path) -> int:
     while True:
         used = [profile for group in groups for profile in group.profiles]
         group = _group(len(groups) + 1, catalog, groups[-1] if groups else None, used)
-        if not _yes("Keep this group?", True):
-            continue
-        groups.append(group)
-        if not _yes("Add another group, for example a different model or structure?", False):
-            break
+        if _yes("Keep this group?", True):
+            groups.append(group)
+            if not _yes("Add another group, for example a different model or structure?", False):
+                break
 
     print()
     steps = _ask_until_valid("MD steps per trajectory", _positive(), "100000")
@@ -694,7 +666,7 @@ def _session(path: Path) -> int:
     if not _yes(f"Write {_shown(path)}?", True):
         print("Nothing was written.")
         return 1
-    _write(path, campaign)
+    _write(path, campaign, CampaignConfig.load)
     shown = shlex.quote(_shown(path))
     print(
         f"Wrote {shown}. Next:\n"
@@ -707,7 +679,7 @@ def _session(path: Path) -> int:
 
 
 def _relative_directory(text: str) -> str:
-    if os.path.isabs(text) or not text:
+    if os.path.isabs(text):
         raise ValueError("give a directory relative to the campaign file")
     return text
 
@@ -719,7 +691,7 @@ def create_campaign(path: Path) -> int:
         import readline  # noqa: F401  (line editing and history in input())
     try:
         return _session(Path(path).resolve())
-    except (KeyboardInterrupt, _Quit):
+    except (KeyboardInterrupt, EOFError):
         print("\nStopped. Nothing was written.")
         return 1
 

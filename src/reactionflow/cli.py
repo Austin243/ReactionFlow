@@ -21,6 +21,7 @@ from ase.io import read
 from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
 from .campaign import CampaignConfig
+from .detection import _is_count
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .pathway import check_saddle
@@ -34,10 +35,7 @@ def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, obje
     trajectory = campaign.trajectory(index)
     adapter = campaign.adapter_for(index)
     scientific_config = {
-        "adapter": {
-            "factory": adapter.factory,
-            "options": dict(adapter.options),
-        },
+        "adapter": {"factory": adapter.factory, "options": dict(adapter.options)},
         "reaction_run": campaign.reaction_run.to_dict(),
         "trajectory": asdict(trajectory),
     }
@@ -55,11 +53,15 @@ def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, obje
     }
 
 
+def _publish_json(value: dict[str, object], temporary: Path, path: Path) -> None:
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    publish(temporary, path)
+
+
 def _bind_trajectory_contract(root: Path, contract: dict[str, object]) -> None:
     path = root / "trajectory-contract.json"
     if path.is_file():
-        stored = json.loads(path.read_text(encoding="utf-8"))
-        if stored == contract:
+        if json.loads(path.read_text(encoding="utf-8")) == contract:
             sync_directory(root)
             return
         if (root / "state.json").exists():
@@ -71,11 +73,7 @@ def _bind_trajectory_contract(root: Path, contract: dict[str, object]) -> None:
     ensure_directory(root)
     temporary = root / f".trajectory-contract-{uuid4().hex}.tmp"
     try:
-        temporary.write_text(
-            json.dumps(contract, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        publish(temporary, path)
+        _publish_json(contract, temporary, path)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
@@ -98,11 +96,7 @@ def resolve_task_index(
 ) -> int:
     """Map one Slurm process—or one explicit local index—to one trajectory."""
 
-    if (
-        isinstance(campaign_size, bool)
-        or not isinstance(campaign_size, Integral)
-        or campaign_size < 1
-    ):
+    if not _is_count(campaign_size, 1):
         raise ValueError("campaign size must be a positive integer")
     variables = os.environ if environment is None else environment
     slurm_tasks = _environment_integer(variables, "SLURM_NTASKS")
@@ -159,8 +153,7 @@ def run_selected_trajectory(
     if download:
         prepare_adapter(adapter_spec)
     root = campaign.output_root / trajectory.id
-    state_path = root / "state.json"
-    if state_path.is_file():
+    if (root / "state.json").is_file():
         _bind_trajectory_contract(root, _trajectory_contract(campaign, index))
         adapter = load_mlip_adapter(adapter_spec, trajectory)
         run = ReactionRun.open(root)
@@ -214,8 +207,7 @@ def check_band(
     path = band.with_name(f"{band.stem}.check.json")
     temporary = path.with_name(f".{path.name}-{uuid4().hex}.tmp")
     try:
-        temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        publish(temporary, path)
+        _publish_json(result, temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
     return path, result
@@ -345,6 +337,34 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_and_record(campaign: CampaignConfig, arguments: argparse.Namespace) -> None:
+    index = resolve_task_index(len(campaign.trajectories), arguments.index)
+    trajectory_id = campaign.trajectory(index).id
+    payload: dict[str, object] = {
+        "trajectory_id": trajectory_id,
+        "trajectory_index": index,
+        "hostname": socket.gethostname(),
+    }
+    # Every Slurm task shares one log, so each worker also records its own error by trajectory.
+    error_path = campaign.output_root / trajectory_id / "last-error.json"
+    with suppress(OSError):
+        error_path.unlink()
+    try:
+        summary = run_selected_trajectory(campaign, index=index, download=arguments.download)
+    except Exception as error:
+        payload["error"] = f"{type(error).__name__}: {error}"
+        print(json.dumps(payload, sort_keys=True))
+        temporary = error_path.with_name(f".last-error-{uuid4().hex}.tmp")
+        with suppress(OSError):
+            try:
+                error_path.parent.mkdir(parents=True, exist_ok=True)
+                _publish_json(payload, temporary, error_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        raise
+    print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
@@ -388,23 +408,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             return install_and_prepare(campaign, index=arguments.index)
         models = prepare_campaign(campaign, index=arguments.index)
         print(json.dumps({"campaign": str(campaign.source), "models": models}, sort_keys=True))
-        return 0
-    if arguments.command == "status":
+    elif arguments.command == "status":
         if arguments.radius < 0:
             parser.error("--radius must not be negative")
         report = campaign_status(campaign, radius=arguments.radius)
-        print(
-            json.dumps(report, indent=2, sort_keys=True)
-            if arguments.json
-            else format_status(report)
-        )
-        return 0
-    if arguments.command == "scan":
+        if arguments.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(format_status(report))
+    elif arguments.command == "scan":
         if arguments.frame_ps is not None:
             parser.error("--frame-ps is for a trajectory file; a run records its own times")
-        indices = range(len(campaign.trajectories))
-        if arguments.index is not None:
-            indices = [resolve_task_index(len(indices), arguments.index, environment={})]
+        count = len(campaign.trajectories)
+        indices = range(count) if arguments.index is None else (arguments.index,)
         for index in indices:
             trajectory = campaign.trajectory(index)
             root = campaign.output_root / trajectory.id
@@ -422,8 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             out = root / "scan" if arguments.out is None else arguments.out / trajectory.id
             _print_scan(result.write(out), result, trajectory_id=trajectory.id)
-        return 0
-    if arguments.command == "validate":
+    elif arguments.command == "validate":
         payload = {
             "campaign": str(campaign.source),
             "trajectories": len(campaign.trajectories),
@@ -435,9 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "adapter_profile_counts": dict(Counter(campaign.trajectory_profiles)),
         }
         print(json.dumps(payload, sort_keys=True))
-        return 0
-
-    if arguments.command == "check":
+    elif arguments.command == "check":
         if arguments.index is None and len(campaign.trajectories) > 1:
             parser.error("--index picks the trajectory when a campaign has several")
         # Slurm tasks pick trajectories for run only, so a check inside any job reads --index.
@@ -450,37 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
         summary = {key: result[key] for key in ("status", "barrier_eV", "message")}
         print(json.dumps({"check": str(path), **summary}, sort_keys=True))
-        return 0
-
-    index = resolve_task_index(len(campaign.trajectories), arguments.index)
-    trajectory_id = campaign.trajectory(index).id
-    payload: dict[str, object] = {
-        "trajectory_id": trajectory_id,
-        "trajectory_index": index,
-        "hostname": socket.gethostname(),
-    }
-    # Every Slurm task shares one log, so each worker also records its own error by trajectory.
-    error_path = campaign.output_root / trajectory_id / "last-error.json"
-    with suppress(OSError):
-        error_path.unlink()
-    try:
-        summary = run_selected_trajectory(campaign, index=index, download=arguments.download)
-    except Exception as error:
-        payload["error"] = f"{type(error).__name__}: {error}"
-        print(json.dumps(payload, sort_keys=True))
-        temporary = error_path.with_name(f".last-error-{uuid4().hex}.tmp")
-        with suppress(OSError):
-            try:
-                error_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary.write_text(
-                    json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
-                publish(temporary, error_path)
-            finally:
-                temporary.unlink(missing_ok=True)
-        raise
-    print(json.dumps({**payload, **asdict(summary)}, sort_keys=True))
+    else:
+        _run_and_record(campaign, arguments)
     return 0
 
 
