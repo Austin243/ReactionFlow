@@ -245,7 +245,9 @@ output directory.
   show up in the step list. `basins: "bonds"` merges states only when no bond changes between
   them; a low-barrier reaction is still a separate step.
 - A state is searched until it reaches the confidence target, with no cap on searches; `status`
-  shows the searches and confidence of the current state.
+  shows the searches and confidence of the current state, and counts the failed searches by reason
+  (`failure_reasons` in `--json`). `run` prints each new reason on standard error as it first
+  appears, up to ten. A confidence that stays at 0 while searches fail will not recover by itself.
 - Searches use a fixed, nonsingular cell, fully periodic or fully nonperiodic, with `FixAtoms` as
   the only constraint.
 - By default EON converges saddles and minima on the norm of the whole force vector
