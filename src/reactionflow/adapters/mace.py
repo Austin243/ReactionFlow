@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +12,9 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.calculators.fd import calculate_numerical_stress
 
-from ..campaign import TrajectorySpec
-from ._model_files import cached_download, model_cache, require_package
-from ._torch import TorchModelAdapter
+from ..campaign import TrajectorySpec, _reject_unknown
+from ._model_files import cached_download, check_paths, model_cache, require_package
+from ._torch import TorchModelAdapter, require_charge_and_spin
 
 MACE_VERSION = "0.3.16"
 _POLAR_STRAIN = 1e-5
@@ -53,7 +52,11 @@ _MP_MODELS = (
 def catalog() -> dict[str, Any]:
     """Describe the pinned models without importing MACE or downloading weights."""
 
-    models = [{"name": name, "family": "mp"} for name in _MP_MODELS]
+    details: dict[str, dict[str, Any]] = {
+        "mh-0": {"description": "MACE-MH-0; select an explicit checkpoint head"},
+        "mh-1": {"description": "MACE-MH-1 multi-head foundation model", "heads": list(_MH1_HEADS)},
+    }
+    models = [{"name": name, "family": "mp", **details.get(name, {})} for name in _MP_MODELS]
     models.extend(
         {"name": name, "family": "off", "description": "MACE-OFF23 organic molecules"}
         for name in ("small", "medium", "large")
@@ -62,13 +65,6 @@ def catalog() -> dict[str, Any]:
         {"name": f"polar-1-{size}", "family": "polar", "description": f"MACE-POLAR-1 {label}"}
         for size, label in (("s", "small"), ("m", "medium"), ("l", "large"))
     )
-    for model in models:
-        if model["name"] == "mh-1":
-            model.update(
-                description="MACE-MH-1 multi-head foundation model", heads=list(_MH1_HEADS)
-            )
-        elif model["name"] == "mh-0":
-            model.update(description="MACE-MH-0; select an explicit checkpoint head")
     return {
         "backend": "mace",
         "factory": "reactionflow.adapters.mace:create_adapter",
@@ -98,23 +94,15 @@ def catalog() -> dict[str, Any]:
 
 
 def _validate(options: Mapping[str, Any]) -> None:
-    unknown = set(options) - _ALLOWED_OPTIONS
-    if unknown:
-        raise ValueError(f"unknown MACE adapter options: {sorted(unknown)}")
+    _reject_unknown(options, _ALLOWED_OPTIONS, "MACE adapter options")
     if ("model" in options) == ("checkpoint" in options):
         raise ValueError("MACE requires exactly one of 'model' or 'checkpoint'")
     family = options.get("family", "mp")
     if family not in ("mp", "off", "polar"):
         raise ValueError("MACE family must be 'mp', 'off', or 'polar'")
-    if "model" in options:
-        model = options["model"]
-        if not isinstance(model, str) or not model:
-            raise ValueError("MACE model must be an explicit non-empty model name")
-    for name in ("checkpoint", "cache_dir"):
-        if name in options:
-            value = options[name]
-            if not isinstance(value, str) or not value or not Path(value).is_absolute():
-                raise ValueError(f"MACE {name} must be an absolute path")
+    if "model" in options and (not isinstance(options["model"], str) or not options["model"]):
+        raise ValueError("MACE model must be an explicit non-empty model name")
+    check_paths(options, ("checkpoint", "cache_dir"), "MACE {} must be an absolute path")
     if options.get("device", "cuda") not in ("cpu", "cuda"):
         raise ValueError("MACE device must be 'cpu' or 'cuda'")
     if options.get("dtype", "float64") not in ("float32", "float64"):
@@ -158,8 +146,7 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
             raise ValueError(
                 f"unknown MACE {family} model {model!r}; choose from {sorted(registry)}"
             )
-        url = registry[model]
-        path = cached_download(url, model_cache(options, "mace"), download=download)
+        path = cached_download(registry[model], model_cache(options, "mace"), download=download)
     return {"checkpoint": path}
 
 
@@ -174,12 +161,7 @@ def _require_polar() -> None:
 
 
 def _polar_inputs(atoms: Atoms) -> tuple[int, int, tuple[float, ...]]:
-    for name in ("charge", "spin"):
-        value = atoms.info.get(name)
-        if isinstance(value, bool) or not isinstance(value, Integral):
-            raise ValueError(f"MACE-POLAR requires explicit integer atoms.info[{name!r}]")
-        if name == "spin" and value < 1:
-            raise ValueError("MACE-POLAR spin must be a positive multiplicity")
+    require_charge_and_spin(atoms, "MACE-POLAR")
     field = np.asarray(atoms.info.get("external_field", [0.0, 0.0, 0.0]), dtype=float)
     if field.shape != (3,) or not np.isfinite(field).all():
         raise ValueError("MACE-POLAR external_field must be a finite three-vector")
@@ -261,13 +243,15 @@ class MACEAdapter(TorchModelAdapter):
         from mace.calculators import MACECalculator
         from mace.modules import PolarMACE
 
+        polar = self.options.get("family") == "polar"
+        dtype = self.options.get("dtype", "float64")
         calculator_class = MACECalculator
         kwargs = {
             "model_paths": [str(self.files["checkpoint"])],
             "device": self.device,
-            "default_dtype": self.options.get("dtype", "float64"),
+            "default_dtype": dtype,
         }
-        if self.options.get("family") == "polar":
+        if polar:
             _require_polar()
             kwargs["model_type"] = "PolarMACE"
 
@@ -294,23 +278,17 @@ class MACEAdapter(TorchModelAdapter):
         if "head" in self.options:
             kwargs["head"] = self.options["head"]
         calculator = calculator_class(**kwargs)
-        polar = self.options.get("family") == "polar"
         if any(isinstance(model, PolarMACE) != polar for model in calculator.models):
             raise ValueError(
                 "MACE checkpoint architecture does not match family: PolarMACE checkpoints "
-                "require family='polar'; other checkpoints must "
-                "use family='mp' or 'off'"
+                "require family='polar'; other checkpoints must use family='mp' or 'off'"
             )
         if "head" in self.options and calculator.head != self.options["head"]:
             raise ValueError(
                 f"MACE did not select requested head {self.options['head']!r}; "
                 f"resolved to {calculator.head!r}"
             )
-        return (
-            _NumericalPolarStressCalculator(calculator, dtype=self.options.get("dtype", "float64"))
-            if polar
-            else calculator
-        )
+        return _NumericalPolarStressCalculator(calculator, dtype=dtype) if polar else calculator
 
     def _extra_metadata(self, calculator: Calculator) -> dict[str, Any]:
         metadata = {"resolved_head": calculator.head}

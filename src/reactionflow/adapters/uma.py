@@ -6,16 +6,14 @@ import json
 import re
 from collections.abc import Mapping
 from importlib.metadata import distribution
-from numbers import Integral
 from pathlib import Path
 from typing import Any
 
-from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
-from ..campaign import TrajectorySpec
-from ._model_files import model_cache, require_package
-from ._torch import TorchModelAdapter
+from ..campaign import TrajectorySpec, _reject_unknown
+from ._model_files import check_paths, model_cache, require_package
+from ._torch import TorchModelAdapter, require_charge_and_spin
 
 _VERSION = "2.23.0"
 _OPTIONS = {
@@ -75,16 +73,8 @@ def catalog() -> dict[str, Any]:
     }
 
 
-def _absolute_path(value: object, name: str) -> Path:
-    if not isinstance(value, str) or not value or not Path(value).is_absolute():
-        raise ValueError(f"UMA {name} must be an absolute path string")
-    return Path(value)
-
-
 def _validate_options(options: Mapping[str, Any]) -> None:
-    unknown = set(options) - _OPTIONS
-    if unknown:
-        raise ValueError(f"unknown UMA adapter options: {sorted(unknown)}")
+    _reject_unknown(options, _OPTIONS, "UMA adapter options")
     if ("model" in options) == ("checkpoint" in options):
         raise ValueError("UMA requires exactly one of model or checkpoint")
     task = options.get("task")
@@ -92,8 +82,7 @@ def _validate_options(options: Mapping[str, Any]) -> None:
         raise ValueError("UMA requires an explicit task")
     if options.get("device", "cuda") not in ("cpu", "cuda"):
         raise ValueError("UMA device must be cpu or cuda")
-    if "cache_dir" in options:
-        _absolute_path(options["cache_dir"], "cache_dir")
+    check_paths(options, ("cache_dir",), "UMA {} must be an absolute path string")
     if "model" in options:
         if not isinstance(options["model"], str) or not options["model"]:
             raise ValueError("UMA model must name an official UMA checkpoint")
@@ -107,9 +96,8 @@ def _validate_options(options: Mapping[str, Any]) -> None:
             )
         if {"atom_refs", "form_elem_refs"} & options.keys():
             raise ValueError("UMA local reference paths are only valid with checkpoint")
-        if "revision" in options and (
-            not isinstance(options["revision"], str) or not options["revision"]
-        ):
+        revision = options.get("revision")
+        if "revision" in options and (not isinstance(revision, str) or not revision):
             raise ValueError("UMA revision must be a non-empty Hugging Face revision")
     elif "revision" in options:
         raise ValueError("UMA revision is only valid with a named model")
@@ -144,11 +132,9 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
     _validate_options(options)
     require_package("fairchem-core", _VERSION, "uma")
     if "checkpoint" in options:
-        files = {
-            name: _absolute_path(options[name], name)
-            for name in ("checkpoint", "atom_refs", "form_elem_refs")
-            if name in options
-        }
+        names = ("checkpoint", "atom_refs", "form_elem_refs")
+        check_paths(options, names, "UMA {} must be an absolute path string")
+        files = {name: Path(options[name]) for name in names if name in options}
     else:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError
@@ -199,15 +185,6 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
         if not path.is_file():
             raise FileNotFoundError(f"UMA {name} file is missing: {path}")
     return {name: path.resolve() for name, path in files.items()}
-
-
-def _validate_omol(atoms: Atoms) -> None:
-    for name in ("charge", "spin"):
-        value = atoms.info.get(name)
-        if isinstance(value, bool) or not isinstance(value, Integral):
-            raise ValueError(f"UMA omol requires explicit integer atoms.info[{name!r}]")
-        if name == "spin" and value < 1:
-            raise ValueError("UMA omol spin must be a positive multiplicity")
 
 
 def _deterministic_backbone(model: Any) -> None:
@@ -301,11 +278,11 @@ class UMAAdapter(TorchModelAdapter):
 
         class ExplicitOMOLCalculator(FAIRChemCalculator):
             def check_state(self, atoms, tol=1e-15):
-                _validate_omol(atoms)
+                require_charge_and_spin(atoms, "UMA omol")
                 return super().check_state(atoms, tol=tol)
 
             def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
-                _validate_omol(atoms if atoms is not None else self.atoms)
+                require_charge_and_spin(atoms if atoms is not None else self.atoms, "UMA omol")
                 return super().calculate(atoms, properties, system_changes)
 
         return ExplicitOMOLCalculator(predictor, task_name=task)

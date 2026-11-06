@@ -9,6 +9,7 @@ import random
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from importlib.metadata import version
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -44,31 +45,23 @@ def _load_torch(device: str) -> Any:
 
 
 def _torch_environment(torch: Any, device: str) -> dict[str, object]:
+    # Each setting's required value and its value now.
     settings = {
-        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
-        "deterministic_warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
-        "float32_matmul_precision": torch.get_float32_matmul_precision(),
-        "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
-        "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
-        "cudnn_deterministic": torch.backends.cudnn.deterministic,
-        "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "deterministic_algorithms": (True, torch.are_deterministic_algorithms_enabled()),
+        "deterministic_warn_only": (False, torch.is_deterministic_algorithms_warn_only_enabled()),
+        "float32_matmul_precision": ("highest", torch.get_float32_matmul_precision()),
+        "cuda_matmul_allow_tf32": (False, torch.backends.cuda.matmul.allow_tf32),
+        "cudnn_allow_tf32": (False, torch.backends.cudnn.allow_tf32),
+        "cudnn_deterministic": (True, torch.backends.cudnn.deterministic),
+        "cudnn_benchmark": (False, torch.backends.cudnn.benchmark),
     }
-    required = {
-        "deterministic_algorithms": True,
-        "deterministic_warn_only": False,
-        "float32_matmul_precision": "highest",
-        "cuda_matmul_allow_tf32": False,
-        "cudnn_allow_tf32": False,
-        "cudnn_deterministic": True,
-        "cudnn_benchmark": False,
-    }
-    changed = [name for name, value in required.items() if settings[name] != value]
+    changed = [name for name, (required, value) in settings.items() if value != required]
     if changed:
         raise RuntimeError(f"model backend changed required Torch inference settings: {changed}")
     result: dict[str, object] = {
         "torch_version": str(torch.__version__),
         "device": device,
-        **settings,
+        **{name: value for name, (_, value) in settings.items()},
         "num_threads": torch.get_num_threads(),
         "num_interop_threads": torch.get_num_interop_threads(),
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
@@ -102,6 +95,17 @@ def _preserve_rng(torch: Any) -> Iterator[None]:
         if cuda_state is not None:
             torch.cuda.set_rng_state_all(cuda_state)
         torch.set_default_dtype(dtype)
+
+
+def require_charge_and_spin(atoms: ase.Atoms, label: str) -> None:
+    """Refuse a structure without an explicit integer charge and positive spin multiplicity."""
+
+    for name in ("charge", "spin"):
+        value = atoms.info.get(name)
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"{label} requires explicit integer atoms.info[{name!r}]")
+    if atoms.info["spin"] < 1:
+        raise ValueError(f"{label} spin must be a positive multiplicity")
 
 
 class TorchModelAdapter(ASELangevinBAOABAdapter):
@@ -148,6 +152,7 @@ class TorchModelAdapter(ASELangevinBAOABAdapter):
         try:
             if any(file_digest(path) != files[name]["sha256"] for name, path in self.files.items()):
                 raise ValueError("model files changed while the calculator was being constructed")
+            here = Path(__file__)
             state = ComponentState(
                 kind=self.kind,
                 metadata={
@@ -158,11 +163,9 @@ class TorchModelAdapter(ASELangevinBAOABAdapter):
                     "ase_version": ase.__version__,
                     "numpy_version": np.__version__,
                     "adapter_source_sha256": file_digest(Path(inspect.getfile(type(self)))),
-                    "torch_adapter_source_sha256": file_digest(Path(__file__)),
-                    "ase_runtime_source_sha256": file_digest(Path(__file__).with_name("ase.py")),
-                    "integrator_source_sha256": file_digest(
-                        Path(__file__).parents[1] / "ase_npt.py"
-                    ),
+                    "torch_adapter_source_sha256": file_digest(here),
+                    "ase_runtime_source_sha256": file_digest(here.with_name("ase.py")),
+                    "integrator_source_sha256": file_digest(here.parents[1] / "ase_npt.py"),
                     **_torch_environment(torch, self.device),
                     **self._extra_metadata(calculator),
                 },

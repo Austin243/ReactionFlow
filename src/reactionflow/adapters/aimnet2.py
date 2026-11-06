@@ -13,9 +13,9 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 
 from .._durable import file_digest
-from ..campaign import TrajectorySpec
-from ._model_files import cached_download, model_cache, require_package
-from ._torch import TorchModelAdapter
+from ..campaign import TrajectorySpec, _reject_unknown
+from ._model_files import cached_download, check_paths, model_cache, require_package
+from ._torch import TorchModelAdapter, require_charge_and_spin
 
 AIMNET_VERSION = "0.2.0"
 _FAMILIES = {
@@ -64,9 +64,7 @@ def catalog() -> dict[str, Any]:
 
 
 def _validate_options(options: Mapping[str, Any]) -> None:
-    unknown = set(options) - _OPTIONS
-    if unknown:
-        raise ValueError(f"unknown AIMNet2 adapter options: {sorted(unknown)}")
+    _reject_unknown(options, _OPTIONS, "AIMNet2 adapter options")
     if ("model" in options) == ("checkpoint" in options):
         raise ValueError("AIMNet2 requires exactly one of model or checkpoint")
     if "model" in options:
@@ -78,11 +76,7 @@ def _validate_options(options: Mapping[str, Any]) -> None:
             raise ValueError("AIMNet2 model_index must be an integer from 0 to 3")
     elif "model_index" in options:
         raise ValueError("AIMNet2 model_index is only valid with a named model")
-    for name in ("checkpoint", "cache_dir"):
-        if name in options:
-            value = options[name]
-            if not isinstance(value, str) or not value or not Path(value).is_absolute():
-                raise ValueError(f"AIMNet2 {name} must be an absolute path string")
+    check_paths(options, ("checkpoint", "cache_dir"), "AIMNet2 {} must be an absolute path string")
     if options.get("device", "cuda") not in ("cpu", "cuda"):
         raise ValueError("AIMNet2 device must be cpu or cuda")
     if options.get("coulomb_method", "auto") not in ("auto", "dsf", "ewald", "pme"):
@@ -124,19 +118,12 @@ def prepare(options: Mapping[str, Any], *, download: bool = True) -> dict[str, P
 
 
 def _electronic_state(atoms: Atoms, predictor: Any) -> None:
-    for name in ("charge", "spin"):
-        value = atoms.info.get(name)
-        if isinstance(value, bool) or not isinstance(value, Integral):
-            raise ValueError(f"AIMNet2 requires explicit integer atoms.info[{name!r}]")
+    require_charge_and_spin(atoms, "AIMNet2")
     spin = atoms.info["spin"]
-    if spin < 1:
-        raise ValueError("AIMNet2 spin must be a positive multiplicity")
-    if "mult" in atoms.info and (
-        isinstance(atoms.info["mult"], bool)
-        or not isinstance(atoms.info["mult"], Integral)
-        or atoms.info["mult"] != spin
-    ):
-        raise ValueError("AIMNet2 atoms.info['mult'] must agree with 'spin'")
+    if "mult" in atoms.info:
+        mult = atoms.info["mult"]
+        if isinstance(mult, bool) or not isinstance(mult, Integral) or mult != spin:
+            raise ValueError("AIMNet2 atoms.info['mult'] must agree with 'spin'")
     if not predictor.is_nse and spin != 1:
         raise ValueError(
             "this AIMNet2 model supports singlets only; use aimnet2-nse for open shells"
@@ -186,10 +173,8 @@ class AIMNet2Adapter(TorchModelAdapter):
                 chosen = ("dsf" if atoms.pbc.any() else "simple") if method == "auto" else method
                 if chosen in ("ewald", "pme") and not atoms.pbc.all():
                     raise ValueError("AIMNet2 Ewald/PME requires a fully periodic structure")
-                if (
-                    chosen != "simple"
-                    and (self.base_calc.metadata or {}).get("coulomb_mode") == "full_embedded"
-                ):
+                mode = (self.base_calc.metadata or {}).get("coulomb_mode")
+                if chosen != "simple" and mode == "full_embedded":
                     raise ValueError(
                         "this AIMNet2 checkpoint cannot change its embedded Coulomb method"
                     )

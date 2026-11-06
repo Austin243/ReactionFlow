@@ -10,7 +10,7 @@ from typing import Any
 from ase.calculators.calculator import Calculator
 
 from .._durable import file_digest
-from ..campaign import TrajectorySpec
+from ..campaign import TrajectorySpec, _reject_unknown
 from ._model_files import model_cache, require_package
 from ._torch import TorchModelAdapter
 
@@ -51,9 +51,7 @@ def catalog() -> dict[str, Any]:
 
 
 def _validate(options: Mapping[str, Any]) -> None:
-    unknown = set(options) - _ALLOWED_OPTIONS
-    if unknown:
-        raise ValueError(f"unknown ANI-1xnr adapter options: {sorted(unknown)}")
+    _reject_unknown(options, _ALLOWED_OPTIONS, "ANI-1xnr adapter options")
     if options.get("device", "cuda") not in ("cpu", "cuda"):
         raise ValueError("ANI-1xnr device must be 'cpu' or 'cuda'")
     if options.get("dtype", "float32") not in ("float32", "float64"):
