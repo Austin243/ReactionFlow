@@ -39,7 +39,6 @@ NOT_CONNECTED = 6
 _AFTER_SADDLE = {NOT_CONNECTED, 7, 9, 10}
 # EON's own words for the endings a guided search reports itself.
 _ENDINGS = {
-    0: "Success",
     3: "Barrier too high",
     5: "Too many iterations",
     NOT_CONNECTED: "Saddle is not connected to initial state",
@@ -74,12 +73,8 @@ def _guide_entry(value: object) -> str | list[int]:
 
 
 def _guide(value: object) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or not set(value) <= {
-        "form",
-        "break",
-        "within_A",
-        "together",
-    }:
+    allowed = {"form", "break", "within_A", "together"}
+    if not isinstance(value, Mapping) or not set(value) <= allowed:
         raise ValueError("eon.guide takes 'form', 'break', 'within_A', and 'together'")
     together = value.get("together", False)
     if type(together) is not bool:
@@ -87,7 +82,7 @@ def _guide(value: object) -> dict[str, Any]:
     guide: dict[str, Any] = {}
     for kind in ("form", "break"):
         pairs = value.get(kind, [])
-        if isinstance(pairs, str) or not isinstance(pairs, (list, tuple)):
+        if not isinstance(pairs, (list, tuple)):
             raise ValueError(
                 f"eon.guide.{kind} must be a list of element pairs such as 'C-N' or atom ID pairs"
             )
@@ -146,7 +141,7 @@ class EONSettings:
         if self.prefactor is not None:
             object.__setattr__(self, "prefactor", _number(self.prefactor, "prefactor"))
         centers = self.displace_centers
-        if isinstance(centers, str) or not isinstance(centers, (list, tuple)):
+        if not isinstance(centers, (list, tuple)):
             raise ValueError("eon.displace_centers must be a list of elements or atom indices")
         for center in centers:
             if isinstance(center, bool) or not isinstance(center, (str, Integral)):
@@ -257,10 +252,8 @@ def guided_push(
     symbols = atoms.get_chemical_symbols()
     ids = atom_ids(atoms)
     index = {atom_id: number for number, atom_id in enumerate(ids)}
-    bonded = {
-        tuple(sorted(index[i] for i in bond))
-        for bond in classify_bonds(atoms, BondDetectorConfig())[0]
-    }
+    bonds = classify_bonds(atoms, BondDetectorConfig())[0]
+    bonded = {tuple(sorted(index[i] for i in bond)) for bond in bonds}
     neighbors: list[set[int]] = [set() for _ in atoms]
     for i, j in bonded:
         neighbors[i].add(j)
@@ -280,18 +273,13 @@ def guided_push(
     for i, j in sorted(bonded):
         pairs[i, j] = atoms.get_distance(i, j, mic=True, vector=True), -1.0
 
-    def matches(entry: str | list[int], i: int, j: int) -> bool:
-        if isinstance(entry, str):
-            return elements(i, j) == entry
-        return sorted((ids[i], ids[j])) == entry
-
     candidates = [
         [
             (i, j)
             for (i, j), (_, sign) in pairs.items()
             if (sign > 0) == (kind == "form")
             and not (fixed[i] and fixed[j])
-            and matches(entry, i, j)
+            and entry in (elements(i, j), sorted((ids[i], ids[j])))
         ]
         for kind in ("form", "break")
         for entry in guide[kind]
@@ -315,13 +303,8 @@ def guided_push(
         unit = vector / np.linalg.norm(vector)
         mode[i] += sign * share[0] * unit
         mode[j] -= sign * share[1] * unit
-        records.append(
-            {
-                "push": "form" if sign > 0 else "break",
-                "atom_ids": [int(ids[i]), int(ids[j])],
-                "elements": elements(i, j),
-            }
-        )
+        push = "form" if sign > 0 else "break"
+        records.append({"push": push, "atom_ids": [ids[i], ids[j]], "elements": elements(i, j)})
     positions = atoms.positions + settings.displace_size_A * mode
     free = np.flatnonzero(~fixed)
     positions[free] += rng.normal(0.0, _JITTER_A / math.sqrt(3 * len(free)), (len(free), 3))
@@ -333,8 +316,6 @@ def _linked_sets(candidates: list[list[tuple[int, int]]]) -> list[tuple[tuple[in
     """Every set that takes one pair from each list, with no pair twice, whose pairs link up
     through shared atoms."""
 
-    if not all(candidates):
-        return []
     touching = []
     for found in candidates:
         table: dict[int, list[tuple[int, int]]] = {}
@@ -379,14 +360,10 @@ class _PreservingCalculator(Calculator):
         # EON passes a zero force-evaluation cell for isolated molecules while
         # retaining Matter's original cell for geometry/I/O. Restore the ASE
         # cell from the source; a periodic calculation must keep its real cell.
-        isolated_force_cell = not self.template.pbc.any() and not atoms.cell.array.any()
-        if not isolated_force_cell and not np.allclose(
-            atoms.cell, self.template.cell, rtol=0, atol=1e-12
-        ):
+        isolated = not self.template.pbc.any() and not atoms.cell.array.any()
+        if not (isolated or np.allclose(atoms.cell, self.template.cell, rtol=0, atol=1e-12)):
             raise ValueError("EON changed the fixed cell")
-        physical = self.template.copy()
-        physical.info = copy.deepcopy(self.template.info)
-        physical.set_positions(atoms.positions, apply_constraint=False)
+        physical = _moved(self.template, atoms.positions)
         physical.calc = self.calculator
         energy = physical.get_potential_energy()
         # EON applies the fixed-coordinate mask itself.
@@ -399,15 +376,12 @@ class _PreservingCalculator(Calculator):
 
 
 def _ini(sections: dict[str, dict[str, object]]) -> str:
-    def text(value: object) -> str:
-        if isinstance(value, bool):
-            return str(value).lower()
-        return repr(value) if isinstance(value, float) else str(value)
-
     lines = []
     for section, values in sections.items():
         lines.append(f"[{section}]")
-        lines.extend(f"{key} = {text(value)}" for key, value in values.items())
+        for key, value in values.items():
+            text = str(value).lower() if isinstance(value, bool) else str(value)
+            lines.append(f"{key} = {text}")
     return "\n".join(lines) + "\n"
 
 
@@ -494,8 +468,8 @@ class EONBackend:
         parameters.write_movies = False
         return parameters
 
-    def _matter(self, atoms: Atoms, fixed: np.ndarray, parameters, *, calculator=None):
-        bridge = _PreservingCalculator(calculator or self.calculator, atoms)
+    def _matter(self, atoms: Atoms, fixed: np.ndarray, parameters):
+        bridge = _PreservingCalculator(self.calculator, atoms)
         potential = self._eon.potential_from_ase(bridge)
         geometry = atoms.copy()
         geometry.set_constraint()
@@ -555,12 +529,9 @@ class EONBackend:
                 )
             center, radius, size = push
             metadata.update(center=center, displace_magnitude_A=size)
+            rotation = self.settings.rotation_for(source)
             parameters = self._parameters(
-                seed=seed,
-                rotation=self.settings.rotation_for(source),
-                center=center,
-                radius=radius,
-                size=size,
+                seed=seed, rotation=rotation, center=center, radius=radius, size=size
             )
             matter, potential = self._matter(source, fixed, parameters)
             # pyeonclient 0.4.2 binds the full job in _core without re-exporting it.
@@ -571,9 +542,8 @@ class EONBackend:
                 results = _results(Path("results.dat"))
             message = results.get("termination_reason_text", "")
             reason = int(results["termination_reason"])
-            metadata.update(
-                force_calls=int(results.get("total_force_calls", 0)), termination_reason=reason
-            )
+            metadata["force_calls"] = int(results.get("total_force_calls", 0))
+            metadata["termination_reason"] = reason
             if reason in _AFTER_SADDLE:
                 return ProcessResult(
                     "failed",
@@ -620,51 +590,52 @@ class EONBackend:
         )
         metadata["termination_reason"] = status.value
         if status.value != 0:
-            return ProcessResult(
-                "failed", _ENDINGS.get(status.value, status.name), metadata=metadata
-            )
+            message = _ENDINGS.get(status.value, status.name)
+            return ProcessResult("failed", message, metadata=metadata)
         # The saddle's lowest mode, converged from the direction the search climbed. EON wraps
         # atoms into the cell, so the climb is taken by the minimum image.
         dimer = self._eon.ImprovedDimer(saddle, parameters, potential)
-        climb, _ = find_mic(
-            np.asarray(saddle.positions) - source.positions, source.cell, source.pbc
-        )
+        climb, _ = find_mic(saddle.positions - source.positions, source.cell, source.pbc)
         dimer.compute(saddle, np.ascontiguousarray(climb / np.linalg.norm(climb)))
         axis = np.asarray(dimer.eigenvector).reshape(-1, 3)
         axis /= np.linalg.norm(axis)
         minima, converged = [], True
         for sign in (1, -1):
             side, _ = self._matter(source, fixed, parameters)
-            side.positions = np.asarray(saddle.positions) + sign * _OFFSET_A * axis
+            side.positions = saddle.positions + sign * _OFFSET_A * axis
             relaxed, done = side.relax()
             minima.append((_moved(source, relaxed.positions), float(relaxed.potential_energy)))
             converged = converged and bool(done)
-        reached = {
-            "saddle": _moved(source, saddle.positions),
-            "saddle_energy": float(saddle.potential_energy),
-        }
+        saddle_atoms = _moved(source, saddle.positions)
+        saddle_energy = float(saddle.potential_energy)
         at_start = [self.same(source, energy, *minimum) for minimum in minima]
         # As in EON, a saddle joins the start when exactly one side is the start.
         code = 9 if not converged else 0 if sum(at_start) == 1 else NOT_CONNECTED
         if code == 0:
             product, product_energy = minima[1] if at_start[0] else minima[0]
-            prefactors = self.prefactors(source, reached["saddle"], product)
+            prefactors = self.prefactors(source, saddle_atoms, product)
             code = 7 if prefactors is None else 0
         metadata["termination_reason"] = code
         if code:
             return ProcessResult(
-                "failed", _ENDINGS[code], metadata=metadata, minima=tuple(minima), **reached
+                "failed",
+                _ENDINGS[code],
+                saddle=saddle_atoms,
+                saddle_energy=saddle_energy,
+                metadata=metadata,
+                minima=tuple(minima),
             )
         return ProcessResult(
             "good",
-            _ENDINGS[0],
+            "Success",
+            saddle=saddle_atoms,
             product=product,
             reactant_energy=energy,
+            saddle_energy=saddle_energy,
             product_energy=product_energy,
             prefactor=prefactors[0],
             reverse_prefactor=prefactors[1],
             metadata=metadata,
-            **reached,
         )
 
     def prefactors(self, first: Atoms, saddle: Atoms, second: Atoms) -> tuple[float, float] | None:

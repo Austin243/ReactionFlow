@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -12,17 +11,10 @@ import numpy as np
 from ase import Atoms
 from ase.io.jsonio import decode, encode
 
-from .._durable import ensure_directory, publish, sync_directory
+from .._durable import SAFE_NAME, ensure_directory, publish, sync_directory
 from ..detection import assign_atom_ids, atom_ids
 
 _KINDS = {"states", "processes", "attempts", "steps"}
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-
-
-def _name(value: str) -> str:
-    if not isinstance(value, str) or not _NAME.fullmatch(value):
-        raise ValueError("record IDs must be safe non-empty names")
-    return value
 
 
 def _json(value: object) -> str:
@@ -70,18 +62,17 @@ class SearchStore:
         if kind not in _KINDS:
             raise ValueError(f"unsupported search record kind: {kind!r}")
         directory = self.root / kind
-        return directory if record_id is None else directory / f"{_name(record_id)}.json"
+        if record_id is None:
+            return directory
+        if not isinstance(record_id, str) or not SAFE_NAME.fullmatch(record_id):
+            raise ValueError("record IDs must be safe non-empty names")
+        return directory / f"{record_id}.json"
 
     def ids(self, kind: str) -> tuple[str, ...]:
         """List published record IDs in lexical order, ignoring interrupted temporary files."""
 
-        return tuple(
-            sorted(
-                path.stem
-                for path in self._path(kind).glob("*.json")
-                if path.is_file() and _NAME.fullmatch(path.stem)
-            )
-        )
+        names = [path.stem for path in self._path(kind).glob("*.json") if path.is_file()]
+        return tuple(sorted(name for name in names if SAFE_NAME.fullmatch(name)))
 
     def write(
         self,
@@ -138,11 +129,8 @@ class SearchStore:
         payload = document["payload"]
         if sha256(_json(payload).encode()).hexdigest() != document["sha256"]:
             raise ValueError(f"search record failed integrity check: {kind}/{record_id}")
-        if (payload.get("schema_version"), payload.get("kind"), payload.get("record_id")) != (
-            1,
-            kind,
-            record_id,
-        ):
+        header = payload.get("schema_version"), payload.get("kind"), payload.get("record_id")
+        if header != (1, kind, record_id):
             raise ValueError("unsupported or mismatched search record")
         if not isinstance(payload["data"], dict):
             raise ValueError("record data must be a JSON object")
