@@ -81,7 +81,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
         row["error"] = f"{failure.get('type')}: {failure.get('message')}"
     records = _occurrences(root)
     unreadable: Counter[str] = Counter()
-    lost = missing_frames(root, state["global_frame"])
+    lost = missing_frames(root, state.get("global_frame", 0))
     if lost:
         row["missing_frames"] = lost
     if state.get("pending_pathway_ids"):
@@ -102,6 +102,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
     pathways: Counter[str] = Counter()
 
     read: dict[str, ReactionCandidate | None] = {}
+    lost_bundles: set[str] = set()
 
     def bundle(occurrence: sqlite3.Row) -> ReactionCandidate | None:
         name = occurrence["bundle"]
@@ -110,7 +111,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 read[name] = _read_bundle(root / name)[1]
             except Exception:
                 read[name] = None
-                unreadable["candidate bundle"] += 1
+                lost_bundles.add(name)
         return read[name]
 
     def as_refined(
@@ -130,7 +131,7 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                 product_bonds=frozenset(map(tuple, data["product_bonds"])),
             )
         except Exception:
-            unreadable["candidate bundle"] += 1
+            lost_bundles.add(occurrence["bundle"])
             return None
 
     def result_file(path: Path) -> dict[str, Any] | None:
@@ -166,24 +167,32 @@ def _trajectory(root: Path, row: dict[str, Any]) -> list[tuple[Any, ...]]:
                     step_result = result_file(step_path)
                     if step_result is None:
                         continue
-                    part = event and replace(
-                        event,
-                        **{
+                    try:
+                        bonds = {
                             key: frozenset(map(tuple, step_result[key]))
                             for key in ("reactant_bonds", "product_bonds")
-                        },
-                    )
+                        }
+                    except Exception:
+                        unreadable["result file"] += 1
+                        continue
+                    part = event and replace(event, **bonds)
                     steps.append((part, 1, [step_result], occurrence["occurrence_id"], [part]))
         classes.append((candidate, len(occurrences), results, example, refined))
     row.update(events=len(records), pathways=dict(pathways))
+    if lost_bundles:
+        unreadable["candidate bundle"] = len(lost_bundles)
     notes = [
         what if what.endswith("jsonl") else f"{count} {what}{'' if count == 1 else 's'}"
         for what, count in unreadable.items()
     ]
     if not (root / "reactions.sqlite3").is_file():
-        bundles = root.glob("candidates/[!.]*/candidate.json")
-        if count := sum(1 for _ in bundles):
-            notes.append(f"reactions.sqlite3 is missing, with {count} on disk")
+        count = sum(1 for _ in root.glob("candidates/[!.]*/candidate.json"))
+        results = sum(1 for _ in root.glob("pathways/[!.]*/result.json"))
+        if count or results:
+            notes.append(
+                f"reactions.sqlite3 is missing, with {count} candidates and {results} results "
+                "on disk"
+            )
     if notes:
         row["unreadable"] = notes
     return classes + steps
@@ -225,6 +234,11 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                 classes = _trajectory(root, row)
             except Exception as error:  # a damaged trajectory must not hide the rest
                 row["error"] = f"unreadable: {type(error).__name__}: {error}"
+        elif any(
+            any(root.glob(f"{kind}/[!.]*")) for kind in ("candidates", "pathways", "segments")
+        ):
+            row["phase"] = "unknown"
+            row["unreadable"] = ["state.json is missing, with records on disk"]
         # A worker can fail before it writes state.json, so its last error is read for every
         # trajectory, and read last so that a damaged file cannot hide the reactions above.
         if row["error"] is None and (root / "last-error.json").is_file():
@@ -232,7 +246,7 @@ def campaign_status(campaign: CampaignConfig, *, radius: int = 2) -> dict[str, A
                 row["error"] = _read_json(root / "last-error.json").get("error")
             except Exception as error:
                 row["error"] = f"unreadable last-error.json: {type(error).__name__}"
-        notes = [row["error"]] if row["error"] else []
+        notes = [str(row["error"])] if row["error"] else []
         if "missing_frames" in row:
             lost = frame_ranges(row["missing_frames"])
             notes.insert(0, f"saved frames {lost} missing or unreadable")
