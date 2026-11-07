@@ -208,6 +208,31 @@ started before the check cannot resume under it, because its pathway settings, a
 contract, have changed. Finish it with the version that started it, and test its bands with
 `reactionflow check`. Its results keep their `ci_neb_converged` status.
 
+## Electronic analysis with ElecTrace
+
+```bash
+reactionflow export-electrace runs/<trajectory>/pathways/<occurrence> --out band-dft
+```
+
+`reactionflow export-electrace` lays out one band for
+[ElecTrace](https://github.com/Austin243/ElecTrace), which follows charges, critical points and
+bonds from image to image. `band-dft` must be new or empty. It gets one numbered folder per image
+(`00`, `01`, ...) holding only a `POSCAR`, plus two files:
+
+- `electrace.toml` analyzes the folders as one NEB path with `atom_identity = "index"`. An NPT band
+  sets `pressure_gpa`, so that ElecTrace compares H = E + PV at the band's pressure, the same
+  enthalpy as `barrier_eV`. `focus_atoms` lists the atoms of the bonds that differ between the
+  band's two ends.
+- `reactionflow.json` keeps the pathway's `result.json` and the changed bonds, plus `atom_ids`,
+  the stable ID of the atom at each POSCAR index.
+
+Each species is one POSCAR block, and an atom has the same index in every frame. Constraints are
+not written, and neither are the model's energies, which stay in `reactionflow.json`: run the
+electronic-structure calculations and analyses in the frame folders, then `electrace analyze
+band-dft/electrace.toml`. A band whose saddle check failed, or that did not converge, is still
+exported, and its status is printed. An event refined in steps has no band of its own; export one
+of its `step-N` folders, whose focus atoms come from that step's bonds.
+
 ## Constant-pressure SSNEB
 
 Campaigns pass `pressure_GPa` automatically. Direct calls to refinement or run methods must supply

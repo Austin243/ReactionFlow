@@ -63,10 +63,14 @@ By default a trajectory pauses for each reaction and refines it before MD goes o
 `"refine_after_md": true` in the campaign, MD runs to its last step without pausing, and the events
 wait in a queue until then ([when barriers are refined](docs/campaigns.md#when-barriers-are-refined)).
 
-Two more commands work on finished output. `reactionflow scan` replays the saved frames through
+Three more commands work on finished output. `reactionflow scan` replays the saved frames through
 bond detection, with the run's settings or new ones, and tabulates every bond change and species
 ([offline scan](docs/offline-scan.md)). `reactionflow check campaign.json band.traj` tests whether
 the highest image of any band, from ReactionFlow or another code, is a saddle between its ends.
+`reactionflow export-electrace <pathway> --out <folder>` lays out a band as VASP frame folders and
+an [ElecTrace](https://github.com/Austin243/ElecTrace) configuration, to follow charges, critical
+points and bonds along it
+([electronic analysis](docs/pathway-refinement.md#electronic-analysis-with-electrace)).
 
 A number for `pressure_GPa` runs NPT, and the pathway is then refined with variable-cell SSNEB and
 gives an enthalpy barrier. `null` runs NVT with ordinary NEB. Each trajectory writes its frames,
