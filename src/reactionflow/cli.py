@@ -22,6 +22,7 @@ from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
 from .campaign import CampaignConfig
 from .detection import _is_count
+from .electrace_export import export_band
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
 from .pathway import check_saddle
@@ -323,6 +324,16 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--frame-ps", type=float, help="ps between the frames of a trajectory file")
     scan.add_argument("--out", type=Path, help="output directory")
 
+    export = commands.add_parser(
+        "export-electrace", help="lay out one refined band as VASP frame folders for ElecTrace"
+    )
+    export.add_argument(
+        "pathway",
+        type=Path,
+        help="a band's folder: <trajectory>/pathways/<occurrence>, or one of its step-N folders",
+    )
+    export.add_argument("--out", type=Path, required=True, help="a new or empty folder")
+
     status = commands.add_parser(
         "status", help="summarize trajectories and reactions without changing any run"
     )
@@ -376,6 +387,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ValueError as error:
             parser.error(str(error))
         print(json.dumps({"backends": catalog}, indent=2, sort_keys=True))
+        return 0
+    if arguments.command == "export-electrace":
+        print(json.dumps(export_band(arguments.pathway, arguments.out), sort_keys=True))
         return 0
     if arguments.command == "scan" and arguments.campaign.suffix != ".json":
         if arguments.index is not None:
