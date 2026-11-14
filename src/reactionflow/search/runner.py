@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,10 @@ from .akmc import AKMCConfig, basin_escape, confidence, in_window, kmc_step, rat
 from .eon import NOT_CONNECTED, ProcessResult, validate_start
 from .labels import bond_changes, reversed_changes
 from .records import SearchStore
+
+# Distinct reasons for a failed search that `run` prints, so that a model failing in a new way each
+# time cannot flood a job's log. `status` counts them all.
+_PRINTED_REASONS = 10
 
 
 def _save_state(root: Path, state: dict[str, Any]) -> None:
@@ -411,6 +416,7 @@ def run_exploration(
             _save_state(root, state)
         counted = "chemical_steps" if config.basins == "bonds" else "steps"
         stop_reason = "steps_completed"
+        printed: set[str] = set()
         while state[counted] < config.steps:
             if state["active"] is None:
                 counters = state["states"][state["current"]]
@@ -439,6 +445,13 @@ def run_exploration(
             else:
                 result, structures = _attempt(store, state, active, backend, config)
                 store.write("attempts", active["id"], result, structures=structures)
+                if (
+                    result["status"] == "failed"
+                    and result["message"] not in printed
+                    and len(printed) < _PRINTED_REASONS
+                ):
+                    printed.add(result["message"])
+                    print(f"{active['id']} failed: {result['message']}", file=sys.stderr)
             _commit_attempt(state, result)
             if result["status"] == "no_push":
                 # Every later search from this state would select nothing as well.

@@ -222,7 +222,8 @@ exactly once, and an interrupted search is repeated with its saved seed. Keeping
 does not promise bitwise agreement across EON builds or numerical environments.
 
 The output directory holds the model/settings contract in `search-contract.json`, progress in
-`search-state.json`, and immutable checksummed records under `states/`, `processes/`,
+`search-state.json`, the error that ended the last run, if any, in `last-error.json`, and immutable
+checksummed records under `states/`, `processes/`,
 `attempts/`, and `steps/`. A process record keeps its saddle, product, barrier, prefactors, and
 bond changes; the reverse of each process is recorded for the product state. An attempt that EON
 rejected after its saddle converged keeps the saddle, both minima with their energies, and the
@@ -245,7 +246,13 @@ output directory.
   show up in the step list. `basins: "bonds"` merges states only when no bond changes between
   them; a low-barrier reaction is still a separate step.
 - A state is searched until it reaches the confidence target, with no cap on searches; `status`
-  shows the searches and confidence of the current state.
+  shows the searches and confidence of the current state, and counts the failed searches by reason
+  (`failure_reasons` in `--json`). `run` prints each new reason on standard error as it first
+  appears, up to ten. A confidence that stays at 0 while searches fail will not recover by itself.
+  The one automatic stop: if the model raises or returns a non-finite value during a search, it is
+  evaluated once on that search's starting structure. If that fails too, the run exits with status
+  1 without recording the search, and a rerun repeats it with its saved seed. If that succeeds, the
+  failure belonged to the geometry, so the search is recorded as failed and the run goes on.
 - Searches use a fixed, nonsingular cell, fully periodic or fully nonperiodic, with `FixAtoms` as
   the only constraint.
 - By default EON converges saddles and minima on the norm of the whole force vector

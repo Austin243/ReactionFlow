@@ -144,7 +144,7 @@ The check ends a converged band as one of these:
 | `saddle_validated` | one mode, and the two sides relax to the band's two ends |
 | `no_saddle` | an endpoint is the highest point, or the saddle image has no mode |
 | `saddle_rejected` | more than one mode, or the sides do not reach both ends |
-| `saddle_unchecked` | the Hessian failed, or the connectivity check failed or was inconclusive |
+| `saddle_unchecked` | an image's energy was not finite, the Hessian failed, or the connectivity check failed or was inconclusive |
 
 The outcome's message says which case applies. A saddle lies above both endpoints, so when an
 endpoint is the highest point of the band, there is no saddle to test, and the outcome has no
@@ -200,7 +200,16 @@ pathway's `images.traj`, a band from another code, or an EON saddle written as t
 (minimum, saddle, minimum). The campaign supplies the model, the bond thresholds, and the pathway
 settings. `--index` picks the trajectory whose model and pressure are used; a campaign with several
 trajectories needs it, even inside a Slurm job. `--pressure` replaces that pressure. The verdict is written beside the band as `<band>.check.json`, in the form
-of a pathway's `result.json`, and its status, barrier, and message are printed.
+of a pathway's `result.json`, and its status, barrier, and message are printed. The images must hold
+the same atoms, elements, and periodicity, or the check refuses the band; images with atom IDs in
+another order are put in the first image's order, and a file without IDs is taken in its own order.
+
+The verdict rests on curvature and connectivity, and the barrier is the highest image minus the first
+image as given, so it means what it says only for relaxed ends and a stationary highest image, which
+a band from another code may not have. `largest_force_eV_A` in the verdict gives the largest atomic
+force on the first, highest, and last images, and the message of a validated band says when these
+pass `neb_fmax` or `relax_fmax`. A converged band of this package can pass `neb_fmax` slightly,
+because that tolerance applies to the band's projected forces. Neither changes the verdict.
 
 Campaign and state files written before the saddle check may name `active_radius` and
 `imaginary_frequency_cutoff_cm1`. They still open, and those two settings are ignored. A trajectory

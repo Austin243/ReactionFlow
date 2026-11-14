@@ -57,9 +57,12 @@ class ReactionRunConfig:
                 raise ValueError(f"{name} must be a positive integer")
         radius = self.candidate_region_radius
         if radius is not None and (
-            isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 0
+            isinstance(radius, bool) or not isinstance(radius, Integral) or radius < 1
         ):
-            raise ValueError("candidate_region_radius must be a non-negative integer or null")
+            raise ValueError(
+                "candidate_region_radius must be a positive integer or null: at 0 a region holds "
+                "single atoms, so no bond can change in it and the run finds no reactions"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -106,6 +109,50 @@ def _last_frame(path: Path) -> int:
         if len(trajectory) == 0:
             return -1
         return int(trajectory[-1].info["reactionflow_global_frame"])
+
+
+def _readable_span(path: Path) -> tuple[int, int]:
+    """The first global frame of a segment and the last one left to read in it."""
+
+    with Trajectory(path) as trajectory:
+        first = int(trajectory[0].info["reactionflow_global_frame"])
+        for index in range(len(trajectory) - 1, 0, -1):
+            try:
+                return first, int(trajectory[index].info["reactionflow_global_frame"])
+            except Exception:  # a cut tail
+                continue
+        return first, first
+
+
+def missing_frames(root: Path, last_frame: int) -> list[list[int]]:
+    """Ranges of global frames up to ``last_frame`` that no segment of this run holds.
+
+    Each frame is on disk before the checkpoint that counts it, except the very first frame of a
+    run, so a healthy run reports nothing however it was stopped. This reads each segment's ends,
+    so it finds a segment that is gone or cut; damage inside one shows only when ``scan`` reads it.
+    """
+
+    if last_frame < 1:
+        return []
+    segments = [
+        path for path in root.glob("segments/*/trajectory.traj") if path.parent.name.isdigit()
+    ]
+    missing, expected = [], 0
+    for path in sorted(segments, key=lambda path: int(path.parent.name)):
+        try:
+            span = _readable_span(path)
+        except Exception:  # an empty or cut file raises one of several types
+            continue
+        if span[0] > expected:
+            missing.append([expected, span[0] - 1])
+        expected = max(expected, span[1] + 1)
+    if expected <= last_frame:
+        missing.append([expected, last_frame])
+    return missing
+
+
+def frame_ranges(ranges: list[list[int]]) -> str:
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
 
 
 def _same_atomic_state(first: Atoms, second: Atoms) -> bool:
@@ -391,6 +438,8 @@ class ReactionRun:
     def _run_segment(self, total_steps: int, runtime_provider: ExactRuntimeProvider) -> None:
         """Run MD from the current checkpoint until refinement is due or the run ends."""
 
+        # A restore may hand back the snapshot's own atoms, so compare with a copy from before it.
+        saved_atoms = None if self._snapshot is None else self._snapshot.atoms.copy()
         manager = (
             runtime_provider.start(self._initial)
             if self._snapshot is None
@@ -402,6 +451,8 @@ class ReactionRun:
                 self._checkpoint(runtime)
             elif int(runtime.nsteps) != self._global_step:
                 raise ValueError("exact runtime step counter does not match the durable run")
+            elif not _same_atomic_state(runtime.atoms, saved_atoms):
+                raise ValueError("exact runtime restored other atoms than its checkpoint holds")
             else:
                 self._record_environment_change(runtime.snapshot())
 
@@ -409,11 +460,25 @@ class ReactionRun:
             ensure_directory(path.parent)
             # Each frame is written before its checkpoint, so an interrupted attempt may already
             # hold this boundary's frame or the next one, which the exact replay reproduces.
-            written = _last_frame(path)
+            way_out = (
+                "Restore it from a copy, or move it aside to continue in a new file without its "
+                "frames, which every later run then reports as missing"
+            )
+            try:
+                written = _last_frame(path)
+            except Exception as error:  # a cut file raises one of several types
+                raise ValueError(
+                    f"{path} cannot be read, so this run cannot append to it "
+                    f"({type(error).__name__}: {error}). {way_out}"
+                ) from error
             if written > self._global_frame + 1:
                 raise ValueError("trajectory is ahead of its exact runtime checkpoint")
             if 0 <= written < self._global_frame:
-                raise ValueError("trajectory is missing frames before its exact runtime checkpoint")
+                raise ValueError(
+                    f"trajectory is missing frames before its exact runtime checkpoint: {path} "
+                    f"ends at frame {written}, and the checkpoint is at {self._global_frame}. "
+                    f"{way_out}"
+                )
             with Trajectory(path, "w" if written < 0 else "a") as trajectory:
                 self._write_frame(trajectory, runtime.atoms, written)
                 sync_directory(path.parent)
@@ -463,13 +528,21 @@ class ReactionRun:
         for path in sorted(self.root.glob("segments/*/trajectory.traj")):
             if path.stat().st_size == 0:
                 continue
-            with Trajectory(path) as trajectory:
-                if len(trajectory) == 0:
+            try:
+                trajectory = Trajectory(path)
+            except Exception:  # cut, which run() reports: refinement can do without it
+                continue
+            with trajectory:
+                try:
+                    # A generation holds one frame per observation, from the one it resumed at.
+                    start = int(trajectory[0].info["reactionflow_global_frame"])
+                except Exception:
                     continue
-                # A generation holds one frame per observation, from the one it resumed at.
-                start = int(trajectory[0].info["reactionflow_global_frame"])
                 for frame in range(max(first, start), min(last, start + len(trajectory) - 1) + 1):
-                    atoms = trajectory[frame - start]
+                    try:
+                        atoms = trajectory[frame - start]
+                    except Exception:
+                        break
                     if int(atoms.info["reactionflow_global_frame"]) != frame:
                         raise ValueError(f"{path} does not hold one frame per observation")
                     frames.setdefault(frame, canonical_copy(atoms))
@@ -580,8 +653,13 @@ class ReactionRun:
         assert self._active_checkpoint is not None
         snapshot = ExactRestartSnapshot.read(self._active_checkpoint / "exact-restart")
         with runtime_provider.restore(snapshot) as runtime:
-            if runtime.atoms.calc is not None and not np.isfinite(runtime.atoms.get_forces()).all():
+            atoms = runtime.atoms
+            if atoms.calc is None:
+                return
+            if not np.isfinite(atoms.get_forces()).all():
                 raise ValueError("the model returned non-finite forces at the last checkpoint")
+            if not np.isfinite(atoms.get_potential_energy()):
+                raise ValueError("the model returned a non-finite energy at the last checkpoint")
 
     def _refine_due(self) -> bool:
         """Whether to refine now: the queue waits only for running MD under ``refine_after_md``."""
@@ -640,7 +718,21 @@ class ReactionRun:
             self._start(atoms)
         elif atoms is not None:
             raise ValueError("initial atoms may only be supplied to a new run")
+        if self._phase == "completed" and total_steps > self._global_step:
+            raise ValueError(
+                f"this run completed at step {self._global_step} and cannot be extended to "
+                f"{total_steps}: its last candidates are closed. Start a new trajectory from a "
+                "saved frame, which carries its momenta"
+            )
         self._refine_after_md = refine_after_md
+        lost = missing_frames(self.root, self._global_frame)
+        if lost:
+            warnings.warn(
+                f"saved frames {frame_ranges(lost)} of {self.root.name} are missing or unreadable. "
+                "The MD state comes from the checkpoint and is not affected, but scan cannot "
+                "replay those frames and refinement cannot use them",
+                stacklevel=2,
+            )
 
         if self._phase == "refining" or self._refine_due():
             # A reopened adapter has not checked its model against the saved MD state yet.

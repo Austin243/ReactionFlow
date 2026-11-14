@@ -13,16 +13,19 @@ reactionflow scan XDATCAR --pair C-O 1.6 2.0 --frame-ps 0.05
 ## Campaign runs
 
 A run saves one frame per observation in `segments/<generation>/trajectory.traj`. A new generation
-starts with the frame it resumed from, and the scan reads that frame once. It stops at the first
-frame it cannot read, such as the one a running job is writing, and it prints `"scan": null` for a
-trajectory with no saved frames yet.
+starts with the frame it resumed from, and the scan reads that frame once. It reads a segment up to
+the first frame it cannot read, such as the one a running job is writing, and passes over a segment
+that is missing, empty or cut. Frames the run has checkpointed that the scan could not read are
+listed as `missing_frames`, in the summary and on standard error, and the timing of a change across
+such a gap is not known. It prints `"scan": null` for a trajectory with no saved frames.
 
 With no options the scan uses the run's own settings from `state.json`, so it finds the candidates
 the run recorded. `candidates.csv` gives each one's occurrence ID, and in `summary.json`
 `matching_recorded` equals `recorded_by_run` for a finished run. Options change the replay and
 nothing else:
 
-- `--radius R` sets the region radius in bonds, and `--radius none` takes whole bonded components.
+- `--radius R` sets the region radius in bonds, from 1, and `--radius none` takes whole bonded
+  components.
 - `--persistence N` sets how many observations a crossing must last to become a bond change.
 - `--stability N` sets how many observations a region's new bonds must hold.
 - `--pair A-B FORM BREAK` sets the formation and break distances in Å for one element pair. It can
@@ -37,7 +40,10 @@ Any source that is not a `.json` campaign file is read as a trajectory file, in 
 reads, for example an XDATCAR, an extxyz file, or a LAMMPS dump. Atoms keep the IDs the file
 carries, such as an `atom_id` column in extxyz, and otherwise get IDs 0 to N−1 in file order, so
 the file must keep its atom order. ASE sorts a LAMMPS dump by its `id` column, and it names the
-elements from an `element` or `mass` column, because types alone do not. The settings start from
+elements from an `element` or `mass` column, because types alone do not: a dump with only types is
+read as H, He, and so on, and the scan warns, on standard error and under `warnings` in the summary.
+It also warns on standard error about a file with no periodic cell, where a wrapped atom reads as a
+bond change. The settings start from
 the defaults of a campaign (thresholds from covalent radii, persistence 3, stability 3, radius 2)
 and take the same options. `--frame-ps` gives the time between frames for the time columns, which
 are empty without it. The tables go to `<file>-scan/` beside the file unless `--out` names another
@@ -51,8 +57,9 @@ directory.
   first frame.
 - `candidates.csv` has one row per candidate: the reactant, product and observed frames and the
   times of the first two, resolved or not, whether it was still changing at the end, its number of
-  atoms, its bond changes, its local class and label as `reactionflow status` names them (radius 2),
-  and the run's occurrence ID when the run recorded the same candidate.
+  atoms, its bond changes, its local class as `reactionflow status` merges them (radius 2), the
+  label of that class in this row's direction, and the run's occurrence ID when the run recorded the
+  same candidate.
 - `species.csv` counts each formula among the bonded components every `--every` frames, with the
   number of starting molecules in each component, which is the chain length in a polymer.
 - `summary.json` holds the settings and the counts, which are also printed:
@@ -62,7 +69,8 @@ directory.
     unresolved;
   - `net_changes_in_resolved` and `classes_in_resolved`, the bond changes and local classes in the
     resolved candidates;
-  - `recorded_by_run` and `matching_recorded` for a campaign run.
+  - `recorded_by_run` and `matching_recorded` for a campaign run;
+  - `missing_frames`, only when a campaign run's saved frames have gaps.
 
 These counts separate the stages between a threshold crossing and a candidate: what persistence
 filters, what is confirmed, how confirmed changes group into candidates, and how many never come

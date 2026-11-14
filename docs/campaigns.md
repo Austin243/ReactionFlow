@@ -236,9 +236,17 @@ marked failed refines its queue when resubmitted, then reports the failure again
 
 MD restarts exactly after a pause, and refinement reads only saved frames, so with a model that
 keeps no state between evaluations both orders give the same frames, events, and barriers. A model
-with internal state, such as ASE's EMT and its neighbor list, can differ at rounding level, as it
-does after any restart. The setting is not part of a trajectory's contract, so you can change it
+with internal state can differ, as it does after any restart: ASE's EMT and its neighbor list at
+rounding level, and tblite's xTB, which reuses its wavefunction, by a whole different path
+([exact restart](exact-restart.md)). The setting is not part of a trajectory's contract, so you can change it
 when you resubmit. A trajectory already paused for refinement finishes that refinement first.
+
+`validate`, and `run` when it starts a trajectory, warn about settings that quietly shape the result,
+on standard error for `run` and under `warnings` for `validate`: a structure with several frames, of
+which the run takes the last; momenta in the structure, which replace `temperature_K` for the
+starting velocities; constraints, which hold in MD and are removed in refinement; a cell at a pressure
+that refinement cannot use; and a run with too few observations to confirm any reaction. None of
+these stops the run.
 
 ## Campaign status
 
@@ -249,22 +257,30 @@ imports the MLIP.
 The first table has one row per trajectory: model profile, pressure, phase, step, detected events,
 converged pathways out of those refined, and the latest error. That error is the permanent
 failure for a `failed` trajectory, and otherwise the contents of `last-error.json`. Trajectories
-without output are listed as `not started`. A trajectory whose files cannot be read is reported
-with that error while the rest of the report still prints.
+without output are listed as `not started`. A file that cannot be read costs only what depends on it:
+the error column counts what was left out, `--json` lists it as `unreadable`, and a line under the
+table says the report is incomplete. A class whose candidate bundles cannot all be read, as in a copy
+of a run's results alone, keeps its counts and barriers in a row of its own, because classes merge
+only by their graphs. Saved frames that are gone appear in the error column and as `missing_frames`.
 Pathway counts include every refined occurrence. An event refined in steps counts each step as a
-refined pathway, and only its steps can converge.
+refined pathway, and only its steps can converge. Events still waiting to be refined are not among
+them: a line under the table counts them, and `--json` gives `queued`.
 
 The second table merges reaction classes across trajectories that share a model profile and
 pressure, because only those barriers are comparable. Classes merge by the local change: the
 changed bonds and the atoms within `--radius` bonds of them (default 2), including forward/reverse
 equivalence ([local classes](reaction-identity.md#local-classes)). Each row lists the bond changes
 with the formula of those atoms, the number of trajectories and events, converged bands out of
-those refined, validated saddles, and the minimum, median, and maximum barrier. Each step of an
-event refined in steps is an event of its own local class
+those refined, validated saddles, and the minimum, median, and maximum barrier. A barrier is measured
+from each event's own reactant, so a class that runs both ways has two barriers: the row's barrier
+is for the direction it names, and a further column, `reverse_barriers_eV` in `--json`, is for the
+other. Each step of an event refined in steps is an event of its own local class
 ([steps](pathway-refinement.md#reactant-frame-and-steps)). Barriers come only from validated
 saddles ([saddle check](pathway-refinement.md#saddle-check)). A line below the table
 totals the saddle check's verdicts across the campaign (validated, no saddle, rejected, unchecked)
 and counts separately the bands that converged before the check existed, which carry no verdict.
+Events that ended with no converged band are counted by status and message, up to five in the text
+and all of them as `no_band` in `--json`.
 NVT barriers are potential energies; NPT barriers are enthalpies. `--json` prints the same data,
 including every barrier value, the counts of each pathway, frequency and connectivity status,
 trajectory ID, and one example occurrence per class, for scripted analysis.

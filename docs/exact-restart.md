@@ -40,13 +40,18 @@ Bitwise continuation requires the same ASE and NumPy versions, so the codec reco
 do not influence the propagated state.
 
 Calculator state is not guessed. An MLIP adapter must either serialize all mutable state or
-declare that deterministic reconstruction from pinned model/configuration data is exact. An
-adapter that cannot satisfy that contract cannot be used in strict exact-restart mode.
+declare that deterministic reconstruction from pinned model/configuration data is exact.
 
 The generic ASE calculator adapter is for deterministic, stateless inference. It binds the
 calculator factory and kwargs, model-file SHA-256 values, calculator source, and selected installed
 package versions to the checkpoint. Calculators with mutable inference state or their own RNG must
-use a custom adapter that snapshots that state explicitly.
+use a custom adapter that snapshots that state explicitly. Nothing tests this at run time: the
+adapter labels every calculator exact and gives no warning when one is not. tblite reuses its
+previous wavefunction, so each pause or kill of the xTB example changes its path: 6e-8 Å by step 100,
+growing to 6.3 Å within 20 ps, with 7 events uninterrupted, 8 with `refine_after_md`, and 10 after
+three kills, on one machine. Each is still a valid sample, but not the same trajectory. ASE's EMT and
+LJ differ at rounding level, at most 7e-15 Å over 3 ps. ANI-1xnr, AIMNet2-RXN, MACE and UMA on a CPU
+stayed bitwise exact in the cases tried; no GPU has been tested.
 
 The built-in Torch adapters, ANI-1xnr included, use deterministic PyTorch execution, disable TF32,
 and fix the cuBLAS workspace configuration. They record the model-file SHA-256 values, options,
@@ -87,7 +92,12 @@ run keeps a single runtime checkpoint.
 `state.json` records the phase, generation, global counters, pending pathway occurrence IDs,
 detector state, configuration, any durable-state failure, and the active checkpoint. Each
 generation writes one frame per observation to `segments/<generation>/trajectory.traj`; a frame is
-written before its checkpoint, so an interrupted attempt never leaves a gap. An MD state with a
+written before its checkpoint, so an interrupted attempt never leaves a gap. A segment lost later,
+to a node crash or a cut copy, cannot change the state in the checkpoint, so MD continues, and every
+`run`, `status` and `scan` then names the missing frames. `run` and `status` read each segment's
+ends, so damage inside a segment shows only in `scan`, which reads every frame. The one refusal is a
+current segment that cannot be appended to: restore it, or move it aside to continue in a new file.
+An MD state with a
 non-finite position, momentum, cell, or integrator array gets neither: the job stops with a non-zero
 exit, and the next job repeats from the last checkpoint, or starts over if there is none. A frame or
 checkpoint an earlier version wrote from such a state is not repaired.

@@ -217,8 +217,11 @@ class ReactionTracker:
     def __init__(self, *, stability_frames: int = 3, region_radius: int | None = 2) -> None:
         if not _is_count(stability_frames, 1):
             raise ValueError("stability_frames must be a positive integer")
-        if region_radius is not None and not _is_count(region_radius, 0):
-            raise ValueError("region_radius must be a non-negative integer or None")
+        if region_radius is not None and not _is_count(region_radius, 1):
+            raise ValueError(
+                "region_radius must be a positive integer or None: at 0 a region holds single "
+                "atoms, so no bond can change in it"
+            )
         self.stability_frames = int(stability_frames)
         self.region_radius = None if region_radius is None else int(region_radius)
         self._symbols: dict[int, str] | None = None

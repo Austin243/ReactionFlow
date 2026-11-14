@@ -244,14 +244,17 @@ class ASECalculatorAdapter(ASELangevinBAOABAdapter):
         self._contract: ComponentState | None = None
 
     def _model_file_hashes(self) -> dict[str, str]:
-        if self._model_hashes is None:
-            hashes: dict[str, str] = {}
-            for path in self.model_files:
-                if not path.is_file():
-                    raise FileNotFoundError(f"MLIP model file is missing: {path}")
-                hashes[str(path)] = file_digest(path)
-            self._model_hashes = hashes
-        return self._model_hashes
+        # Rehash before every new calculator: replacing a file mid-run must not let MD and
+        # refinement use different potentials under one recorded identity.
+        hashes: dict[str, str] = {}
+        for path in self.model_files:
+            if not path.is_file():
+                raise FileNotFoundError(f"MLIP model file is missing: {path}")
+            hashes[str(path)] = file_digest(path)
+        if self._model_hashes is not None and hashes != self._model_hashes:
+            raise ValueError("model files changed during the run")
+        self._model_hashes = hashes
+        return hashes
 
     def _package_versions(self, module_name: str) -> dict[str, str]:
         names = set(self.packages)
