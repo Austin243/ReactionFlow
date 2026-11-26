@@ -9,11 +9,12 @@ from ase import Atoms
 from ..detection import BondDetectorConfig, _symbols_by_id, classify_bonds
 
 
-def bond_changes(reactant: Atoms, product: Atoms) -> dict[str, list[dict]]:
+def bond_changes(
+    reactant: Atoms, product: Atoms, config: BondDetectorConfig
+) -> dict[str, list[dict]]:
     """A bond forms when it is inside the formation distance in the product and was outside the
     breaking distance in the reactant; breaking is the reverse. Atoms keep their stable IDs."""
 
-    config = BondDetectorConfig()
     before, before_gap = classify_bonds(reactant, config)
     after, after_gap = classify_bonds(product, config)
     symbols = _symbols_by_id(reactant)

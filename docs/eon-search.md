@@ -109,6 +109,30 @@ The total push is spread over the moved atoms, so its size does not grow with th
 EON computes harmonic prefactors from the atoms that move most in each process (those carrying
 90% of the displacement) and rejects values outside 10⁹–10²¹ 1/s.
 
+`detector`, at the top level of the campaign like `akmc` and `eon`, sets which atom pairs count
+as bonded. It takes the settings of `reaction_run.detector` in an MD campaign, so one block serves
+both:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `form_scale` | 1.15 | A pair is bonded up to this multiple of the sum of its covalent radii |
+| `break_scale` | 1.30 | A bond is broken from this multiple on |
+| `pair_thresholds` | `{}` | Formation and break distances in Å for an element pair, in place of the scales: `{"C-O": [1.5, 1.8]}` |
+| `persistence_frames` | 3 | Counts MD frames. It is read so that an MD block can be copied, and does nothing here |
+
+These distances give every bond label, of a process and of a rejected search, and with the labels
+the chemical basins and the searches joined by their bonds. They also give the bonds a guide
+goes by. A label reports a bond as formed or broken only when the pair crosses both distances
+between the two minima.
+
+The default distances count close metal contacts as bonds: Pt-Pt up to 3.13 Å and C-Pt up to
+2.44 Å. An adsorbate that moves to the next site then forms or breaks bonds and leaves its basin.
+To leave such contacts out of the bonds, give those pairs distances shorter than any contact:
+
+```json
+"detector": {"pair_thresholds": {"Pt-Pt": [0.1, 0.2], "C-Pt": [0.1, 0.2]}}
+```
+
 ## Chemical basins
 
 In molecules on surfaces and in molecular crystals, most exits from a state are conformational:
@@ -161,8 +185,8 @@ instead:
 
 A search picks one pair at random among all that match. A pair to form is not bonded, is closer
 than `within_A` (3.5 Å by default), and has no bonded neighbor in common, which leaves out atoms
-already joined through a third. A pair to break is bonded. Bonds use the default distances of MD
-reaction detection. An entry can also be two atom IDs, such as `[14, 95]`, which matches only that
+already joined through a third. A pair to break is bonded. Bonds use the `detector` distances
+(see Settings). An entry can also be two atom IDs, such as `[14, 95]`, which matches only that
 pair under the same rules; IDs are the structure's stable atom IDs, 0 to N-1 in file order unless
 it carries its own. The pair moves `displace_size_A` closer or apart, each atom in proportion to
 the other's mass and a fixed atom not at all, and a random push of 0.1 Å in total over the free
@@ -211,8 +235,8 @@ no vibrational frequency.
 ## Reports
 
 `status` prints the clock, the steps taken, and the current state's confidence and processes. Each
-step and process is labeled with the bonds it forms and breaks, using the default bond distances
-of MD reaction detection: for example `formed C-N; broken C-H`, or `no bond change` for a
+step and process is labeled with the bonds it forms and breaks, using the `detector` distances
+(see Settings): for example `formed C-N; broken C-H`, or `no bond change` for a
 conformational change. EON's own log of each search goes to `eon.log` in the output directory.
 
 ## Resume and records

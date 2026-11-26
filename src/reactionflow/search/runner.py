@@ -19,7 +19,7 @@ from ase import Atoms
 from ase.io.jsonio import encode
 
 from .._durable import ensure_directory, file_digest, publish, sync_directory
-from ..detection import canonical_copy
+from ..detection import BondDetectorConfig, canonical_copy
 from .akmc import AKMCConfig, basin_escape, confidence, in_window, kmc_step, rate
 from .eon import NOT_CONNECTED, ProcessResult, validate_start
 from .labels import bond_changes, reversed_changes
@@ -140,7 +140,7 @@ def _reverse(
 
 
 def _joined_by_bonds(
-    backend: Any, result: ProcessResult, start: Atoms
+    backend: Any, result: ProcessResult, start: Atoms, detector: BondDetectorConfig
 ) -> tuple[ProcessResult, Atoms, float] | None:
     """A search EON rejects because neither minimum matches the start still leaves the start's
     chemical basin when one minimum keeps the start's bonds and the other changes them: on its way
@@ -151,7 +151,7 @@ def _joined_by_bonds(
         return None
     kept, changed = [], []
     for minimum, value in result.minima:
-        internal = is_internal({"bonds": bond_changes(start, minimum)})
+        internal = is_internal({"bonds": bond_changes(start, minimum, detector)})
         (kept if internal else changed).append((minimum, value))
     if len(kept) != 1 or len(changed) != 1:
         return None
@@ -171,7 +171,12 @@ def _joined_by_bonds(
 
 
 def _attempt(
-    store: SearchStore, state: dict[str, Any], active: dict[str, Any], backend: Any, config
+    store: SearchStore,
+    state: dict[str, Any],
+    active: dict[str, Any],
+    backend: Any,
+    config,
+    detector: BondDetectorConfig,
 ) -> tuple[dict[str, Any], dict[str, Atoms]]:
     """Run one search and classify it; return the attempt record and the structures it keeps."""
 
@@ -191,7 +196,7 @@ def _attempt(
         return {**data, "status": "no_push"}, {}
     reference, extra = energy, {}
     if config.basins == "bonds" and result.status != "good" and result.minima:
-        joined = _joined_by_bonds(backend, result, origin.structures["atoms"])
+        joined = _joined_by_bonds(backend, result, origin.structures["atoms"], detector)
         if joined is not None:
             result, start_side, data["start_side_energy_eV"] = joined
             # A better conformer must not make the barrier look lower than it is.
@@ -204,7 +209,10 @@ def _attempt(
         # matches the start. Keep what it reached, and the bonds each minimum forms and breaks.
         data["barrier_eV"] = result.saddle_energy - energy
         data["minima"] = [
-            {"energy_eV": value, "bonds": bond_changes(origin.structures["atoms"], minimum)}
+            {
+                "energy_eV": value,
+                "bonds": bond_changes(origin.structures["atoms"], minimum, detector),
+            }
             for minimum, value in result.minima
         ]
         structures = {"saddle": result.saddle}
@@ -214,7 +222,7 @@ def _attempt(
     barrier = result.saddle_energy - reference
     data["barrier_eV"] = barrier
     known = _processes(store, state["states"][origin_id]["processes"])
-    bonds = bond_changes(origin.structures["atoms"], result.product)
+    bonds = bond_changes(origin.structures["atoms"], result.product, detector)
     if config.basins == "none":
         inside = in_window(barrier, min([barrier, *(p["barrier_eV"] for p in known)]), config)
     else:
@@ -362,16 +370,19 @@ def run_exploration(
     backend: Any,
     contract: dict[str, Any],
     config: AKMCConfig | None = None,
+    detector: BondDetectorConfig | None = None,
 ) -> dict[str, Any]:
     """Run or resume one AKMC trajectory. The caller owns the backend and its calculator.
 
     The backend relaxes, searches (`search(atoms, seed=...)` returns an EON process result), and
     compares structures; with basins it also gives the prefactors of searches joined by their
-    bonds. Resume reuses every published search and step exactly once; an interrupted search is
-    retried with its saved seed.
+    bonds. `detector` sets the bond distances of every label, by default those of MD reaction
+    detection. Resume reuses every published search and step exactly once; an interrupted search
+    is retried with its saved seed.
     """
 
     config = config or AKMCConfig()
+    detector = detector or BondDetectorConfig()
     root = Path(root).resolve()
     ensure_directory(root)
     with (root / ".search.lock").open("a+") as lock:
@@ -391,6 +402,9 @@ def run_exploration(
                 for name in ("runner.py", "akmc.py", "labels.py", "records.py")
             },
         }
+        if detector != BondDetectorConfig():
+            # Left out at the defaults, which a contract with no such entry has always meant.
+            expected["detector"] = detector.to_dict()
         # Normalize JSON-shaped contracts before comparing a freshly loaded checkpoint.
         expected = json.loads(encode(expected))
         _bind_contract(root, expected)
@@ -443,7 +457,7 @@ def run_exploration(
             if active["id"] in store.ids("attempts"):
                 result = store.read("attempts", active["id"]).data
             else:
-                result, structures = _attempt(store, state, active, backend, config)
+                result, structures = _attempt(store, state, active, backend, config, detector)
                 store.write("attempts", active["id"], result, structures=structures)
                 if (
                     result["status"] == "failed"
