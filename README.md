@@ -74,6 +74,11 @@ an [ElecTrace](https://github.com/Austin243/ElecTrace) configuration, to follow 
 points and bonds along it
 ([electronic analysis](docs/pathway-refinement.md#electronic-analysis-with-electrace)).
 
+`reactionflow band campaign.json reactant.extxyz product.extxyz --pressure 25 --out <folder>`
+refines one known step without MD. The step goes through the same endpoint relaxation, band, and
+saddle check as an event of `run`, at the pressure given, so a step found at one pressure can be
+refined at others ([refining a known step](docs/pathway-refinement.md#refining-a-known-step)).
+
 A number for `pressure_GPa` runs NPT, and the pathway is then refined with variable-cell SSNEB and
 gives an enthalpy barrier. `null` runs NVT with ordinary NEB. Each trajectory writes its frames,
 every detected occurrence, every refinement with its band and saddle check, and a

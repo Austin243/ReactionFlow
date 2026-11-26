@@ -191,6 +191,31 @@ def _write_result(directory: Path, outcome: PathwayOutcome, identity: Mapping[st
     )
 
 
+def publish_outcome(
+    pathways: Path, occurrence_id: str, class_id: str, outcome: PathwayOutcome
+) -> None:
+    """Write one refinement to ``pathways/<occurrence_id>``, and each of its steps to a ``step-N``
+    folder there, under a temporary name until complete."""
+
+    final = pathways / occurrence_id
+    temporary = pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
+    with publishing(temporary, final):
+        identity = {
+            "schema_version": 1,
+            "occurrence_id": occurrence_id,
+            "reactionflow_version": __version__,
+        }
+        _write_result(temporary, outcome, {**identity, "class_id": class_id})
+        for number, step in enumerate(outcome.steps, 1):
+            bonds = {
+                "reactant_bonds": sorted(map(list, step.reactant_bonds)),
+                "product_bonds": sorted(map(list, step.product_bonds)),
+            }
+            folder = temporary / f"step-{number}"
+            folder.mkdir()
+            _write_result(folder, step.outcome, {**identity, "step": number, **bonds})
+
+
 class ReactionRun:
     """Connect detection, candidate storage, pathways, and exact MD checkpoints.
 
@@ -549,24 +574,8 @@ class ReactionRun:
         return frames
 
     def _publish_outcome(self, occurrence_id: str, outcome: PathwayOutcome) -> None:
-        final = self.pathways / occurrence_id
-        temporary = self.pathways / f".{occurrence_id}-{uuid4().hex}.tmp"
-        with publishing(temporary, final):
-            identity = {
-                "schema_version": 1,
-                "occurrence_id": occurrence_id,
-                "reactionflow_version": __version__,
-            }
-            class_id = self.occurrences.record(occurrence_id).class_id
-            _write_result(temporary, outcome, {**identity, "class_id": class_id})
-            for number, step in enumerate(outcome.steps, 1):
-                bonds = {
-                    "reactant_bonds": sorted(map(list, step.reactant_bonds)),
-                    "product_bonds": sorted(map(list, step.product_bonds)),
-                }
-                folder = temporary / f"step-{number}"
-                folder.mkdir()
-                _write_result(folder, step.outcome, {**identity, "step": number, **bonds})
+        class_id = self.occurrences.record(occurrence_id).class_id
+        publish_outcome(self.pathways, occurrence_id, class_id, outcome)
 
     def _time_limited(
         self, provider: CalculatorProvider, max_hours: float | None

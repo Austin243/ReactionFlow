@@ -25,15 +25,27 @@ from ase.io.formats import filetype, open_with_compression
 from ._durable import ensure_directory, file_digest, publish, sync_directory
 from ._version import __version__
 from .campaign import CampaignConfig
-from .detection import _is_count
+from .candidates import ReactionTracker
+from .detection import _is_count, _symbols_by_id, canonical_copy, classify_bonds
 from .electrace_export import export_band
 from .mlip import load_mlip_adapter
 from .model_setup import install_and_prepare, model_catalog, prepare_adapter, prepare_campaign
-from .pathway import check_saddle, largest_forces
-from .run import ReactionRun, ReactionRunConfig, RunSummary, frame_ranges, missing_frames
+from .pathway import check_saddle, largest_forces, refine_pathway
+from .run import (
+    ReactionRun,
+    ReactionRunConfig,
+    RunSummary,
+    frame_ranges,
+    missing_frames,
+    publish_outcome,
+)
 from .scan import ScanResult, file_frames, recorded_occurrences, run_frames, scan_frames
 from .status import campaign_status, format_status
+from .store import OccurrenceStore
 from .wizard import create_campaign
+
+# The one occurrence in the folder that reactionflow band writes.
+_BAND = "band"
 
 
 def _trajectory_contract(campaign: CampaignConfig, index: int) -> dict[str, object]:
@@ -142,6 +154,18 @@ def visible_gpu(environment: Mapping[str, str] | None = None) -> str:
     return devices[0]
 
 
+def _several_frames(path: Path) -> bool:
+    try:
+        return len(read(path, index=slice(0, 2))) > 1
+    except Exception:  # a format that reads one image and takes no slice
+        return False
+
+
+def _constrained(atoms: Atoms) -> bool:
+    # ASE's .con reader attaches a FixAtoms that fixes nothing.
+    return any(not isinstance(c, FixAtoms) or len(c.index) for c in atoms.constraints)
+
+
 def _start_warnings(campaign: CampaignConfig, indices: Iterable[int]) -> list[str]:
     """What these trajectories' settings will silently do to their results. None of this stops them.
 
@@ -154,11 +178,7 @@ def _start_warnings(campaign: CampaignConfig, indices: Iterable[int]) -> list[st
         trajectory = campaign.trajectory(index)
         path = campaign.structure_for(index)
         if path not in structures:
-            try:
-                several = len(read(path, index=slice(0, 2))) > 1
-            except Exception:  # a format that reads one image and takes no slice
-                several = False
-            structures[path] = read(path), several
+            structures[path] = read(path), _several_frames(path)
         atoms, several = structures[path]
         name = os.path.relpath(path, campaign.source.parent)
         if several:
@@ -168,8 +188,7 @@ def _start_warnings(campaign: CampaignConfig, indices: Iterable[int]) -> list[st
                 f"{name} carries momenta, which set the starting velocities in place of "
                 "temperature_K; the thermostat then moves them toward it"
             ] = None
-        # ASE's .con reader attaches a FixAtoms that fixes nothing.
-        if any(not isinstance(c, FixAtoms) or len(c.index) for c in atoms.constraints):
+        if _constrained(atoms):
             notes[
                 f"{name} has constraints, which hold in MD and are removed in refinement, so its "
                 "barriers are for a system with every atom free"
@@ -288,6 +307,87 @@ def check_band(
     finally:
         temporary.unlink(missing_ok=True)
     return path, result
+
+
+def refine_band(
+    campaign: CampaignConfig,
+    reactant: Path,
+    product: Path,
+    out: Path,
+    *,
+    index: int,
+    pressure_GPa: float | None,
+) -> tuple[Path, dict[str, object]]:
+    """Refine the step from one structure to another with one trajectory's model, as ``run`` refines
+    an event, and write to ``out`` what a trajectory's folder holds for that event.
+
+    The tracker makes the candidate, as from two observations of a trajectory. It is then stored,
+    refined, and published by the code a run uses, with the campaign's settings.
+    """
+
+    pathway = out / "pathways" / _BAND
+    if pathway.exists():
+        raise FileExistsError(f"{pathway} already holds a band, and a result is never overwritten")
+    planned = {campaign.output_root / trajectory.id for trajectory in campaign.trajectories}
+    if (out / "state.json").exists() or out.resolve() in planned:
+        raise ValueError(f"{out} is a trajectory's folder; a band needs a folder of its own")
+    ends = []
+    for path in (reactant, product):
+        atoms = read(path)  # the last frame, or the one a file@N name picks
+        if not isinstance(atoms, Atoms):
+            raise ValueError(f"{path.name} names several frames, and an end is one structure")
+        if "@" not in path.name and _several_frames(path):
+            print(
+                f"warning: {path.name} holds several frames; band takes the last one",
+                file=sys.stderr,
+            )
+        if _constrained(atoms):
+            print(
+                f"warning: {path.name} has constraints, which refinement removes, so the barrier "
+                "is for a system with every atom free",
+                file=sys.stderr,
+            )
+        ends.append(atoms)
+    if len({"atom_id" in atoms.arrays or "atom_ids" in atoms.info for atoms in ends}) > 1:
+        raise ValueError(
+            "one structure carries atom IDs and the other does not, so atoms cannot match"
+        )
+    start, end = (canonical_copy(atoms) for atoms in ends)
+    if _symbols_by_id(start) != _symbols_by_id(end):
+        raise ValueError("the reactant and the product do not hold the same atoms")
+    settings = campaign.reaction_run
+    # A structure's bonds are the pairs within their formation distance, as in the first frame of a
+    # trajectory, and the tracker gives one candidate for each separate region that changes.
+    tracker = ReactionTracker(stability_frames=1, region_radius=settings.candidate_region_radius)
+    before, after = (classify_bonds(atoms, settings.detector)[0] for atoms in (start, end))
+    tracker.process(start, frame=0, stable_bonds=before, pending_bonds=None)
+    steps = tracker.process(end, frame=1, stable_bonds=after, pending_bonds=None)
+    if not steps:
+        raise ValueError(
+            "the reactant and the product have the same bonds, so there is no step to refine"
+        )
+    if len(steps) > 1:
+        changed = "; ".join(
+            ", ".join(f"{a}-{b}" for a, b in sorted(step.reactant_bonds ^ step.product_bonds))
+            for step in steps
+        )
+        raise ValueError(
+            f"the reactant and the product differ in {len(steps)} separate regions ({changed}), "
+            "which run refines as separate events; a band takes one"
+        )
+    adapter = load_mlip_adapter(campaign.adapter_for(index), campaign.trajectory(index))
+    store = OccurrenceStore(out)
+    record, _ = store.register(_BAND, steps[0], detector_config=settings.detector)
+    ensure_directory(pathway.parent)
+    outcome = refine_pathway(
+        store.load(_BAND),
+        calculator_provider=adapter.calculator,
+        config=settings.pathway,
+        detector_config=settings.detector,
+        pressure_GPa=pressure_GPa,
+    )
+    publish_outcome(pathway.parent, _BAND, record.class_id, outcome)
+    return pathway, outcome.to_dict()
 
 
 def _scan_settings(
@@ -415,6 +515,18 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--index", type=int, help="the trajectory whose model and pressure to use")
     check.add_argument("--pressure", type=float, help="GPa, in place of the trajectory's pressure")
 
+    band = commands.add_parser(
+        "band", help="refine the step from a reactant to a product, as run refines an event"
+    )
+    band.add_argument("campaign", type=Path)
+    band.add_argument(
+        "reactant", type=Path, help="a structure file ASE can read; file@N picks one frame"
+    )
+    band.add_argument("product", type=Path, help="the same atoms after the step")
+    band.add_argument("--index", type=int, help="the trajectory whose model and pressure to use")
+    band.add_argument("--pressure", type=float, help="GPa, in place of the trajectory's pressure")
+    band.add_argument("--out", type=Path, required=True, help="a folder for this band alone")
+
     scan = commands.add_parser(
         "scan", help="replay saved frames through bond detection without loading the model"
     )
@@ -531,8 +643,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isinstance(raw, dict):
         raise ValueError("campaign must be a JSON object")
     mode = raw.get("mode", "md")
-    if arguments.command == "check" and mode != "md":
-        parser.error("check takes an MD campaign file; it supplies the model and bond thresholds")
+    if arguments.command in {"check", "band"} and mode != "md":
+        parser.error(
+            f"{arguments.command} takes an MD campaign file; it supplies the model and bond "
+            "thresholds"
+        )
     if arguments.command == "scan" and mode != "md":
         parser.error("scan reads the frames an MD campaign saves; an EON campaign saves none")
     if mode == "eon":
@@ -609,20 +724,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         if warnings := _start_warnings(campaign, range(count)):
             payload["warnings"] = warnings
         print(json.dumps(payload, sort_keys=True))
-    elif arguments.command == "check":
+    elif arguments.command in {"check", "band"}:
         if arguments.index is None and len(campaign.trajectories) > 1:
             parser.error("--index picks the trajectory when a campaign has several")
-        # Slurm tasks pick trajectories for run only, so a check inside any job reads --index.
+        # Slurm tasks pick trajectories for run only, so a check or a band inside any job reads
+        # --index.
         index = resolve_task_index(len(campaign.trajectories), arguments.index, environment={})
         pressure = arguments.pressure
         if pressure is None:
             pressure = campaign.trajectory(index).pressure_GPa
         elif not math.isfinite(pressure):
             parser.error("--pressure must be a finite number")
-        path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
-        keys = ("status", "barrier_eV", "message", "largest_force_eV_A")
+        if arguments.command == "check":
+            path, result = check_band(campaign, arguments.band, index=index, pressure_GPa=pressure)
+            keys = ("status", "barrier_eV", "message", "largest_force_eV_A")
+        else:
+            path, result = refine_band(
+                campaign,
+                arguments.reactant,
+                arguments.product,
+                arguments.out,
+                index=index,
+                pressure_GPa=pressure,
+            )
+            keys = ("status", "barrier_eV", "barrier_quantity", "pressure_GPa", "message")
         summary = {key: result[key] for key in keys}
-        print(json.dumps({"check": str(path), **summary}, sort_keys=True))
+        print(json.dumps({arguments.command: str(path), **summary}, sort_keys=True))
     else:
         _run_and_record(campaign, arguments)
     return 0
@@ -632,4 +759,11 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["check_band", "main", "resolve_task_index", "run_selected_trajectory", "visible_gpu"]
+__all__ = [
+    "check_band",
+    "main",
+    "refine_band",
+    "resolve_task_index",
+    "run_selected_trajectory",
+    "visible_gpu",
+]
