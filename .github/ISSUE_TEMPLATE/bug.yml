@@ -1,0 +1,54 @@
+name: Bug report
+description: Report reproducible incorrect software behavior.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include credentials, licensed files, or unpublished structures.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include exact commands and the smallest redistributable campaign file and structure.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ReactionFlow version or commit
+      placeholder: python -m pip show reactionflow / git rev-parse HEAD
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, installation method, model backend and its version, and CPU or GPU.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        The JSON line `run` printed, `last-error.json`, or the traceback. Redact usernames,
+        private paths, hostnames, tokens, and scientific data.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data confirmation
+      options:
+        - label: I removed secrets and data I am not authorized to disclose.
+          required: true
