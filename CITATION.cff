@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: >-
+  If you use ReactionFlow in research, cite this software and the interatomic
+  potentials and external codes used in your workflow.
+title: "ReactionFlow: automated reaction discovery and pathway refinement for atomistic trajectories"
+type: software
+authors:
+  - family-names: Ellis
+    given-names: Austin
+version: 0.1.0
+date-released: 2026-10-03
+license: BSD-3-Clause
+abstract: >-
+  ReactionFlow finds reactions in molecular dynamics and computes their pathways.
+  It watches the bonds while a trajectory runs. When a bond forms or breaks and
+  stays that way, it refines the minimum-energy path of that change with NEB and
+  climbing-image NEB, using the same machine-learned interatomic potential as the
+  dynamics. For reactions too rare to see in molecular dynamics, it runs adaptive
+  kinetic Monte Carlo with EON.
+keywords:
+  - reaction discovery
+  - molecular dynamics
+  - machine-learned interatomic potentials
+  - nudged elastic band
+  - transition states
+  - adaptive kinetic Monte Carlo
+  - reaction mechanisms
+repository-code: "https://github.com/Austin243/ReactionFlow"
