@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
 import pytest
 from ase import Atoms
 
+from reactionflow.detection import BondDetectorConfig
 from reactionflow.search import runner
 from reactionflow.search.akmc import AKMCConfig, basin_escape, rate
 from reactionflow.search.eon import ProcessResult
+from reactionflow.search.labels import describe
 from reactionflow.search.records import SearchStore
 from reactionflow.search.runner import run_exploration
 
@@ -18,6 +21,11 @@ from reactionflow.search.runner import run_exploration
 ENERGY = {"A": 0.0, "B": 0.0, "C": -0.5}
 INTERNAL, CHEMICAL = 0.05, 0.6
 PREFACTOR = 1e13
+H2 = Atoms("H2", positions=[[0, 0, 0], [0.7, 0, 0]], cell=[10, 10, 10])
+# The same over a Cu atom that stays put. By the default distances both H are bonded to it at A,
+# neither at B, and one at C. NO_CU_H leaves those contacts out of the bonds.
+ON_CU = H2 + Atoms("Cu", positions=[[0, -1.6, 0]])
+NO_CU_H = BondDetectorConfig(pair_thresholds={"Cu-H": (0.1, 0.2)})
 
 
 def label(atoms: Atoms) -> str:
@@ -30,7 +38,7 @@ def place(atoms: Atoms, name: str) -> Atoms:
     moved = atoms.copy()
     y = 1.0 if name == "B" else 0.0
     separation = 2.5 if name == "C" else 0.70
-    moved.positions[:] = [[0.0, y, 0.0], [separation, y, 0.0]]
+    moved.positions[:2] = [[0.0, y, 0.0], [separation, y, 0.0]]
     return moved
 
 
@@ -81,13 +89,14 @@ class Conformers:
         )
 
 
-def run(root, backend, **kwargs):
+def run(root, backend, atoms=H2, detector=None, **kwargs):
     return run_exploration(
         root,
-        Atoms("H2", positions=[[0, 0, 0], [0.7, 0, 0]], cell=[10, 10, 10]),
+        atoms,
         backend=backend,
         contract={"model": "fixture"},
         config=AKMCConfig(**{"steps": 1, "confidence": 0.5, "temperature_K": 300.0, **kwargs}),
+        detector=detector,
     )
 
 
@@ -151,6 +160,19 @@ def test_default_runs_keep_their_records(tmp_path):
     assert all("chemical" not in s for s in steps(tmp_path))
 
 
+def test_detector_settings_decide_whether_a_metal_contact_is_a_bond(tmp_path):
+    def taken(name, **settings):
+        run(tmp_path / name, Conformers(), basins="bonds", atoms=ON_CU, **settings)
+        moved = SearchStore(tmp_path / name).read("processes", "process-000000").data["bonds"]
+        return describe(moved), [(s["chemical"], s["basin_states"]) for s in steps(tmp_path / name)]
+
+    # By the default distances the move from A to B is chemistry, and the one step the run takes.
+    assert taken("default") == ("broken Cu-H x2", [(True, 1)])
+    # With the contacts left out it is a change of conformer, as without the Cu atom, and the
+    # step that counts breaks the H-H bond.
+    assert taken("set", detector=NO_CU_H) == ("no bond change", [(False, 1), (True, 2)])
+
+
 def test_a_search_eon_rejects_as_not_connected_leaves_the_basin_by_its_bonds(tmp_path):
     class Settled(Conformers):
         """The first search from A breaks the H-H bond, but its start side settles into a
@@ -192,6 +214,18 @@ def test_a_search_eon_rejects_as_not_connected_leaves_the_basin_by_its_bonds(tmp
     }
     assert label(process.structures["start_side"]) == "B"
     assert label(store.read("states", process.data["product"]).structures["atoms"]) == "C"
+
+    # Over the Cu atom both minima change a Cu-H contact by the default distances, so neither
+    # keeps the start's bonds and the search stays rejected.
+    run(tmp_path / "cu", Settled(), basins="bonds", atoms=ON_CU)
+    rejected = SearchStore(tmp_path / "cu").read("attempts", "attempt-000000").data
+    assert rejected["status"] == "failed"
+    sides = [describe(side["bonds"]) for side in rejected["minima"]]
+    assert sides == ["broken Cu-H x2", "broken Cu-H, H-H"]
+    # With the contacts left out, every record is that of the molecule alone.
+    for basins in ("none", "bonds"):
+        run(tmp_path / f"cu-{basins}", Settled(), basins=basins, atoms=ON_CU, detector=NO_CU_H)
+        assert records(tmp_path / f"cu-{basins}") == records(tmp_path / basins)
 
 
 def test_escape_stays_exact_across_twenty_orders_of_magnitude():
@@ -266,6 +300,22 @@ def test_basin_mode_is_part_of_the_contract(tmp_path):
     run(tmp_path, Conformers(), basins="bonds")
     with pytest.raises(ValueError, match="changed"):
         run(tmp_path, Conformers())
+
+
+def test_detector_settings_are_part_of_the_contract(tmp_path):
+    state = run(tmp_path / "set", Conformers(), atoms=ON_CU, detector=NO_CU_H)
+    assert run(tmp_path / "set", Conformers(), atoms=ON_CU, detector=NO_CU_H) == state
+    wider = BondDetectorConfig(pair_thresholds={"Cu-H": (0.1, 0.3)})
+    for changed in (None, wider):
+        with pytest.raises(ValueError, match="changed"):
+            run(tmp_path / "set", Conformers(), atoms=ON_CU, detector=changed)
+    run(tmp_path / "default", Conformers(), atoms=ON_CU)
+    with pytest.raises(ValueError, match="changed"):
+        run(tmp_path / "default", Conformers(), atoms=ON_CU, detector=NO_CU_H)
+    # At the defaults the contract is the one written before the settings existed.
+    contract = json.loads((tmp_path / "default" / "search-contract.json").read_text())
+    assert set(contract) == {"initial_sha256", "model_and_backend", "akmc", "search_code"}
+    run(tmp_path / "default", Conformers(), atoms=ON_CU, detector=BondDetectorConfig())
 
 
 def test_basins_setting_is_validated():

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from reactionflow.detection import assign_atom_ids
+from reactionflow.detection import BondDetectorConfig, assign_atom_ids
 from reactionflow.search.eon import EONSettings, guided_push
 
 # C bonded to both H, and N alone: 3.0 Å from C, 1.9 Å from the first H, 4.1 Å from the second.
@@ -20,17 +20,23 @@ STEP = assign_atom_ids(
         positions=[[0, 0, 0], [1.09, 0, 0], [0, 2.9, 0], [1.16, 2.9, 0], [2.6, -1.0, 0]],
     )
 )
+# CO over the bridge between two Cu atoms 2.55 Å apart: its C is 1.97 Å from each Cu and its O
+# 2.94 Å. By the default distances the Cu are bonded to each other and to the C.
+BRIDGE = assign_atom_ids(
+    Atoms("Cu2CO", positions=[[0, 0, 0], [2.55, 0, 0], [1.275, 0, 1.5], [1.275, 0, 2.65]])
+)
 
 
-def push(guide, fixed=(), seed=0):
-    mask = np.isin(np.arange(len(ATOMS)), fixed)
-    return guided_push(ATOMS, mask, EONSettings(guide=guide), np.random.default_rng(seed))
+def push(guide, fixed=(), seed=0, atoms=ATOMS, detector=None):
+    mask = np.isin(np.arange(len(atoms)), fixed)
+    rng = np.random.default_rng(seed)
+    return guided_push(atoms, mask, EONSettings(guide=guide), rng, detector or BondDetectorConfig())
 
 
-def picks(guide, fixed=()):
+def picks(guide, fixed=(), **system):
     return {
         (record["push"], *record["atom_ids"])
-        for _, _, record in (push(guide, fixed, seed) for seed in range(40))
+        for _, _, record in (push(guide, fixed, seed, **system) for seed in range(40))
     }
 
 
@@ -102,11 +108,24 @@ def test_a_guided_push_moves_one_pair_of_the_guide_together_or_apart():
     assert distance == pytest.approx(1.09 + EONSettings.displace_size_A, abs=0.1)
 
 
+def test_a_guide_takes_its_bonds_from_the_detector_settings():
+    contacts = {"break": ["Cu-Cu", "C-Cu"]}
+    assert picks(contacts, atoms=BRIDGE) == {("break", 0, 1), ("break", 0, 2), ("break", 1, 2)}
+    # The O and each Cu share the C as a bonded neighbor, so they are no pair to form.
+    assert push({"form": ["Cu-O"]}, atoms=BRIDGE) is None
+    # With the metal contacts left out of the bonds there is none to break, and the C no longer
+    # stands between the O and the Cu.
+    no_metal = BondDetectorConfig(pair_thresholds={"Cu-Cu": (0.1, 0.2), "C-Cu": (0.1, 0.2)})
+    assert push(contacts, atoms=BRIDGE, detector=no_metal) is None
+    found = picks({"form": ["Cu-O"]}, atoms=BRIDGE, detector=no_metal)
+    assert found == {("form", 0, 3), ("form", 1, 3)}
+
+
 def test_together_pushes_one_pair_per_entry_linked_through_shared_atoms():
     def step(guide, fixed=(), seed=0):
         mask = np.isin(np.arange(len(STEP)), fixed)
         settings = EONSettings(guide={**guide, "together": True})
-        return guided_push(STEP, mask, settings, np.random.default_rng(seed))
+        return guided_push(STEP, mask, settings, np.random.default_rng(seed), BondDetectorConfig())
 
     guide = {"form": ["C-C", "H-N"], "break": ["C-H"]}
     found = set()

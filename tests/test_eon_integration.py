@@ -15,7 +15,7 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.constraints import FixAtoms
 
-from reactionflow.detection import assign_atom_ids
+from reactionflow.detection import BondDetectorConfig, assign_atom_ids
 from reactionflow.search.eon import NOT_CONNECTED, EONBackend, EONSettings
 
 pytestmark = pytest.mark.skipif(
@@ -172,14 +172,19 @@ def test_real_eon_keeps_the_saddle_and_minima_of_a_search_that_does_not_connect(
 
 
 @pytest.mark.parametrize(
-    "push",
-    [{"displace": "local", "displace_centers": [0, "Ar"]}, {"guide": {"form": ["Ne-Ne"]}}],
+    "push, detector",
+    [
+        ({"displace": "local", "displace_centers": [0, "Ar"]}, None),
+        ({"guide": {"form": ["Ne-Ne"]}}, None),
+        # The He pair, 1 Å apart, is one to form by the default distances and bonded by these.
+        ({"guide": {"form": ["He-He"]}}, BondDetectorConfig(pair_thresholds={"He-He": (1.5, 2)})),
+    ],
 )
-def test_real_eon_reports_a_push_that_selects_nothing(push):
+def test_real_eon_reports_a_push_that_selects_nothing(push, detector):
     positions = [[5, 5, 5], [4.0, 5, 5], [5.3, 5, 8]]
     atoms = assign_atom_ids(Atoms("He2Ne", positions=positions, cell=[12] * 3, pbc=True))
     atoms.set_constraint(FixAtoms(indices=[0]))
-    backend = EONBackend(WellAndSpring(), EONSettings(**push), temperature_K=300)
+    backend = EONBackend(WellAndSpring(), EONSettings(**push), temperature_K=300, detector=detector)
     assert backend.search(atoms, seed=0).status == "no_push"
 
 

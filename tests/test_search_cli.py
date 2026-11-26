@@ -12,9 +12,28 @@ from ase.io import write
 
 from reactionflow.campaign import CampaignConfig
 from reactionflow.cli import main
+from reactionflow.detection import BondDetectorConfig
 from reactionflow.search import cli as search_cli
 from reactionflow.search import records
 from reactionflow.search.eon import ProcessResult
+
+MD = {
+    "schema_version": 2,
+    "structure": "start.extxyz",
+    "output_root": "md-runs",
+    "require_gpu": False,
+    "adapter_profiles": {"fixture": {"factory": "not_imported:factory"}},
+    "trajectories": [
+        {
+            "id": "a",
+            "adapter_profile": "fixture",
+            "total_steps": 1,
+            "timestep_fs": 1,
+            "temperature_K": 0,
+            "seed": 1,
+        }
+    ],
+}
 
 
 class DoubleWell(Calculator):
@@ -33,11 +52,13 @@ class Backend:
     """Stands in for EON: the saddle at x=0 joins the minima at x=-1 and x=+1."""
 
     searches = 0
+    detector = None
 
-    def __init__(self, calculator, settings, temperature_K):
+    def __init__(self, calculator, settings, temperature_K, detector):
         assert isinstance(calculator, DoubleWell)
         self.calculator = calculator
         self.contract = {"backend": "fixture"}
+        Backend.detector = detector
 
     def energy(self, atoms):
         atoms = atoms.copy()
@@ -181,25 +202,49 @@ def test_status_counts_failed_searches_that_kept_a_saddle(tmp_path, monkeypatch,
     assert "Failed searches that kept a saddle: 1, of which 0" in capsys.readouterr().out
 
 
+def test_detector_settings_reach_the_backend_and_the_labels(tmp_path, monkeypatch, capsys):
+    # The H leaves a Cu atom 1.5 Å away, a broken bond by the default distances.
+    atoms = Atoms("HCu", positions=[[-1, 0, 0], [-2.5, 0, 0]], cell=[12, 12, 12], pbc=True)
+    monkeypatch.setattr(search_cli, "EONBackend", Backend)
+    for name, settings, bonds in (
+        ("default", {}, "broken Cu-H"),
+        ("set", {"detector": {"pair_thresholds": {"Cu-H": [0.1, 0.2]}}}, "no bond change"),
+    ):
+        path = campaign(tmp_path, atoms, output_root=name, **settings)
+        assert main(["run", str(path)]) == 0
+        assert json.loads(capsys.readouterr().out)["step_rows"][0]["bonds"] == bonds
+        assert Backend.detector == BondDetectorConfig(**settings.get("detector", {}))
+
+
+def test_validate_refuses_a_malformed_detector_block_as_in_an_md_campaign(tmp_path, monkeypatch):
+    forbid_resources(monkeypatch)
+
+    def validate(mode, detector):
+        path = campaign(tmp_path, detector=detector)
+        if mode == "md":
+            path.write_text(json.dumps({**MD, "reaction_run": {"detector": detector}}))
+        return main(["validate", str(path)])
+
+    for malformed in (
+        ["Cu-H"],
+        {"radius": 2},
+        {"form_scale": 1.4},
+        {"persistence_frames": 0},
+        {"pair_thresholds": {"Cu-Q": [0.1, 0.2]}},
+        {"pair_thresholds": {"Cu-H": [0.2, 0.1]}},
+        {"pair_thresholds": {"Cu-H": [0.1]}},
+    ):
+        with pytest.raises(ValueError, match="detector"):
+            validate("eon", malformed)
+        with pytest.raises((TypeError, ValueError)):
+            validate("md", malformed)
+    copied = {"break_scale": 1.4, "persistence_frames": 2, "pair_thresholds": {"Cu-H": [1, 2]}}
+    assert validate("eon", copied) == validate("md", copied) == 0
+
+
 def test_md_mode_is_optional_and_explicit_md_keeps_validation_output(tmp_path, capsys):
     path = campaign(tmp_path)
-    data = {
-        "schema_version": 2,
-        "structure": "start.extxyz",
-        "output_root": "md-runs",
-        "require_gpu": False,
-        "adapter_profiles": {"fixture": {"factory": "not_imported:factory"}},
-        "trajectories": [
-            {
-                "id": "a",
-                "adapter_profile": "fixture",
-                "total_steps": 1,
-                "timestep_fs": 1,
-                "temperature_K": 0,
-                "seed": 1,
-            }
-        ],
-    }
+    data = dict(MD)
     path.write_text(json.dumps(data))
     legacy = CampaignConfig.load(path)
     assert main(["validate", str(path)]) == 0

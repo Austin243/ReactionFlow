@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import read
 
 from ..campaign import AdapterSpec, TrajectorySpec, _reject_unknown
-from ..detection import canonical_copy
+from ..detection import BondDetectorConfig, canonical_copy
 from ..mlip import load_mlip_adapter
 from ..model_setup import install_and_prepare, prepare_adapter, prepare_campaign
 from .akmc import AKMCConfig, confidence, rate
@@ -51,6 +51,7 @@ class SearchCampaign:
     require_gpu: bool
     akmc: AKMCConfig
     eon: EONSettings
+    detector: BondDetectorConfig
 
     @classmethod
     def load(cls, path: str | Path) -> SearchCampaign:
@@ -70,6 +71,7 @@ class SearchCampaign:
             "require_gpu",
             "akmc",
             "eon",
+            "detector",
         }
         _reject_unknown(data, known, "EON campaign keys")
 
@@ -89,6 +91,7 @@ class SearchCampaign:
             require_gpu=require_gpu,
             akmc=_settings(AKMCConfig, data.get("akmc", {}), "akmc"),
             eon=_settings(EONSettings, data.get("eon", {}), "eon"),
+            detector=_settings(BondDetectorConfig, data.get("detector", {}), "detector"),
         )
 
     @property
@@ -346,14 +349,21 @@ def _run(campaign: SearchCampaign, arguments: argparse.Namespace) -> None:
     log = campaign.output_root / "eon.log" if campaign.eon.log == "file" else None
     # One model load gives the calculator and the same identity an MD restart records.
     with lease() as (calculator, identity), _eon_output(log):
-        backend = EONBackend(calculator, campaign.eon, campaign.akmc.temperature_K)
+        backend = EONBackend(
+            calculator, campaign.eon, campaign.akmc.temperature_K, campaign.detector
+        )
         contract = {
             "adapter": asdict(campaign.adapter),
             "calculator": asdict(identity),
             "eon": backend.contract,
         }
         run_exploration(
-            campaign.output_root, atoms, backend=backend, contract=contract, config=campaign.akmc
+            campaign.output_root,
+            atoms,
+            backend=backend,
+            contract=contract,
+            config=campaign.akmc,
+            detector=campaign.detector,
         )
     print(json.dumps(search_status(campaign), sort_keys=True))
 

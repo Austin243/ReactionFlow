@@ -240,14 +240,18 @@ def free_rotation(atoms: Atoms) -> str | None:
 
 
 def guided_push(
-    atoms: Atoms, fixed: np.ndarray, settings: EONSettings, rng: np.random.Generator
+    atoms: Atoms,
+    fixed: np.ndarray,
+    settings: EONSettings,
+    rng: np.random.Generator,
+    detector: BondDetectorConfig,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
     """Positions, starting direction, and record of a push that moves atom pairs together or
     apart, or None when the structure has nothing the guide selects.
 
     A guide entry is an element pair or two atom IDs. A pair to form is unbonded, within
     `within_A`, and shares no bonded neighbor; a pair to break is bonded, by the bond distances of
-    reaction detection. A search pushes one pair that matches any entry, or with `together` one
+    `detector`. A search pushes one pair that matches any entry, or with `together` one
     pair for every entry at once, picked so the pairs link up through shared atoms. Each pair
     moves `displace_size_A` along its axis, split by mass, and every free atom gets a small random
     push as well.
@@ -257,7 +261,7 @@ def guided_push(
     symbols = atoms.get_chemical_symbols()
     ids = atom_ids(atoms)
     index = {atom_id: number for number, atom_id in enumerate(ids)}
-    bonds = classify_bonds(atoms, BondDetectorConfig())[0]
+    bonds = classify_bonds(atoms, detector)[0]
     bonded = {tuple(sorted(index[i] for i in bond)) for bond in bonds}
     neighbors: list[set[int]] = [set() for _ in atoms]
     for i, j in bonded:
@@ -419,12 +423,20 @@ def _moved(atoms: Atoms, positions: np.ndarray) -> Atoms:
 
 
 class EONBackend:
-    """EON on one caller-owned calculator, in eV, Å and atomic mass units."""
+    """EON on one caller-owned calculator, in eV, Å and atomic mass units. A guided search takes
+    its bonds from `detector`, by default the distances of MD reaction detection."""
 
-    def __init__(self, calculator: Calculator, settings: EONSettings, temperature_K: float):
+    def __init__(
+        self,
+        calculator: Calculator,
+        settings: EONSettings,
+        temperature_K: float,
+        detector: BondDetectorConfig | None = None,
+    ):
         self.calculator = calculator
         self.settings = settings
         self.temperature_K = float(temperature_K)
+        self.detector = detector or BondDetectorConfig()
         self._failures: list[BaseException] = []
         self._eon = _load_eon()
         # Comparisons never evaluate the potential; they need only the comparison settings.
@@ -638,7 +650,7 @@ class EONBackend:
         """A guided push, EON's saddle search along it, both sides relaxed along the saddle's own
         mode, and the checks and prefactors of EON's own search."""
 
-        push = guided_push(source, fixed, self.settings, np.random.default_rng(seed))
+        push = guided_push(source, fixed, self.settings, np.random.default_rng(seed), self.detector)
         if push is None:
             return ProcessResult("no_push", "nothing here matches eon.guide", metadata=metadata)
         positions, mode, metadata["pair"] = push
