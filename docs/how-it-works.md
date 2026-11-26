@@ -81,7 +81,9 @@ and the next job continues from the last checkpoint.
 Results are never overwritten. Every resolved occurrence is refined, including one that repeats an
 earlier reaction, because the reactions that have happened around it can change its barrier. The
 saddle check's details are stored with each result, and only `saddle_validated` records a barrier.
-`reactionflow check` runs the same check on any band file.
+`reactionflow check` runs the same check on any band file, and `reactionflow band` refines the step
+between two given structures the same way, without MD
+([refining a known step](pathway-refinement.md#refining-a-known-step)).
 
 ## Reaction classes
 

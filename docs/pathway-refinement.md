@@ -189,6 +189,68 @@ product. It is `inconclusive` when either side is `ambiguous`, `not_converged`, 
 connects both ends is strong evidence for the transition state of the detected reaction, but it is
 not an intrinsic reaction coordinate.
 
+## Refining a known step
+
+```bash
+reactionflow band campaign.json reactant.extxyz product.extxyz --pressure 25 --out bands/25GPa
+```
+
+`reactionflow band` refines one step without MD, from a reactant structure to a product structure.
+It is for a step that is already known, such as one a trajectory found at 20 GPa whose barrier is
+wanted at other pressures. The step goes through `refine_pathway()` exactly as an event of `run`
+does, with the campaign's model, bond thresholds, region radius, and pathway settings. `--index`
+picks the trajectory whose model and pressure are used, and `--pressure` replaces that pressure, as
+for `reactionflow check`. At a pressure, zero included, the endpoints relax their cells and the
+band is SSNEB with an enthalpy barrier. When the trajectory's pressure is `null` and none is given,
+the cell is fixed and the band is NEB.
+
+The two files must hold the same atoms. Atoms are matched by ID when both files carry IDs, as a
+pathway's `images.traj` does, and by their order when neither does. One file with IDs and one
+without is refused. A file with several frames gives its last one, with a warning, and ASE's
+`file@N` picks frame N: `images.traj@0` and `images.traj@-1` are the relaxed ends of an earlier
+band. Constraints are removed, as in every refinement, also with a warning.
+
+The step becomes a candidate the way the tracker makes one from two observations. A structure's
+bonds are the pairs within their formation distance, as in the first frame of a trajectory, and the
+region is the changed bonds with the atoms within `candidate_region_radius` bonds of them.
+Structures with the same bonds have no step to refine. Structures that differ in two or more
+separate regions are refused, because `run` refines those as separate events. Both refusals come
+before the model is loaded. Give relaxed structures. In a hot MD frame, such as the two frames
+stored with an occurrence, a bond that is changing can sit between its two thresholds, where
+distance alone does not say which side it is on, and a step read from such frames often ends
+`unresolved` once they relax.
+
+Refinement then treats the candidate like any other ([scientific workflow](#scientific-workflow)).
+The reactant relaxes from its file. The product starts from the relaxed reactant, cell included,
+with the atoms in changed bonds and the atoms bonded to them placed at their fractional coordinates
+in the product file, and relaxes from there, so the rest of the product file is not used. Endpoints
+whose bonds change on relaxation end as `collapsed` or `unresolved` with the reason, and no band is
+run. The band is interpolated between the two relaxed endpoints and takes no images from another
+band. No saved frames lie between the two files, so a step that changes several bonds is split only
+when its reactant relaxes partway along it ([steps](#reactant-frame-and-steps)). The step limits
+are `relax_steps`, `neb_steps`, and `ci_neb_steps`. `max_hours_per_barrier` limits the refinements
+inside `run` and does not apply, so a band has no time limit.
+
+`--out` is a folder for this band alone. It gets what a trajectory's folder holds for one event:
+
+```text
+bands/25GPa/
+├── candidates/band/     candidate.json and the two structures as given
+├── pathways/band/       result.json, images.traj, and step-N/ for a step refined in steps
+└── reactions.sqlite3
+```
+
+The files have the same form as a trajectory's, so `reactionflow check` and
+`reactionflow export-electrace` read `pathways/band` unchanged. `frames` in `result.json` is
+`[0, 1]`, the two files. `check` takes the trajectory's pressure unless told otherwise, so give it
+the band's `--pressure`. `reactionflow status` lists a campaign's trajectories and does not read
+this folder. The command prints the band's folder, status, barrier, pressure, and message.
+
+A result is never overwritten: a folder that already holds a band, or a trajectory's own folder, is
+refused. An interrupted band has published nothing, and the same command starts it over in its
+folder, as a run does with an interrupted refinement. Other endpoints or bond thresholds are
+refused there.
+
 ## Checking a band
 
 ```bash
