@@ -136,6 +136,7 @@ restart, and running on a cluster, with figures made from ReactionFlow's own out
 ## Documentation
 
 - [How ReactionFlow works](docs/how-it-works.md)
+- [Command-line reference](docs/cli.md), with every command and option
 - [Campaigns](docs/campaigns.md), with the file format, several models in one campaign, Slurm, and
   status
 - [Models](docs/models.md), with every backend, its options, and its environment
