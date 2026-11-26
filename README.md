@@ -133,20 +133,6 @@ atom ID. See the [EON guide](docs/eon-search.md).
 and its outcomes, reaction classes, EON searches and kinetic Monte Carlo, constant pressure, exact
 restart, and running on a cluster, with figures made from ReactionFlow's own output.
 
-## Limits
-
-A detected change only means that two atoms crossed a distance threshold. ReactionFlow does not
-assign bond orders, compute free energies, or run an IRC, and MD mode gives no rates. The saddle
-check's Hessian holds the atoms that do not move through the saddle and the cell fixed, so one mode
-that connects both ends is strong evidence for a saddle but does not prove one. The thresholds and
-observation interval need checking for each system.
-
-EON rates come from harmonic transition-state theory, which suits barriers well above kT in stiff
-solids and on surfaces. Without `basins`, states joined by a very low barrier are not merged, so
-such a pair makes every step short; `basins: "bonds"` merges them when no bond changes. In
-liquids the softest modes are collective solvent motions that lead to no saddle, searches rarely
-connect, and MD mode is the better choice.
-
 ## Documentation
 
 - [How ReactionFlow works](docs/how-it-works.md)
